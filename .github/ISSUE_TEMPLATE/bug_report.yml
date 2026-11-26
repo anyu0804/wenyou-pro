@@ -1,17 +1,17 @@
 name: Bug report
-description: Report something that isn't working
+description: Report a bug in Wenyou Pro
 title: "[Bug] "
 labels: [bug]
 body:
   - type: markdown
     attributes:
       value: |
-        Thanks for reporting! Please **redact API keys and personal data** — never paste `auth.json`, session files, or keys.
+        Thanks for reporting! Please **redact API keys, local user paths, and personal data** — never paste `auth.json`, session files, or keys.
   - type: input
     id: version
     attributes:
       label: App version
-      description: e.g. 0.1.0 — shown in the app or the release you downloaded
+      description: e.g. 0.2.5 — shown in Wenyou Pro or the release you downloaded
     validations:
       required: true
   - type: input
