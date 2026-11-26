@@ -9,7 +9,7 @@ import { createReadStream, existsSync } from "node:fs";
 import { copyFile, mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import os from "node:os";
-import { basename, dirname, join, relative, resolve } from "node:path";
+import { dirname, join, posix, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
@@ -895,7 +895,7 @@ export function resolveNpmCommand(
 	const npmExecPath = env?.npm_execpath;
 	if (
 		typeof npmExecPath === "string" &&
-		NPM_EXECPATH_BASENAME_PATTERN.test(basename(npmExecPath)) &&
+		NPM_EXECPATH_BASENAME_PATTERN.test(posix.basename(npmExecPath.replaceAll("\\", "/"))) &&
 		existsFn(npmExecPath)
 	) {
 		return { command: execPath, args: [npmExecPath, ...npmArgs], shell: false };

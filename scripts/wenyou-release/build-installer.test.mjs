@@ -431,6 +431,30 @@ describe("sanitizeTextForLog and resolveNpmCommand", () => {
 			args: npmArgs,
 			shell: true,
 		});
+
+		const fromPosixNpm = resolveNpmCommand(npmArgs, {
+			env: { npm_execpath: "/opt/node/lib/node_modules/npm/bin/npm-cli.js" },
+			execPath: "/opt/node/bin/node",
+			existsFn: (p) => p === "/opt/node/lib/node_modules/npm/bin/npm-cli.js",
+			platform: "linux",
+		});
+		assert.deepEqual(fromPosixNpm, {
+			command: "/opt/node/bin/node",
+			args: ["/opt/node/lib/node_modules/npm/bin/npm-cli.js", ...npmArgs],
+			shell: false,
+		});
+
+		const fromPosixYarnNoBundled = resolveNpmCommand(npmArgs, {
+			env: { npm_execpath: "/opt/yarn/bin/yarn.js" },
+			execPath: "/opt/node/bin/node",
+			existsFn: (p) => p === "/opt/yarn/bin/yarn.js",
+			platform: "linux",
+		});
+		assert.deepEqual(fromPosixYarnNoBundled, {
+			command: "npm",
+			args: npmArgs,
+			shell: false,
+		});
 	});
 });
 
