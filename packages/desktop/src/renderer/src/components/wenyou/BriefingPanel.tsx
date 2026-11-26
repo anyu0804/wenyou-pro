@@ -80,7 +80,7 @@ function SourceRefPills({
 					type="button"
 					onClick={() => onOpen(ref, highlightQuote)}
 					className="inline-flex cursor-pointer items-center gap-1 rounded-full border border-accent/30 bg-accent/8 px-2 py-0.5 font-mono text-ui-11 text-accent transition-colors hover:border-accent hover:bg-accent/15"
-					title={`点击回查 ${ref} 的原始群聊前后 10 条上下文`}
+					title={`点击回查 ${ref} 的原始群聊上下文（支持扩展长程回溯）`}
 				>
 					<span>[{ref}]</span>
 				</button>
@@ -247,7 +247,7 @@ export function BriefingPanel() {
 						onClick={handleGenerateBriefingPrompt}
 						className="rounded-lg bg-ink px-2.5 py-1 text-ui-12 font-medium text-on-ink transition-opacity hover:opacity-90"
 					>
-						让 Agent 出局势书
+						让司命出局势书
 					</button>
 				</div>
 				{bindDialogOpen && <NtqqGroupBindDialog onClose={() => setBindDialogOpen(false)} />}
@@ -442,7 +442,7 @@ export function BriefingPanel() {
 							<p className="text-ui-14 font-medium text-ink">尚未发布结构化局势书</p>
 							<p className="max-w-sm text-ui-12 leading-relaxed text-ink-dim">
 								把 QQ 群聊导出文本（.txt / .json / .jsonl）放入 <code className="font-mono">00-群聊收集/</code>{" "}
-								后，先点击「扫描群聊增量」，再让 Agent 发布三段式局势书。
+								后，先点击「扫描群聊增量」，再让司命发布三段式局势书。
 							</p>
 							<div className="mt-1 flex items-center gap-2">
 								<button

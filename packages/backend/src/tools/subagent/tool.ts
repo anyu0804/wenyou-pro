@@ -3,6 +3,7 @@ import {
 	type AgentToolResult,
 	defineTool,
 	type ExtensionContext,
+	type InlineExtension,
 	type ModelRuntime,
 	type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
@@ -58,6 +59,7 @@ export interface MakeSubagentToolDeps {
 	onEvent?: (sessionId: string, event: AgentSessionEvent, abort: () => Promise<void>) => void;
 	registerRun?: (sessionId: string, handle: SubagentRunHandle) => void;
 	unregisterRun?: (sessionId: string) => void;
+	extraExtensions?: (cwd: string) => InlineExtension[];
 }
 
 interface SubagentDetails {

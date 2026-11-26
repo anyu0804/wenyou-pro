@@ -16,7 +16,9 @@ description: 顺唐/文明不朽风格战略推演的局势判断、多群防重
 ## 2. 标准执行流程（严禁跳步）
 1. 调用 `wenyou_pull_qq` 扫描 `00-群聊收集/`，获取尚未进入简报的新消息与各群游标统计；**绝不重复汇报上次简报已覆盖的旧消息**。
 2. 调用 `wenyou_read_memory` 读取上一份局势简报、L1 滚动台账与 `01-设定与国力实册` 基线，防止断代或吃书。
-3. 对任何存在争议的战报、外交通牒或反常数据，必须先调用 `wenyou_lookup_source(sourceId, window=10)` 回查同群前后 10 条上下文，逐条甄别四类可信度：
+3. 对任何存在争议的战报、外交通牒、玩家转述传闻或反常数据，必须先全库回查原文：
+   - 追查「最初原话 → 传话曲解点」时，先调 `wenyou_lookup_source(keyword, order="earliest", limit=50)` 定位最早源头，再对比 `order="latest"` 看后续转述是否走样（全库最高覆盖 20,000 条/群；若群库记录较浅，可先调 `wenyou_pull_qq(historyLimit=5000..20000, backfill=true)` 按时间线补抓更早历史）；
+   - 对关键发言调 `wenyou_lookup_source(sourceId, window=30)` 回查前后上下文，争议复杂时可将 `window` 扩至 `100～200` 或依据返回的首尾 `sourceId` 分段继续前溯，逐条甄别四类可信度：
    - `gm_fact`：裁判/司历官正式裁定或骰娘有效检定落锤的事实；
    - `propaganda`：敌我阵营在主群发布的对外宣传、心理战、虚张声势或片面战报；
    - `unconfirmed_draft`：内阁/参谋讨论中尚未正式提交的方案；

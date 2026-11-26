@@ -142,16 +142,50 @@ export function createExecutionHandlers(
 		wenyouInitCampaign: ({ cwd, worldTitle, currentEra }) =>
 			backend.wenyou.initCampaign(cwd, { worldTitle, currentEra }),
 		wenyouGetOverview: ({ cwd, viewer }) => backend.wenyou.getOverview(cwd, viewer),
+		wenyouSetViewerScope: ({ cwd, viewer, maxViewer }) =>
+			backend.wenyou.setViewerScope(cwd, viewer, maxViewer),
 		wenyouPullQq: ({ cwd, groupId }) => backend.wenyou.pullQq(cwd, groupId),
 		wenyouLookupSource: ({ cwd, sourceId, window, viewer }) =>
 			backend.wenyou.lookupSource(cwd, sourceId, window, viewer),
-		wenyouListBriefings: ({ cwd }) => backend.wenyou.listBriefings(cwd),
-		wenyouListPolicies: ({ cwd }) => backend.wenyou.listPolicies(cwd),
-		wenyouLintPolicy: ({ cwd, text, viewer, branchId, currentOrder }) =>
-			backend.wenyou.lintPolicy(cwd, text, { viewer, branchId, currentOrder }),
-		wenyouWritePolicyDocx: ({ cwd, title, content, actor, turnLabel, serialNo, force }) =>
-			backend.wenyou.writePolicyDocx({ cwd, title, content, actor, turnLabel, serialNo, force }),
+		wenyouListBriefings: ({ cwd, viewer }) => backend.wenyou.listBriefings(cwd, viewer),
+		wenyouListPolicies: ({ cwd, viewer }) => backend.wenyou.listPolicies(cwd, viewer),
+		wenyouLintPolicy: ({ cwd, text, viewer, actorEntityId, branchId, currentOrder }) =>
+			backend.wenyou.lintPolicy(cwd, text, { viewer, actorEntityId, branchId, currentOrder }),
+		wenyouWritePolicyDocx: ({
+			cwd,
+			title,
+			content,
+			actor,
+			turnLabel,
+			serialNo,
+			viewer,
+			actorEntityId,
+			branchId,
+			currentOrder,
+			force,
+		}) =>
+			backend.wenyou.writePolicyDocx({
+				cwd,
+				title,
+				content,
+				actor,
+				turnLabel,
+				serialNo,
+				viewer,
+				actorEntityId,
+				branchId,
+				currentOrder,
+				force,
+			}),
 		wenyouListMaps: ({ cwd }) => backend.wenyou.listMaps(cwd),
+		wenyouListMapSnapshots: ({ cwd }) => backend.wenyou.listMapSnapshots(cwd),
+		wenyouInspectMap: ({ cwd, relPath, theaterId, factionQuery, maxBurgs }) =>
+			backend.wenyou.inspectMap(cwd, relPath, { theaterId, factionQuery, maxBurgs }),
+		wenyouDiffMaps: ({ cwd, fromRelPath, toRelPath, theaterId }) =>
+			backend.wenyou.diffMaps(cwd, fromRelPath, toRelPath, theaterId),
+		wenyouReadMapSnapshotRaw: ({ cwd, relPath }) => backend.wenyou.readMapSnapshotRaw(cwd, relPath),
+		wenyouSaveMapSnapshot: ({ cwd, fileName, content }) =>
+			backend.wenyou.saveMapSnapshot(cwd, fileName, content),
 		wenyouListProposals: ({ cwd, viewer }) => backend.wenyou.listProposals(cwd, viewer),
 		wenyouDecideProposal: ({ cwd, proposalId, decision, viewer }) =>
 			backend.wenyou.decideProposal(cwd, proposalId, decision, viewer),

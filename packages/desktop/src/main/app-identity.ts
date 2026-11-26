@@ -22,12 +22,10 @@ export const appIdentity = channels[releaseChannel];
 export const supportsUpdates =
 	app.isPackaged && releaseChannel === "stable" && metadata?.disableAutoUpdate !== true;
 
-// 正式版与已有开发目录保持兼容；自定义 --user-data-dir 也仍由调用方指定。
+// 先统一设置应用名，再为 dev / beta 通道隔离 userData 目录；自定义 --user-data-dir 始终优先。
 export function configureAppIdentity(): void {
-	const userData = app.getPath("userData");
 	app.setName(appIdentity.name);
-	if (releaseChannel === "dev") app.setPath("userData", `${userData}-dev`);
-	if (releaseChannel === "beta") {
+	if (releaseChannel === "dev" || releaseChannel === "beta") {
 		const custom = app.commandLine.getSwitchValue("user-data-dir");
 		app.setPath("userData", custom || join(app.getPath("appData"), appIdentity.name));
 	}

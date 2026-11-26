@@ -12,6 +12,7 @@ $sampledFiles = 0
 try {
     $processes = @(Get-CimInstance Win32_Process | Where-Object {
         ($_.ExecutablePath -and $_.ExecutablePath.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) -or
+        $_.Name -eq 'Wenyou Pro.exe' -or $_.Name -like 'Wenyou-Pro-*.exe' -or
         $_.Name -eq 'Percho.exe' -or $_.Name -eq 'old-uninstaller.exe' -or $_.Name -eq 'percho-windows-x64.exe'
     } | Select-Object Name, ProcessId, ParentProcessId, ExecutablePath)
 } catch { $errors += 'process-snapshot: ' + $_.Exception.Message }
@@ -23,7 +24,7 @@ foreach ($root in @(
     try {
         if (Test-Path -LiteralPath $root) {
             $registrations += @(Get-ChildItem -LiteralPath $root | Get-ItemProperty | Where-Object {
-                $_.DisplayName -eq 'Percho'
+                $_.DisplayName -like 'Wenyou Pro*' -or $_.DisplayName -like 'Percho*'
             } | Select-Object @{Name='RegistryRoot';Expression={$root}}, DisplayName, DisplayVersion, InstallLocation, UninstallString)
         }
     } catch { $errors += 'registration-snapshot: ' + $_.Exception.Message }

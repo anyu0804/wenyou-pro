@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync, statSync } from "node:fs";
 import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -54,6 +54,35 @@ interface BridgeExportedMessage {
 export interface NtqqSyncServiceOptions {
 	dataDir?: string;
 	assetsDir?: string;
+	platform?: NodeJS.Platform;
+	homeDir?: string;
+	env?: NodeJS.ProcessEnv;
+	darwinPythonPaths?: readonly string[];
+}
+
+export interface AutoDetectNtqqDbDirOptions {
+	platform?: NodeJS.Platform;
+	homeDir?: string;
+	env?: NodeJS.ProcessEnv;
+}
+
+export interface DetectPythonOptions extends AutoDetectNtqqDbDirOptions {
+	/** macOS GUI 优先探测的完整 Python 路径（默认探测 Homebrew 与 Python.org Framework） */
+	darwinPythonPaths?: readonly string[];
+}
+
+const DEFAULT_DARWIN_PYTHON_PATHS = [
+	"/opt/homebrew/bin/python3",
+	"/usr/local/bin/python3",
+	"/Library/Frameworks/Python.framework/Versions/Current/bin/python3",
+] as const;
+
+function pathDedupKey(value: string, platform: NodeJS.Platform): string {
+	return platform === "win32" ? value.toLowerCase() : value;
+}
+
+function hasNtqqDbFiles(dir: string): boolean {
+	return existsSync(join(dir, "nt_msg.db")) || existsSync(join(dir, "group_info.db"));
 }
 
 function defaultNtqqDataDir(): string {
@@ -104,36 +133,94 @@ async function atomicWriteJson(filePath: string, data: unknown): Promise<void> {
 	await rename(tmp, filePath);
 }
 
-/** 规范化用户手选目录：允许选到 <QQ号>、nt_qq 或 nt_db 任意一层，自动向下定位到 nt_db */
+/** 规范化用户手选目录：允许选到 QQ 根目录、<QQ号>、nt_qq / nt_qq_<hash> 或 nt_db 任意一层，自动向下定位到 nt_db */
 export function resolveCustomDbDirCandidate(rawDir: string): string {
 	const trimmed = rawDir.trim();
 	if (!trimmed) return trimmed;
-	if (existsSync(join(trimmed, "nt_msg.db")) || existsSync(join(trimmed, "group_info.db"))) {
+	if (hasNtqqDbFiles(trimmed)) {
 		return trimmed;
 	}
 	const underNtDb = join(trimmed, "nt_db");
-	if (existsSync(join(underNtDb, "nt_msg.db")) || existsSync(join(underNtDb, "group_info.db"))) {
+	if (hasNtqqDbFiles(underNtDb)) {
 		return underNtDb;
 	}
 	const underNtQq = join(trimmed, "nt_qq", "nt_db");
-	if (existsSync(join(underNtQq, "nt_msg.db")) || existsSync(join(underNtQq, "group_info.db"))) {
+	if (hasNtqqDbFiles(underNtQq)) {
 		return underNtQq;
+	}
+	// macOS / Linux 版 NTQQ 哈希目录结构：<dir>/nt_qq_<hash>/nt_db
+	try {
+		const entries = readdirSync(trimmed, { withFileTypes: true });
+		const matches: Array<{ dir: string; hasMsgDb: boolean; mtimeMs: number; name: string }> = [];
+		for (const entry of entries) {
+			if (!entry.name.startsWith("nt_qq")) continue;
+			if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
+			const candidate = join(trimmed, entry.name, "nt_db");
+			const msgDbPath = join(candidate, "nt_msg.db");
+			const groupDbPath = join(candidate, "group_info.db");
+			if (existsSync(msgDbPath)) {
+				let mtimeMs = 0;
+				try {
+					mtimeMs = statSync(msgDbPath).mtimeMs;
+				} catch {
+					mtimeMs = 0;
+				}
+				matches.push({ dir: candidate, hasMsgDb: true, mtimeMs, name: entry.name });
+			} else if (existsSync(groupDbPath)) {
+				let mtimeMs = 0;
+				try {
+					mtimeMs = statSync(groupDbPath).mtimeMs;
+				} catch {
+					mtimeMs = 0;
+				}
+				matches.push({ dir: candidate, hasMsgDb: false, mtimeMs, name: entry.name });
+			}
+		}
+		if (matches.length > 0) {
+			matches.sort((a, b) => {
+				if (a.hasMsgDb !== b.hasMsgDb) return a.hasMsgDb ? -1 : 1;
+				if (b.mtimeMs !== a.mtimeMs) return b.mtimeMs - a.mtimeMs;
+				return a.name.localeCompare(b.name);
+			});
+			return matches[0]!.dir;
+		}
+	} catch {
+		// ignore unreadable dir and fall back to original path
 	}
 	return trimmed;
 }
 
+/** 解码 Windows QQ UserDataInfo.ini（支持 UTF-16LE BOM、UTF-8 BOM、UTF-8 与 GB18030） */
+export function decodeIniBuffer(buf: Buffer): string {
+	if (buf.length >= 2 && buf[0] === 0xff && buf[1] === 0xfe) {
+		return new TextDecoder("utf-16le").decode(buf.subarray(2));
+	}
+	if (buf.length >= 3 && buf[0] === 0xef && buf[1] === 0xbb && buf[2] === 0xbf) {
+		return buf.subarray(3).toString("utf8");
+	}
+	try {
+		return new TextDecoder("utf-8", { fatal: true }).decode(buf);
+	} catch {
+		return new TextDecoder("gb18030").decode(buf);
+	}
+}
+
 /** 只读解析 Windows QQ UserDataInfo.ini 中的自定义 Tencent Files 根目录（若存在） */
-async function readQqUserDataRootsFromIni(): Promise<string[]> {
-	if (process.platform !== "win32") return [];
+async function readQqUserDataRootsFromIni(
+	platform: NodeJS.Platform,
+	home: string,
+	env: NodeJS.ProcessEnv,
+): Promise<string[]> {
+	if (platform !== "win32") return [];
 	const iniCandidates = [
-		join(process.env.PUBLIC || "C:\\Users\\Public", "Documents", "Tencent", "QQ", "UserDataInfo.ini"),
-		join(homedir(), "Documents", "Tencent", "QQ", "UserDataInfo.ini"),
+		join(env.PUBLIC || "C:\\Users\\Public", "Documents", "Tencent", "QQ", "UserDataInfo.ini"),
+		join(home, "Documents", "Tencent", "QQ", "UserDataInfo.ini"),
 	];
 	const roots: string[] = [];
 	for (const iniPath of iniCandidates) {
 		if (!existsSync(iniPath)) continue;
 		try {
-			const raw = await readFile(iniPath, "utf8");
+			const raw = decodeIniBuffer(await readFile(iniPath));
 			for (const line of raw.split(/\r?\n/)) {
 				const match = line.match(/^\s*UserDataSavePath\s*=\s*(.+?)\s*$/i);
 				const val = match?.[1]?.trim();
@@ -149,36 +236,81 @@ async function readQqUserDataRootsFromIni(): Promise<string[]> {
 	return roots;
 }
 
-async function autoDetectNtqqDbDir(qqUin: string): Promise<string | null> {
-	const home = homedir();
-	const iniRoots = await readQqUserDataRootsFromIni();
-	const bases = [
-		...iniRoots,
-		join(home, "Documents", "Tencent Files"),
-		join(home, "OneDrive", "Documents", "Tencent Files"),
-	];
+export async function autoDetectNtqqDbDir(
+	qqUin: string,
+	options?: AutoDetectNtqqDbDirOptions,
+): Promise<string | null> {
+	const platform = options?.platform ?? process.platform;
+	const home = options?.homeDir ?? homedir();
+	const env = options?.env ?? process.env;
 	const seen = new Set<string>();
-	for (const base of bases) {
-		const candidate = join(base, qqUin, "nt_qq", "nt_db");
-		const key = candidate.toLowerCase();
-		if (seen.has(key)) continue;
+
+	const probeCandidate = (candidate: string): string | null => {
+		const key = pathDedupKey(candidate, platform);
+		if (seen.has(key)) return null;
 		seen.add(key);
-		if (existsSync(join(candidate, "nt_msg.db")) || existsSync(join(candidate, "group_info.db"))) {
-			return candidate;
+		return hasNtqqDbFiles(candidate) ? candidate : null;
+	};
+
+	if (platform === "win32") {
+		const iniRoots = await readQqUserDataRootsFromIni(platform, home, env);
+		const bases = [
+			...iniRoots,
+			join(home, "Documents", "Tencent Files"),
+			join(home, "OneDrive", "Documents", "Tencent Files"),
+		];
+		for (const base of bases) {
+			const hit = probeCandidate(join(base, qqUin, "nt_qq", "nt_db"));
+			if (hit) return hit;
 		}
+		// 默认位置兜底（即使目录尚未存在也给出清晰预期路径，方便用户核对）
+		return join(home, "Documents", "Tencent Files", qqUin, "nt_qq", "nt_db");
 	}
-	// 默认位置兜底（即使目录尚未存在也给出清晰预期路径，方便用户核对）
-	return join(home, "Documents", "Tencent Files", qqUin, "nt_qq", "nt_db");
+
+	if (platform === "darwin") {
+		const containerBase = join(
+			home,
+			"Library",
+			"Containers",
+			"com.tencent.qq",
+			"Data",
+			"Library",
+			"Application Support",
+			"QQ",
+		);
+		const appSupportBase = join(home, "Library", "Application Support", "QQ");
+		for (const base of [containerBase, appSupportBase]) {
+			const byUin = probeCandidate(join(base, qqUin, "nt_qq", "nt_db"));
+			if (byUin) return byUin;
+			const resolved = resolveCustomDbDirCandidate(base);
+			const byHash = probeCandidate(resolved);
+			if (byHash) return byHash;
+		}
+		return containerBase;
+	}
+
+	const defaultLinuxBase = join(home, ".config", "QQ");
+	const xdgConfigHome = env.XDG_CONFIG_HOME?.trim();
+	const xdgBase = join(xdgConfigHome || join(home, ".config"), "QQ");
+	for (const base of [xdgBase, defaultLinuxBase]) {
+		const byUin = probeCandidate(join(base, qqUin, "nt_qq", "nt_db"));
+		if (byUin) return byUin;
+		const resolved = resolveCustomDbDirCandidate(base);
+		const byHash = probeCandidate(resolved);
+		if (byHash) return byHash;
+	}
+	return defaultLinuxBase;
 }
 
 function runCommandWithTimeout(
 	command: string,
 	args: string[],
-	options: { cwd?: string; timeoutMs: number },
+	options: { cwd?: string; timeoutMs: number; env?: NodeJS.ProcessEnv },
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
 	return new Promise((resolvePromise, rejectPromise) => {
 		const child = spawn(command, args, {
 			cwd: options.cwd,
+			env: { ...(options.env ?? process.env), PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8" },
 			windowsHide: true,
 			stdio: ["ignore", "pipe", "pipe"],
 		});
@@ -189,7 +321,21 @@ function runCommandWithTimeout(
 			if (settled) return;
 			settled = true;
 			try {
-				child.kill("SIGKILL");
+				if (process.platform === "win32" && child.pid) {
+					const killer = spawn("taskkill", ["/PID", String(child.pid), "/T", "/F"], {
+						windowsHide: true,
+						stdio: "ignore",
+					});
+					killer.on("error", () => {
+						try {
+							child.kill("SIGKILL");
+						} catch {
+							// ignore
+						}
+					});
+				} else {
+					child.kill("SIGKILL");
+				}
 			} catch {
 				// ignore
 			}
@@ -217,27 +363,68 @@ function runCommandWithTimeout(
 	});
 }
 
-async function detectPythonExecutable(preferred?: string | null): Promise<{ path: string; version: string } | null> {
-	const candidates: Array<{ bin: string; prefixArgs: string[] }> = [];
-	if (preferred?.trim()) candidates.push({ bin: preferred.trim(), prefixArgs: [] });
-	const envPy = process.env.WENYOU_PYTHON?.trim();
-	if (envPy) candidates.push({ bin: envPy, prefixArgs: [] });
-	if (process.platform === "win32") {
-		candidates.push({ bin: "python", prefixArgs: [] });
-		candidates.push({ bin: "python3", prefixArgs: [] });
-		const localPrograms = join(process.env.LOCALAPPDATA || join(homedir(), "AppData", "Local"), "Programs", "Python");
+function resolveBundledPythonPath(
+	assetsDir?: string | null,
+	platform: NodeJS.Platform = process.platform,
+): string | null {
+	if (!assetsDir) return null;
+	const candidate =
+		platform === "win32"
+			? join(assetsDir, "python", "python.exe")
+			: join(assetsDir, "python", "bin", "python3");
+	return existsSync(candidate) ? candidate : null;
+}
+
+export function buildPythonCandidates(
+	preferred?: string | null,
+	assetsDir?: string | null,
+	options?: DetectPythonOptions,
+): Array<{ bin: string; prefixArgs: string[]; bundled: boolean }> {
+	const platform = options?.platform ?? process.platform;
+	const home = options?.homeDir ?? homedir();
+	const env = options?.env ?? process.env;
+	const candidates: Array<{ bin: string; prefixArgs: string[]; bundled: boolean }> = [];
+	if (preferred?.trim()) candidates.push({ bin: preferred.trim(), prefixArgs: [], bundled: false });
+	const envPy = env.WENYOU_PYTHON?.trim();
+	if (envPy) candidates.push({ bin: envPy, prefixArgs: [], bundled: false });
+	const bundledPy = resolveBundledPythonPath(assetsDir, platform);
+	if (bundledPy) candidates.push({ bin: bundledPy, prefixArgs: [], bundled: true });
+	if (platform === "win32") {
+		candidates.push({ bin: "python", prefixArgs: [], bundled: false });
+		candidates.push({ bin: "python3", prefixArgs: [], bundled: false });
+		const localPrograms = join(env.LOCALAPPDATA || join(home, "AppData", "Local"), "Programs", "Python");
 		for (const ver of ["Python314", "Python313", "Python312", "Python311", "Python310"]) {
 			const exe = join(localPrograms, ver, "python.exe");
-			if (existsSync(exe)) candidates.push({ bin: exe, prefixArgs: [] });
+			if (existsSync(exe)) candidates.push({ bin: exe, prefixArgs: [], bundled: false });
 		}
+	} else if (platform === "darwin") {
+		// macOS GUI 进程默认 PATH 不含 Homebrew/Framework，且裸 python3 可能命中 /usr/bin/python3 Xcode CLT stub
+		for (const exe of options?.darwinPythonPaths ?? DEFAULT_DARWIN_PYTHON_PATHS) {
+			if (exe && existsSync(exe)) {
+				candidates.push({ bin: exe, prefixArgs: [], bundled: false });
+			}
+		}
+		candidates.push({ bin: "python3", prefixArgs: [], bundled: false });
+		candidates.push({ bin: "python", prefixArgs: [], bundled: false });
 	} else {
-		candidates.push({ bin: "python3", prefixArgs: [] });
-		candidates.push({ bin: "python", prefixArgs: [] });
+		candidates.push({ bin: "python3", prefixArgs: [], bundled: false });
+		candidates.push({ bin: "python", prefixArgs: [], bundled: false });
 	}
+	return candidates;
+}
+
+async function detectPythonExecutable(
+	preferred?: string | null,
+	assetsDir?: string | null,
+	options?: DetectPythonOptions,
+): Promise<{ path: string; version: string; bundled: boolean } | null> {
+	const platform = options?.platform ?? process.platform;
+	const env = options?.env ?? process.env;
+	const candidates = buildPythonCandidates(preferred, assetsDir, options);
 
 	const tried = new Set<string>();
 	for (const candidate of candidates) {
-		const key = candidate.bin.toLowerCase();
+		const key = pathDedupKey(candidate.bin, platform);
 		if (tried.has(key)) continue;
 		tried.add(key);
 		try {
@@ -245,10 +432,11 @@ async function detectPythonExecutable(preferred?: string | null): Promise<{ path
 				candidate.bin,
 				[
 					...candidate.prefixArgs,
+					"-B",
 					"-c",
-					"import sys, sqlite3; print(sys.executable); print(f'{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}')",
+					"import sys, sqlite3; hasattr(sys.stdout, 'reconfigure') and sys.stdout.reconfigure(encoding='utf-8'); print(sys.executable); print(f'{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}')",
 				],
-				{ timeoutMs: 5000 },
+				{ timeoutMs: 5000, env },
 			);
 			if (res.exitCode === 0) {
 				const lines = res.stdout
@@ -256,7 +444,7 @@ async function detectPythonExecutable(preferred?: string | null): Promise<{ path
 					.map((l) => l.trim())
 					.filter(Boolean);
 				if (lines.length >= 2 && lines[0] && lines[1]) {
-					return { path: lines[0], version: lines[1] };
+					return { path: lines[0], version: lines[1], bundled: candidate.bundled };
 				}
 			}
 		} catch {
@@ -297,12 +485,28 @@ function parseVisibility(raw: unknown, role: GroupRole): VisibilityLevel {
 export class NtqqSyncService {
 	private readonly dataDir: string;
 	private readonly assetsDirOverride?: string;
+	private readonly platformOverride?: NodeJS.Platform;
+	private readonly homeDirOverride?: string;
+	private readonly envOverride?: NodeJS.ProcessEnv;
+	private readonly darwinPythonPathsOverride?: readonly string[];
 	private queue: Promise<unknown> = Promise.resolve();
-	private cachedPython: { path: string; version: string } | null | undefined;
+	private cachedPython: { path: string; version: string; bundled: boolean } | null | undefined;
 
 	constructor(options?: NtqqSyncServiceOptions) {
 		this.dataDir = options?.dataDir ? resolve(options.dataDir) : defaultNtqqDataDir();
 		this.assetsDirOverride = options?.assetsDir ? resolve(options.assetsDir) : undefined;
+		this.platformOverride = options?.platform;
+		this.homeDirOverride = options?.homeDir;
+		this.envOverride = options?.env;
+		this.darwinPythonPathsOverride = options?.darwinPythonPaths;
+	}
+
+	private get currentPlatform(): NodeJS.Platform {
+		return this.platformOverride ?? process.platform;
+	}
+
+	private get currentEnv(): NodeJS.ProcessEnv {
+		return this.envOverride ?? process.env;
 	}
 
 	private get configPath(): string {
@@ -384,10 +588,8 @@ export class NtqqSyncService {
 	private resolveKeyMapCandidate(config: NtqqLocalConfig): { path: string | null; exists: boolean } {
 		const candidates = [
 			config.keyMapPath,
-			process.env.WENYOU_KEY_MAP?.trim() || null,
+			this.currentEnv.WENYOU_KEY_MAP?.trim() || null,
 			this.defaultKeyMapPath,
-			join(homedir(), ".dsh", "storages", "dsh-wenyou", "key_map.json"),
-			join(homedir(), ".codex", "skills", "qq-chat-reader", "keys", "key_map.json"),
 		].filter((p): p is string => Boolean(p));
 
 		for (const candidate of candidates) {
@@ -398,16 +600,25 @@ export class NtqqSyncService {
 		return { path: config.keyMapPath ?? this.defaultKeyMapPath, exists: false };
 	}
 
-	private async resolvePython(config: NtqqLocalConfig): Promise<{ path: string; version: string } | null> {
+	private async resolvePython(
+		config: NtqqLocalConfig,
+		assetsDir: string | null,
+	): Promise<{ path: string; version: string; bundled: boolean } | null> {
 		if (!config.pythonPath && this.cachedPython !== undefined) return this.cachedPython;
-		const found = await detectPythonExecutable(config.pythonPath);
+		const found = await detectPythonExecutable(config.pythonPath, assetsDir, {
+			platform: this.currentPlatform,
+			homeDir: this.homeDirOverride,
+			env: this.envOverride,
+			darwinPythonPaths: this.darwinPythonPathsOverride,
+		});
 		if (!config.pythonPath) this.cachedPython = found;
 		return found;
 	}
 
 	async getStatus(): Promise<NtqqStatusSnapshot> {
 		const config = await this.loadConfig();
-		const platformSupported = process.platform === "win32";
+		const platform = this.currentPlatform;
+		const platformSupported = platform === "win32";
 		const assetsDir = this.resolveAssetsDir();
 		const assetsReady = Boolean(
 			assetsDir && REQUIRED_BRIDGE_FILES.every((name) => existsSync(join(assetsDir, name))),
@@ -420,7 +631,11 @@ export class NtqqSyncService {
 		if (config.dbDir) {
 			resolvedDbDir = resolveCustomDbDirCandidate(config.dbDir);
 		} else if (config.qqUin) {
-			resolvedDbDir = await autoDetectNtqqDbDir(config.qqUin);
+			resolvedDbDir = await autoDetectNtqqDbDir(config.qqUin, {
+				platform,
+				homeDir: this.homeDirOverride,
+				env: this.envOverride,
+			});
 			dbDirAutoDetected = true;
 		}
 
@@ -440,7 +655,7 @@ export class NtqqSyncService {
 		}
 
 		const keyMapInfo = this.resolveKeyMapCandidate(config);
-		const pythonInfo = await this.resolvePython(config);
+		const pythonInfo = await this.resolvePython(config, assetsDir);
 
 		const missingReasons: string[] = [];
 		if (!config.qqUin && !config.dbDir) {
@@ -453,10 +668,18 @@ export class NtqqSyncService {
 			missingReasons.push("未找到本机 group_info.db");
 		}
 		if (!keyMapInfo.exists) {
-			missingReasons.push("尚未准备解密密钥 key_map.json（可点「一键提取本机密钥」或手动导入）");
+			missingReasons.push(
+				canExtractKey
+					? "尚未准备解密密钥 key_map.json（可点「一键提取本机密钥」或手动导入）"
+					: "尚未导入解密密钥 key_map.json（一键提取仅支持 Windows；macOS/Linux 可将导出的 .txt/.json 放入 00-群聊收集/，或手动导入 key_map.json）",
+			);
 		}
 		if (!pythonInfo) {
-			missingReasons.push("本机未检测到 Python 3 运行时（VFS 只读解库依赖 Python 3）");
+			missingReasons.push(
+				platformSupported
+					? "未找到可用的 Python 3 运行时（随包内置运行时缺失且本机未安装 Python 3）"
+					: "未找到可用的 Python 3 运行时（可安装 Python 3，或直接使用 00-群聊收集/ 离线导入）",
+			);
 		}
 		if (!assetsReady) {
 			missingReasons.push("随包 NTQQ VFS 解库脚本缺失");
@@ -475,6 +698,7 @@ export class NtqqSyncService {
 			canExtractKey,
 			pythonPath: pythonInfo?.path ?? null,
 			pythonVersion: pythonInfo?.version ?? null,
+			pythonBundled: Boolean(pythonInfo?.bundled),
 			assetsDir,
 			assetsReady,
 			ready: missingReasons.length === 0,
@@ -485,7 +709,7 @@ export class NtqqSyncService {
 
 	async extractKey(qqUinOverride?: string): Promise<NtqqStatusSnapshot & { message: string }> {
 		return this.enqueue(async () => {
-			if (process.platform !== "win32") {
+			if (this.currentPlatform !== "win32") {
 				throw new Error("自动提取 NTQQ 密钥目前仅支持 Windows 电脑版 QQ");
 			}
 			const current = await this.loadConfig();
@@ -532,7 +756,11 @@ export class NtqqSyncService {
 				throw new Error("未找到本机 QQ 群资料库 group_info.db，请先确认 QQ 号或指定 nt_db 目录");
 			}
 			if (!status.keyMapExists || !status.resolvedKeyMapPath) {
-				throw new Error("尚未准备 key_map.json，请先一键提取本机密钥或导入密钥文件");
+				throw new Error(
+					status.canExtractKey
+						? "尚未准备 key_map.json，请先一键提取本机密钥或导入密钥文件"
+						: "尚未导入解密密钥 key_map.json（一键提取仅支持 Windows；可手动导入 key_map.json，或将聊天记录放入 00-群聊收集/ 离线导入）",
+				);
 			}
 			if (!status.pythonPath || !status.assetsDir || !status.assetsReady) {
 				throw new Error(status.missingReasons.join("；") || "NTQQ VFS 运行环境未就绪");

@@ -185,8 +185,8 @@ function InitCampaignGuide({
 					</h2>
 					<p className="mt-1 text-ui-12 leading-relaxed text-ink-dim">
 						{cwd
-							? "不会写入任何演示模板；初始化空目录结构后，绑定主要 QQ 群即可由 Agent 直接抓取建档。"
-							: "当前还没有打开文游世界。点击下方新建空白世界，选定主要 QQ 群后让 Agent 自动抓取群聊梳理设定与局势。"}
+							? "不会写入任何演示模板；初始化空目录结构后，绑定主要 QQ 群即可由司命直接抓取建档。"
+							: "当前还没有打开文游世界。点击下方新建空白世界，选定主要 QQ 群后让司命自动抓取群聊梳理设定与局势。"}
 					</p>
 				</div>
 
@@ -246,7 +246,7 @@ function InitCampaignGuide({
 									onClick={() => void handleInitAndGrab()}
 									className="w-full rounded-xl bg-ink px-4 py-2 text-ui-13 font-medium text-on-ink transition-opacity hover:opacity-90 disabled:opacity-50"
 								>
-									{submitting ? "正在同步并唤起 Agent…" : "初始化并让 Agent 抓取建档"}
+									{submitting ? "正在同步并唤起司命…" : "初始化并让司命抓取建档"}
 								</button>
 							)}
 							<button
@@ -470,14 +470,14 @@ export function WenyouCanvas() {
 						读取文游工作区失败：{error}
 					</div>
 				)}
-				{!error && (!cwd || (overview && !overview.initialized)) ? (
+				{error && !overview ? null : !cwd || (overview && !overview.initialized) ? (
 					<InitCampaignGuide
 						cwd={cwd}
 						loading={loading}
 						onInit={initCampaign}
 						onOpenCreateWorld={() => setCreateWorldDialogOpen(true)}
 					/>
-				) : !error && loading && !overview ? (
+				) : loading && !overview ? (
 					<div className="flex h-full items-center justify-center text-ui-13 text-ink-dim">
 						正在读取文游工作区…
 					</div>

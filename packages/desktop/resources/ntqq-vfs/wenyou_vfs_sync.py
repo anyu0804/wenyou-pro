@@ -293,6 +293,7 @@ def sync_msg_db(
         if not src_cols:
             raise RuntimeError("加密消息库缺少 group_msg_table 表")
         cols_sql, has_40027, has_40003 = _select_exprs_for_source(src_cols)
+        has_40050 = "40050" in src_cols
         group_col = '"40027"' if has_40027 else '"40030"'
         pk_col = '"40001"' if "40001" in src_cols else "rowid"
 
@@ -309,15 +310,36 @@ def sync_msg_db(
                     f'ORDER BY "40003" ASC, {pk_col} ASC',
                     (gid, gm["max_seq"]),
                 ).fetchall()
-                null_rows = src_conn.execute(
-                    f'SELECT {cols_sql} FROM group_msg_table '
-                    f'WHERE "40027"=? AND "40003" IS NULL AND {pk_col}>? '
-                    f'ORDER BY {pk_col} ASC',
-                    (gid, gm["max_rowid"]),
-                ).fetchall()
-                if null_rows:
-                    rows = rows + null_rows
+                # 覆盖 "40003" IS NULL 与 "40003"=0 的本机发出消息，并用时间水位替代单调 max_rowid 避免双号段漏读
+                if has_40050 and gm["max_ts"] > 0:
+                    ts_floor = max(0, gm["max_ts"] - 60)
+                    local_rows = src_conn.execute(
+                        f'SELECT {cols_sql} FROM group_msg_table '
+                        f'WHERE "40027"=? AND ("40003" IS NULL OR "40003"=0) '
+                        f'AND ("40050" IS NULL OR "40050">=?) '
+                        f'ORDER BY "40050" ASC, {pk_col} ASC',
+                        (gid, ts_floor),
+                    ).fetchall()
+                else:
+                    local_rows = src_conn.execute(
+                        f'SELECT {cols_sql} FROM group_msg_table '
+                        f'WHERE "40027"=? AND ("40003" IS NULL OR "40003"=0) '
+                        f'ORDER BY {pk_col} ASC',
+                        (gid,),
+                    ).fetchall()
+                if local_rows:
+                    seen_pks = {r[0] for r in rows}
+                    rows = list(rows) + [r for r in local_rows if r[0] not in seen_pks]
                 sync_kind_by_gid[gid] = "incremental"
+            elif not force and gm["seeded"] and not has_40003 and has_40050 and gm["max_ts"] > 0:
+                ts_floor = max(0, gm["max_ts"] - 60)
+                rows = src_conn.execute(
+                    f'SELECT {cols_sql} FROM group_msg_table '
+                    f'WHERE {group_col}=? AND ("40050" IS NULL OR "40050">=?) '
+                    f'ORDER BY "40050" ASC, {pk_col} ASC',
+                    (gid, ts_floor),
+                ).fetchall()
+                sync_kind_by_gid[gid] = "incremental_ts"
             elif not force and gm["seeded"] and not has_40003 and gm["max_rowid"] > 0:
                 rows = src_conn.execute(
                     f"SELECT {cols_sql} FROM group_msg_table "

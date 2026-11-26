@@ -28,10 +28,14 @@ const KIND_META: Record<EvidenceMessageKind, { label: string; badgeClass: string
 	},
 };
 
-/** 群聊原文核查抽屉：点开任意 sourceId 溯源胶囊后，在画布内浮层展示同群前后 10 条上下文并高亮目标消息 */
+const WINDOW_PRESETS = [10, 30, 100, 300, 1000] as const;
+
+/** 群聊原文核查抽屉：点开任意 sourceId 溯源胶囊后，在画布内浮层展示同群上下文并支持长程回溯与前后翻页追源 */
 export function SourceContextDrawer() {
 	const drawer = useWenyouCanvasStore((s) => s.sourceDrawer);
 	const close = useWenyouCanvasStore((s) => s.closeSourceContext);
+	const openSourceContext = useWenyouCanvasStore((s) => s.openSourceContext);
+	const setWindow = useWenyouCanvasStore((s) => s.setSourceContextWindow);
 	const targetRowRef = useRef<HTMLDivElement | null>(null);
 	const [copied, setCopied] = useState(false);
 
@@ -62,6 +66,13 @@ export function SourceContextDrawer() {
 		});
 	};
 
+	const activeWin = drawer.data?.windowSize ?? drawer.windowSize;
+	const totalInGroup = drawer.data?.totalGroupMessages ?? drawer.data?.messages.length ?? 0;
+	const beforeRemaining = drawer.data?.beforeRemaining ?? 0;
+	const afterRemaining = drawer.data?.afterRemaining ?? 0;
+	const firstMessage = drawer.data?.messages[0];
+	const lastMessage = drawer.data?.messages[drawer.data.messages.length - 1];
+
 	return (
 		<div
 			className="absolute inset-0 z-20 flex flex-col bg-canvas/95 backdrop-blur-xs"
@@ -80,7 +91,8 @@ export function SourceContextDrawer() {
 					</div>
 					{drawer.data && (
 						<p className="mt-0.5 truncate text-ui-11 text-ink-dim">
-							{drawer.data.groupName}（{drawer.data.groupId}）· 前后共 {drawer.data.messages.length} 条记录
+							{drawer.data.groupName}（{drawer.data.groupId}）· 前后 ±{activeWin} · 展示{" "}
+							{drawer.data.messages.length} / 群库共 {totalInGroup} 条
 						</p>
 					)}
 				</div>
@@ -106,6 +118,32 @@ export function SourceContextDrawer() {
 				</div>
 			</div>
 
+			{/* 回溯范围切换条（单层轻量，最高单群覆盖 20,000 条并支持首尾续翻） */}
+			<div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-border bg-surface/60 px-4 py-1.5 text-ui-11">
+				<div className="flex flex-wrap items-center gap-1">
+					<span className="mr-1 text-ink-dim">回溯范围：</span>
+					{WINDOW_PRESETS.map((preset) => {
+						const active = activeWin === preset;
+						return (
+							<button
+								key={preset}
+								type="button"
+								disabled={drawer.loading}
+								onClick={() => void setWindow(preset)}
+								className={`rounded-md border px-2 py-0.5 font-mono transition-colors disabled:opacity-50 ${
+									active
+										? "border-accent bg-accent/12 font-medium text-accent"
+										: "border-border text-ink-dim hover:bg-hover hover:text-ink"
+								}`}
+							>
+								±{preset}
+							</button>
+						);
+					})}
+				</div>
+				{drawer.loading && drawer.data && <span className="text-ink-faint">正在扩展回溯…</span>}
+			</div>
+
 			{drawer.highlightQuote && (
 				<div className="shrink-0 border-b border-border bg-hover/60 px-4 py-2 text-ui-12 text-ink-2">
 					<span className="mr-1.5 font-medium text-ink">核查摘录：</span>
@@ -114,16 +152,28 @@ export function SourceContextDrawer() {
 			)}
 
 			<div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
-				{drawer.loading && (
-					<div className="py-12 text-center text-ui-13 text-ink-dim">正在回查同群前后 10 条原始记录…</div>
+				{drawer.loading && !drawer.data && (
+					<div className="py-12 text-center text-ui-13 text-ink-dim">
+						正在回查同群前后 ±{drawer.windowSize} 条原始记录…
+					</div>
 				)}
 				{!drawer.loading && drawer.error && (
 					<div className="rounded-xl border border-err/30 bg-err/8 px-3.5 py-3 text-ui-13 text-err">
 						{drawer.error}
 					</div>
 				)}
-				{!drawer.loading && drawer.data && (
+				{drawer.data && (
 					<div className="space-y-2">
+						{beforeRemaining > 0 && firstMessage && (
+							<button
+								type="button"
+								disabled={drawer.loading}
+								onClick={() => void openSourceContext(firstMessage.sourceId, drawer.highlightQuote, activeWin)}
+								className="w-full rounded-lg border border-dashed border-border bg-surface/60 px-3 py-2 text-ui-12 text-ink-2 transition-colors hover:border-accent/50 hover:bg-hover hover:text-ink disabled:opacity-50"
+							>
+								↑ 继续向上追查更早原话（前方还有 {beforeRemaining} 条同群记录）
+							</button>
+						)}
 						{drawer.data.messages.map((msg, idx) => {
 							const isTarget =
 								idx === drawer.data?.targetIndex || msg.sourceId === drawer.data?.targetSourceId;
@@ -165,6 +215,16 @@ export function SourceContextDrawer() {
 								</div>
 							);
 						})}
+						{afterRemaining > 0 && lastMessage && (
+							<button
+								type="button"
+								disabled={drawer.loading}
+								onClick={() => void openSourceContext(lastMessage.sourceId, drawer.highlightQuote, activeWin)}
+								className="w-full rounded-lg border border-dashed border-border bg-surface/60 px-3 py-2 text-ui-12 text-ink-2 transition-colors hover:border-accent/50 hover:bg-hover hover:text-ink disabled:opacity-50"
+							>
+								↓ 继续向下查看后续转述（后方还有 {afterRemaining} 条同群记录）
+							</button>
+						)}
 					</div>
 				)}
 			</div>

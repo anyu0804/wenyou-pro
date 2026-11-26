@@ -38,7 +38,10 @@ splash.innerHTML = `
 	</div>
 	<div class="sp-rings" aria-hidden="true"></div>
 	<div class="sp-wave" aria-hidden="true"></div>
-	<div class="sp-word" aria-hidden="true">Percho</div>
+	<div class="sp-word" aria-hidden="true">
+		<span class="sp-word-main">司命</span>
+		<span class="sp-word-sub">WENYOU PRO</span>
+	</div>
 	<div class="sp-line" role="progressbar"></div>
 	<div class="sp-status text-ui-12" role="status"></div>`;
 document.body.append(splash);

@@ -47,10 +47,53 @@ export function formatViewerScope(scope: ViewerScope): string {
 	return scope.kind === "faction" ? `faction:${scope.factionId}` : scope.kind;
 }
 
-export function buildWenyouAssetUrl(cwd: string, relPath: string): string {
+/**
+ * 按服务端 `maxViewer` 硬上限钳制请求视角：
+ * - `maxViewer` 未指定或为 `gm` 时保留 `requested`；
+ * - `maxViewer = public` 时一律钳制为 `public`；
+ * - `maxViewer = faction:<id>` 时仅放行 `public` 或同阵营 `faction:<id>`，其余（含 `gm`）一律钳制回 `faction:<id>`。
+ */
+export function clampViewerScope(
+	requested: ViewerScope,
+	maxViewer?: ViewerScope | null,
+): ViewerScope {
+	if (!maxViewer || maxViewer.kind === "gm") return requested;
+	if (maxViewer.kind === "public") return { kind: "public" };
+	if (requested.kind === "public") return { kind: "public" };
+	if (requested.kind === "faction" && requested.factionId === maxViewer.factionId) {
+		return requested;
+	}
+	return { kind: "faction", factionId: maxViewer.factionId };
+}
+
+export function buildWenyouAssetUrl(
+	cwd: string,
+	relPath: string,
+	versionTag?: number | string,
+): string {
 	const normalized = relPath.replace(/\\/g, "/").replace(/^\/+/, "");
 	const params = new URLSearchParams({ cwd, path: normalized });
+	if (versionTag !== undefined && versionTag !== "") {
+		params.set("v", String(versionTag));
+	}
 	return `${WENYOU_ASSET_PROTOCOL}://vault?${params.toString()}`;
+}
+
+export const WENYOU_MAP_BRIDGE_PROTOCOL = "wenyou-map-bridge/v1";
+export const WENYOU_SANDBOX_PROTOCOL = "wenyou-sandbox";
+export const BUILTIN_PIXI_SANDBOX_URL = `${WENYOU_SANDBOX_PROTOCOL}://app/index.html`;
+export const DEFAULT_PIXI_SANDBOX_URL = BUILTIN_PIXI_SANDBOX_URL;
+export const PIXI_SANDBOX_PRESET_URLS = [
+	BUILTIN_PIXI_SANDBOX_URL,
+	"http://127.0.0.1:5173",
+	"http://127.0.0.1:5174",
+] as const;
+
+export function buildBuiltinSandboxUrl(workspaceKey?: string | null): string {
+	const trimmed = workspaceKey?.trim();
+	if (!trimmed) return BUILTIN_PIXI_SANDBOX_URL;
+	const params = new URLSearchParams({ workspace: trimmed });
+	return `${BUILTIN_PIXI_SANDBOX_URL}?${params.toString()}`;
 }
 
 export type GroupRole = "main" | "dice" | "cabinet" | "diplomacy" | "other";
@@ -94,6 +137,14 @@ export interface SourceContextWindow {
 	groupName: string;
 	targetIndex: number;
 	messages: EvidenceMessageRecord[];
+	/** 本次实际生效的单侧上下文窗口条数（前后各 windowSize 条） */
+	windowSize?: number;
+	/** 该群当前视角下已入库的可见消息总数 */
+	totalGroupMessages?: number;
+	/** 当前切片之前尚未展示的同群消息条数 */
+	beforeRemaining?: number;
+	/** 当前切片之后尚未展示的同群消息条数 */
+	afterRemaining?: number;
 }
 
 export const INTEL_RELIABILITIES = [
@@ -205,6 +256,305 @@ export interface MapAssetItem {
 	modifiedAt: number;
 }
 
+export type CardinalSector =
+	| "中枢"
+	| "正北"
+	| "东北"
+	| "正东"
+	| "东南"
+	| "正南"
+	| "西南"
+	| "正西"
+	| "西北";
+
+export type MapSnapshotFormat = "wenyou-project" | "wenyou-map-delta" | "fmg-map";
+
+export interface MapTheaterBrief {
+	mapId: string;
+	name: string;
+	stateCount: number;
+	burgCount: number;
+	unitCount: number;
+}
+
+export interface MapSnapshotSummary {
+	id: string;
+	name: string;
+	relPath: string;
+	format: MapSnapshotFormat;
+	version?: number;
+	yearLabel?: string;
+	theaters: MapTheaterBrief[];
+	sizeBytes: number;
+	modifiedAt: number;
+}
+
+export interface MapStateSummary {
+	stateId: number;
+	name: string;
+	color?: string;
+	cellCount: number;
+	burgCount: number;
+	capitalName?: string;
+	totalPopulation: number;
+	totalPersonnel: number;
+	unitCount: number;
+	sector?: CardinalSector;
+	neighborStateNames: string[];
+}
+
+export interface MapBurgSummary {
+	burgId: number;
+	name: string;
+	stateId: number;
+	stateName: string;
+	isCapital: boolean;
+	isPort: boolean;
+	population: number;
+	x: number;
+	y: number;
+	normX: number;
+	normY: number;
+	sector: CardinalSector;
+}
+
+export interface MapUnitSummary {
+	unitId: string;
+	name: string;
+	side?: string;
+	branch?: string;
+	echelon?: string;
+	personnel: number;
+	status?: string;
+	x?: number;
+	y?: number;
+	sector?: CardinalSector;
+	nearestBurgName?: string;
+	nearestBurgDistanceKm?: number;
+}
+
+export interface MapDistancePairKm {
+	from: string;
+	to: string;
+	distanceKm: number;
+}
+
+export interface MapInspectResult {
+	relPath: string;
+	format: MapSnapshotFormat;
+	baseKind?: "fmg" | "image";
+	imageAssetPath?: string;
+	kmPerPixel?: number;
+	mapWidthKm?: number;
+	theaterId: string;
+	theaterName: string;
+	availableTheaters: Array<{ mapId: string; name: string }>;
+	width: number;
+	height: number;
+	totalLandCells: number;
+	states: MapStateSummary[];
+	burgs: MapBurgSummary[];
+	units: MapUnitSummary[];
+	keyDistancesKm?: MapDistancePairKm[];
+	frontlineCount: number;
+	arrowCount: number;
+	fieldBattleCount: number;
+}
+
+export interface MapStateDeltaItem {
+	stateId: number;
+	stateName: string;
+	beforeCells: number;
+	afterCells: number;
+	netCells: number;
+	gainedCells: number;
+	lostCells: number;
+	beforePersonnel: number;
+	afterPersonnel: number;
+	netPersonnel: number;
+}
+
+export interface MapTransferredBurg {
+	burgId: number;
+	burgName: string;
+	isCapital: boolean;
+	isPort: boolean;
+	fromStateId: number;
+	fromStateName: string;
+	toStateId: number;
+	toStateName: string;
+	sector: CardinalSector;
+}
+
+export interface MapSnapshotDiffResult {
+	fromRelPath: string;
+	toRelPath: string;
+	theaterId: string;
+	theaterName: string;
+	changedCellCount: number;
+	stateDeltas: MapStateDeltaItem[];
+	transferredBurgs: MapTransferredBurg[];
+	addedBurgs: string[];
+	removedBurgs: string[];
+	beforeTotalPersonnel: number;
+	afterTotalPersonnel: number;
+	netTotalPersonnel: number;
+	frontlineDelta: number;
+	summaryText: string;
+}
+
+export interface SandboxProbeResult {
+	url: string;
+	reachable: boolean;
+	statusCode?: number;
+	latencyMs: number;
+	title?: string;
+	error?: string;
+}
+
+export type WenyouBridgeHostMessage =
+	| { protocol: typeof WENYOU_MAP_BRIDGE_PROTOCOL; type: "ping"; requestId?: string }
+	| {
+			protocol: typeof WENYOU_MAP_BRIDGE_PROTOCOL;
+			type: "sync_context";
+			payload: {
+				worldId: string;
+				worldTitle: string;
+				currentEra: string;
+				viewer: string;
+				workspaceKey?: string;
+			};
+	  }
+	| {
+			protocol: typeof WENYOU_MAP_BRIDGE_PROTOCOL;
+			type: "load_project";
+			requestId?: string;
+			payload: {
+				fileName: string;
+				projectJson: string;
+				forceOverwrite?: boolean;
+			};
+	  }
+	| {
+			protocol: typeof WENYOU_MAP_BRIDGE_PROTOCOL;
+			type: "request_export_project";
+			requestId?: string;
+	  }
+	| {
+			protocol: typeof WENYOU_MAP_BRIDGE_PROTOCOL;
+			type: "reset_sandbox";
+			requestId?: string;
+	  }
+	| {
+			protocol: typeof WENYOU_MAP_BRIDGE_PROTOCOL;
+			type: "create_image_theater";
+			requestId?: string;
+			payload: {
+				name: string;
+				imageUrl: string;
+				imageRelPath?: string;
+				gridPreset?: "coarse" | "standard" | "fine";
+				mapWidthKm?: number;
+			};
+	  };
+
+export type WenyouBridgeSandboxMessage =
+	| {
+			protocol: typeof WENYOU_MAP_BRIDGE_PROTOCOL;
+			type: "ready" | "pong";
+			requestId?: string;
+			payload: {
+				version: string;
+				activeMapId: string | null;
+				mapName: string | null;
+				theaterCount: number;
+				workspaceKey?: string;
+			};
+	  }
+	| {
+			protocol: typeof WENYOU_MAP_BRIDGE_PROTOCOL;
+			type: "context_acked";
+			payload: {
+				worldId: string;
+				currentEra: string;
+				activeMapId: string | null;
+				workspaceKey?: string;
+			};
+	  }
+	| {
+			protocol: typeof WENYOU_MAP_BRIDGE_PROTOCOL;
+			type: "project_loaded";
+			requestId?: string;
+			payload: {
+				ok: boolean;
+				activeMapId?: string | null;
+				mapName?: string | null;
+				theaterCount?: number;
+				workspaceKey?: string;
+				error?: string;
+			};
+	  }
+	| {
+			protocol: typeof WENYOU_MAP_BRIDGE_PROTOCOL;
+			type: "project_exported";
+			requestId?: string;
+			payload: {
+				ok: boolean;
+				projectJson?: string;
+				activeMapId?: string | null;
+				mapName?: string | null;
+				theaterCount?: number;
+				workspaceKey?: string;
+				error?: string;
+			};
+	  }
+	| {
+			protocol: typeof WENYOU_MAP_BRIDGE_PROTOCOL;
+			type: "image_theater_created";
+			requestId?: string;
+			payload: {
+				ok: boolean;
+				activeMapId?: string | null;
+				mapName?: string | null;
+				cellCount?: number;
+				kmPerPixel?: number;
+				workspaceKey?: string;
+				error?: string;
+			};
+	  }
+	| {
+			protocol: typeof WENYOU_MAP_BRIDGE_PROTOCOL;
+			type: "autosave_project";
+			payload: {
+				projectJson: string;
+				activeMapId: string;
+				mapName: string;
+				theaterCount: number;
+				workspaceKey?: string;
+			};
+	  }
+	| {
+			protocol: typeof WENYOU_MAP_BRIDGE_PROTOCOL;
+			type: "selection_changed";
+			payload: {
+				kind: "burg" | "unit";
+				id: number | string;
+				name: string;
+				stateName?: string;
+				personnel?: number;
+				x?: number;
+				y?: number;
+			};
+	  }
+	| {
+			protocol: typeof WENYOU_MAP_BRIDGE_PROTOCOL;
+			type: "focus_source";
+			payload: {
+				sourceId: string;
+				highlightQuote?: string;
+			};
+	  };
+
 export type ProposalStatus = "pending" | "approved" | "rejected";
 export type PatchOperation = "create" | "update";
 
@@ -278,6 +628,8 @@ export interface NtqqProbeStatus {
 	canExtractKey: boolean;
 	pythonPath: string | null;
 	pythonVersion: string | null;
+	/** 是否命中随包内置的绿色嵌入式 Python 运行时（免用户自行安装 Python） */
+	pythonBundled?: boolean;
 	assetsDir: string | null;
 	assetsReady: boolean;
 	ready: boolean;
@@ -340,6 +692,7 @@ export interface WenyouWorkspaceOverview {
 	worldId: string;
 	currentEra?: string;
 	viewer: ViewerScope;
+	maxViewer?: ViewerScope;
 	cursors: GroupCursorRecord[];
 	totalEvidenceCount: number;
 	unreportedCount: number;
@@ -357,7 +710,14 @@ export type WenyouCanvasEvent =
 	| { kind: "open_tab"; cwd: string; tab: WenyouCanvasTab; sessionId?: string }
 	| { kind: "briefing_published"; cwd: string; briefing: SituationBriefing; sessionId?: string }
 	| { kind: "policy_written"; cwd: string; policy: PolicyArtifact; sessionId?: string }
-	| { kind: "focus_source"; cwd: string; sourceId: string; highlightQuote?: string; sessionId?: string }
+	| {
+			kind: "focus_source";
+			cwd: string;
+			sourceId: string;
+			highlightQuote?: string;
+			window?: number;
+			sessionId?: string;
+	  }
 	| {
 			kind: "open_maps";
 			cwd: string;

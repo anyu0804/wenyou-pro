@@ -276,6 +276,14 @@ export function SessionTabBar() {
 	const moveWorkspaceMember = useSessionWorkspaceStore((s) => s.moveMember);
 	/** 增删胶囊时让其余胶囊滑动到位（FLIP）；拖拽在途时让位交给 dnd-kit 自己那套 */
 	const stripShiftRef = useListShift({ skip: activeId !== null });
+	/** 合并 FLIP 容器 ref 与横向滚轮清理函数：稳定引用防止每次渲染重复挂载并泄漏 wheel 监听器 */
+	const setStripRef = useCallback(
+		(el: HTMLDivElement | null) => {
+			stripShiftRef.current = el;
+			return attachScroller(el);
+		},
+		[attachScroller, stripShiftRef],
+	);
 	// 历史列表：工作区里「未加载」的成员要能从目录投影里拿到 meta（否则画不出胶囊）
 	const allSessions = useProjectsStore((s) => s.allSessions);
 	useEffect(() => {
@@ -372,10 +380,7 @@ export function SessionTabBar() {
 			</button>
 			{/* 胶囊区（含拖拽排序）：flex-1 吃掉中间剩余宽度 */}
 			<div
-				ref={(el) => {
-					stripShiftRef.current = el;
-					attachScroller(el);
-				}}
+				ref={setStripRef}
 				className="flex min-w-0 flex-1 items-center gap-1 overflow-x-scroll [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
 			>
 				{/* 空态不提示文字：顶栏空着就是空着（原来那句「打开过的会话会显示在这里」是想解释

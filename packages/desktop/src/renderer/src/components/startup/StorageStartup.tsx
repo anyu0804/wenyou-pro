@@ -287,7 +287,7 @@ export function StorageStartup({
 					<span>
 						{phase === "choice" ? t("storageStartup.step", { step: view === "choose" ? 1 : 2 }) : ""}
 					</span>
-					<span className="absolute right-6">Percho</span>
+					<span className="absolute right-6">司命 · 文游 Pro</span>
 				</header>
 				<div className="startup-content">
 					<div className="startup-page text-center">{content}</div>

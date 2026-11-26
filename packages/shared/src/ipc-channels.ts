@@ -94,13 +94,18 @@ import type {
 	CampaignNtqqGroupBinding,
 	DiffPatchProposal,
 	MapAssetItem,
+	MapInspectResult,
+	MapSnapshotDiffResult,
+	MapSnapshotSummary,
 	NtqqGroupSummary,
 	NtqqStatusSnapshot,
 	NtqqSyncCampaignResult,
 	PolicyArtifact,
 	PolicyLintReport,
+	SandboxProbeResult,
 	SituationBriefing,
 	SourceContextWindow,
+	ViewerScope,
 	WenyouCanvasEvent,
 	WenyouExportPreflightResult,
 	WenyouPullQqResult,
@@ -1120,6 +1125,18 @@ export const WENYOU_CHANNELS = {
 		cwd: input.id,
 		viewer: input.optional(input.text),
 	}),
+	wenyouSetViewerScope: ch(
+		"wenyou:setViewerScope",
+		"environment",
+		"mutation",
+	)<
+		{ cwd: string; viewer: string; maxViewer?: string },
+		{ viewer: ViewerScope; maxViewer: ViewerScope }
+	>({
+		cwd: input.id,
+		viewer: input.id,
+		maxViewer: input.optional(input.text),
+	}),
 	wenyouPullQq: ch(
 		"wenyou:pullQq",
 		"environment",
@@ -1142,27 +1159,37 @@ export const WENYOU_CHANNELS = {
 		"wenyou:listBriefings",
 		"environment",
 		"read",
-	)<{ cwd: string }, SituationBriefing[]>({
+	)<{ cwd: string; viewer?: string }, SituationBriefing[]>({
 		cwd: input.id,
+		viewer: input.optional(input.text),
 	}),
 	wenyouListPolicies: ch(
 		"wenyou:listPolicies",
 		"environment",
 		"read",
-	)<{ cwd: string }, PolicyArtifact[]>({
+	)<{ cwd: string; viewer?: string }, PolicyArtifact[]>({
 		cwd: input.id,
+		viewer: input.optional(input.text),
 	}),
 	wenyouLintPolicy: ch(
 		"wenyou:lintPolicy",
 		"environment",
 		"read",
 	)<
-		{ cwd: string; text: string; viewer?: string; branchId?: string; currentOrder?: number },
+		{
+			cwd: string;
+			text: string;
+			viewer?: string;
+			actorEntityId?: string;
+			branchId?: string;
+			currentOrder?: number;
+		},
 		PolicyLintReport
 	>({
 		cwd: input.id,
 		text: input.text,
 		viewer: input.optional(input.text),
+		actorEntityId: input.optional(input.text),
 		branchId: input.optional(input.text),
 		currentOrder: input.optional(input.number),
 	}),
@@ -1178,6 +1205,10 @@ export const WENYOU_CHANNELS = {
 			actor?: string;
 			turnLabel?: string;
 			serialNo?: string;
+			viewer?: string;
+			actorEntityId?: string;
+			branchId?: string;
+			currentOrder?: number;
 			force?: boolean;
 		},
 		WenyouWritePolicyResult
@@ -1188,6 +1219,10 @@ export const WENYOU_CHANNELS = {
 		actor: input.optional(input.text),
 		turnLabel: input.optional(input.text),
 		serialNo: input.optional(input.text),
+		viewer: input.optional(input.text),
+		actorEntityId: input.optional(input.text),
+		branchId: input.optional(input.text),
+		currentOrder: input.optional(input.number),
 		force: input.optional(input.boolean),
 	}),
 	wenyouListMaps: ch(
@@ -1196,6 +1231,63 @@ export const WENYOU_CHANNELS = {
 		"read",
 	)<{ cwd: string }, MapAssetItem[]>({
 		cwd: input.id,
+	}),
+	wenyouListMapSnapshots: ch(
+		"wenyou:listMapSnapshots",
+		"environment",
+		"read",
+	)<{ cwd: string }, MapSnapshotSummary[]>({
+		cwd: input.id,
+	}),
+	wenyouInspectMap: ch(
+		"wenyou:inspectMap",
+		"environment",
+		"read",
+	)<
+		{
+			cwd: string;
+			relPath: string;
+			theaterId?: string;
+			factionQuery?: string;
+			maxBurgs?: number;
+		},
+		MapInspectResult
+	>({
+		cwd: input.id,
+		relPath: input.id,
+		theaterId: input.optional(input.text),
+		factionQuery: input.optional(input.text),
+		maxBurgs: input.optional(input.nonNegativeInt),
+	}),
+	wenyouDiffMaps: ch(
+		"wenyou:diffMaps",
+		"environment",
+		"read",
+	)<
+		{ cwd: string; fromRelPath: string; toRelPath: string; theaterId?: string },
+		MapSnapshotDiffResult
+	>({
+		cwd: input.id,
+		fromRelPath: input.id,
+		toRelPath: input.id,
+		theaterId: input.optional(input.text),
+	}),
+	wenyouReadMapSnapshotRaw: ch(
+		"wenyou:readMapSnapshotRaw",
+		"environment",
+		"read",
+	)<{ cwd: string; relPath: string }, { relPath: string; fileName: string; content: string }>({
+		cwd: input.id,
+		relPath: input.id,
+	}),
+	wenyouSaveMapSnapshot: ch(
+		"wenyou:saveMapSnapshot",
+		"environment",
+		"mutation",
+	)<{ cwd: string; fileName: string; content: string }, MapSnapshotSummary>({
+		cwd: input.id,
+		fileName: input.id,
+		content: input.text,
 	}),
 	wenyouListProposals: ch(
 		"wenyou:listProposals",
@@ -1282,6 +1374,14 @@ export const WENYOU_DESKTOP_CHANNELS = {
 	wenyouNtqqSyncCampaign: ch("wenyou:ntqqSyncCampaign", "desktop", "mutation")<
 		{ cwd: string; groupId?: string; limit?: number; force?: boolean },
 		NtqqSyncCampaignResult
+	>(),
+	wenyouProbeSandbox: ch("wenyou:probeSandbox", "desktop", "read")<
+		{ url: string; timeoutMs?: number },
+		SandboxProbeResult
+	>(),
+	wenyouImportMapFileDialog: ch("wenyou:importMapFileDialog", "desktop", "mutation")<
+		{ cwd: string },
+		{ relPath: string; name: string } | null
 	>(),
 } as const;
 

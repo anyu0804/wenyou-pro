@@ -124,7 +124,7 @@ export function registerAppIpc(backend: PiBackend): void {
 		exportUpdateDiagnostics: async () => {
 			const window = BrowserWindow.getAllWindows()[0];
 			const options: Electron.SaveDialogOptions = {
-				defaultPath: `percho-update-diagnostics-${new Date().toISOString().slice(0, 10)}.json`,
+				defaultPath: `wenyou-pro-update-diagnostics-${new Date().toISOString().slice(0, 10)}.json`,
 				filters: [{ name: "JSON", extensions: ["json"] }],
 			};
 			const result = window

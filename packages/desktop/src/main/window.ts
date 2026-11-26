@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { IpcChannels, type Rect, type ThemeMode } from "@percho/shared";
 import { app, BrowserWindow, nativeTheme, shell } from "electron";
@@ -114,11 +115,38 @@ export function applyChromeTheme(mode: ThemeMode): void {
 	}
 }
 
+/**
+ * 解析非 macOS 窗口图标路径（Windows 优先多图层 `.ico`，Linux 优先 `.png`）。
+ * 仅在图标文件存在时返回，避免单测环境传入不存在路径导致报错。
+ */
+export function resolveWindowIconPath(): string | undefined {
+	if (process.platform === "darwin") return undefined;
+	const isPackaged = Boolean(app?.isPackaged);
+	const resourcesPath = typeof process.resourcesPath === "string" ? process.resourcesPath : "";
+	const buildDir = join(__dirname, "../../build");
+	const candidates =
+		process.platform === "win32"
+			? [
+					...(isPackaged && resourcesPath ? [join(resourcesPath, "wenyou-pro.ico")] : []),
+					join(buildDir, "wenyou-pro.ico"),
+					join(buildDir, "icon.png"),
+				]
+			: [
+					...(isPackaged && resourcesPath
+						? [join(resourcesPath, "icon.png"), join(resourcesPath, "wenyou-pro.ico")]
+						: []),
+					join(buildDir, "icon.png"),
+					join(buildDir, "wenyou-pro.ico"),
+				];
+	return candidates.find((candidate) => existsSync(candidate));
+}
+
 export function createWindow(
 	theme: "dark" | "light" = "light",
 	bounds: Rect | null = null,
 	startup?: { isPreparing: () => boolean; onClose: () => void },
 ): BrowserWindow {
+	const windowIcon = resolveWindowIconPath();
 	const window = new BrowserWindow({
 		// 有持久化 bounds 就用它（已过 `sanitizeWindowBounds` 屏幕校验），否则走默认尺寸 + 系统摆放
 		...(bounds
@@ -127,6 +155,7 @@ export function createWindow(
 		minWidth: WINDOW_MIN_WIDTH,
 		minHeight: WINDOW_MIN_HEIGHT,
 		show: false,
+		...(windowIcon ? { icon: windowIcon } : {}),
 		// macOS：hiddenInset 红绿灯嵌入顶栏；Windows：frameless + 右上角系统按钮覆盖层；
 		// Linux 不支持覆盖层，保留原生框架（不指定 titleBarStyle）
 		...(process.platform === "darwin"

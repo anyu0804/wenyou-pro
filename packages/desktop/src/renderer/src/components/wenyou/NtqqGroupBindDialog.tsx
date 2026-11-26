@@ -15,6 +15,13 @@ const ROLE_OPTIONS: Array<{ value: GroupRole; label: string }> = [
 	{ value: "other", label: "其他" },
 ];
 
+const SYNC_LIMIT_OPTIONS = [
+	{ value: 500, label: "500 条（快速）" },
+	{ value: 2000, label: "2,000 条（推荐）" },
+	{ value: 5000, label: "5,000 条（长程）" },
+	{ value: 20000, label: "20,000 条（上限）" },
+] as const;
+
 function stripInvokePrefix(err: unknown): string {
 	const raw = err instanceof Error ? err.message : String(err);
 	return raw.replace(/^Error invoking remote method '[^']*':\s*(?:Error:\s*)?/, "");
@@ -35,6 +42,8 @@ export function NtqqGroupBindDialog({ onClose }: { onClose: () => void }) {
 	const [search, setSearch] = useState("");
 	const [manualGroupId, setManualGroupId] = useState("");
 	const [manualGroupName, setManualGroupName] = useState("");
+	const [syncLimit, setSyncLimit] = useState<number>(2000);
+	const [forceBackfill, setForceBackfill] = useState(false);
 	const [loading, setLoading] = useState(true);
 	const [loadingGroups, setLoadingGroups] = useState(false);
 	const [saving, setSaving] = useState(false);
@@ -136,7 +145,11 @@ export function NtqqGroupBindDialog({ onClose }: { onClose: () => void }) {
 		try {
 			const saved = await getPi().wenyouNtqqSaveCampaignBindings({ cwd: rawCwd, bindings });
 			if (syncNow && saved.length > 0) {
-				const syncRes = await getPi().wenyouNtqqSyncCampaign({ cwd: rawCwd, limit: 500 });
+				const syncRes = await getPi().wenyouNtqqSyncCampaign({
+					cwd: rawCwd,
+					limit: syncLimit,
+					...(forceBackfill ? { force: true } : {}),
+				});
 				pushExtensionToast(
 					"info",
 					`本机 NTQQ 同步完成（${Math.round(syncRes.elapsedMs)} ms）：新入库 ${syncRes.newlyIngested} 条，去重 ${syncRes.skippedDuplicates} 条，待汇报 ${syncRes.unreportedCount} 条`,
@@ -155,6 +168,7 @@ export function NtqqGroupBindDialog({ onClose }: { onClose: () => void }) {
 	};
 
 	const ready = snapshot?.status.ready === true;
+	const isOfflinePlatform = snapshot !== null && !snapshot.status.platformSupported;
 
 	return createPortal(
 		<div
@@ -184,24 +198,50 @@ export function NtqqGroupBindDialog({ onClose }: { onClose: () => void }) {
 					{loading ? (
 						<p className="py-8 text-center text-ui-12 text-ink-faint">正在读取本机 NTQQ 状态…</p>
 					) : !ready ? (
-						<div className="space-y-3 rounded-xl border border-border bg-canvas/60 p-4">
-							<p className="text-ui-13 font-medium text-ink">本机 NTQQ 只读环境尚未就绪</p>
-							<ul className="list-disc space-y-1 pl-4 text-ui-12 text-ink-dim">
-								{(snapshot?.status.missingReasons ?? ["尚未完成 QQ 号与密钥配置"]).map((r) => (
-									<li key={r}>{r}</li>
-								))}
-							</ul>
-							<button
-								type="button"
-								onClick={() => {
-									onClose();
-									useUiPreferencesStore.getState().openOnboarding(2);
-								}}
-								className="rounded-lg bg-ink px-3.5 py-1.5 text-ui-12 font-medium text-on-ink hover:bg-ink-2"
-							>
-								去配置 QQ 号与密钥
-							</button>
-						</div>
+						isOfflinePlatform ? (
+							<div className="space-y-3 rounded-xl border border-border bg-canvas/60 p-4">
+								<p className="text-ui-13 font-medium text-ink">当前系统推荐离线导入聊天记录</p>
+								<p className="text-ui-12 leading-relaxed text-ink-dim">
+									macOS / Linux 暂不支持一键提取本机 QQ 密钥。推荐将导出的{" "}
+									<code className="font-mono">.txt</code> / <code className="font-mono">.json</code>{" "}
+									聊天记录放入当前战役目录的 <code className="font-mono">00-群聊收集/</code>{" "}
+									自动解析入库。
+								</p>
+								<p className="text-ui-11 text-ink-faint">
+									若已有 <code className="font-mono">key_map.json</code>，也可手动配置密钥与本机{" "}
+									<code className="font-mono">nt_db</code> 数据目录后启用只读直采。
+								</p>
+								<button
+									type="button"
+									onClick={() => {
+										onClose();
+										useUiPreferencesStore.getState().openOnboarding(2);
+									}}
+									className="rounded-lg border border-border bg-surface px-3.5 py-1.5 text-ui-12 font-medium text-ink transition-colors hover:bg-hover"
+								>
+									手动配置密钥与数据目录
+								</button>
+							</div>
+						) : (
+							<div className="space-y-3 rounded-xl border border-border bg-canvas/60 p-4">
+								<p className="text-ui-13 font-medium text-ink">本机 NTQQ 只读环境尚未就绪</p>
+								<ul className="list-disc space-y-1 pl-4 text-ui-12 text-ink-dim">
+									{(snapshot?.status.missingReasons ?? ["尚未完成 QQ 号与密钥配置"]).map((r) => (
+										<li key={r}>{r}</li>
+									))}
+								</ul>
+								<button
+									type="button"
+									onClick={() => {
+										onClose();
+										useUiPreferencesStore.getState().openOnboarding(2);
+									}}
+									className="rounded-lg bg-ink px-3.5 py-1.5 text-ui-12 font-medium text-on-ink hover:bg-ink-2"
+								>
+									去配置 QQ 号与密钥
+								</button>
+							</div>
+						)
 					) : (
 						<>
 							{/* 已绑定群列表 */}
@@ -327,6 +367,34 @@ export function NtqqGroupBindDialog({ onClose }: { onClose: () => void }) {
 								>
 									添加
 								</button>
+							</div>
+
+							{/* 单群同步回溯深度设置 */}
+							<div className="flex flex-wrap items-center justify-between gap-2 border-t border-border pt-3 text-ui-12">
+								<label className="flex items-center gap-2 text-ink-2">
+									<span>单群拉取上限</span>
+									<select
+										aria-label="单群拉取历史条数上限"
+										value={syncLimit}
+										onChange={(e) => setSyncLimit(Number(e.target.value))}
+										className="rounded-md border border-border bg-canvas px-2 py-1 text-ui-11 text-ink outline-none focus:border-accent"
+									>
+										{SYNC_LIMIT_OPTIONS.map((opt) => (
+											<option key={opt.value} value={opt.value}>
+												{opt.label}
+											</option>
+										))}
+									</select>
+								</label>
+								<label className="flex cursor-pointer items-center gap-1.5 text-ui-11 text-ink-dim hover:text-ink">
+									<input
+										type="checkbox"
+										checked={forceBackfill}
+										onChange={(e) => setForceBackfill(e.target.checked)}
+										className="accent-ink"
+									/>
+									<span>回溯补抓更早历史（按时间线去重补齐）</span>
+								</label>
 							</div>
 						</>
 					)}

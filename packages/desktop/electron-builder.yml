@@ -2,6 +2,7 @@ appId: io.github.anyu.wenyou-pro
 productName: Wenyou Pro
 extraMetadata:
   releaseChannel: stable
+  disableAutoUpdate: true
 beforePack: resources/remote-runtime/before-pack.cjs
 directories:
   output: dist
@@ -46,6 +47,10 @@ extraResources:
   # Wenyou Pro 本机 NTQQ 零依赖只读 VFS 解库组件
   - from: "resources/ntqq-vfs"
     to: "ntqq-vfs"
+    filter: ["**/*", "!**/__pycache__/**", "!**/*.pyc", "!**/*.pyo"]
+  # Wenyou Pro 内置 Pixi 动态推演沙盘（wenyou-sandbox:// 特权协议离线直载）
+  - from: "resources/pixi-sandbox"
+    to: "pixi-sandbox"
   # 显式导出更新诊断时的只读 Windows 快照脚本（无用户命令/凭证采集）
   - from: "resources/update-diagnostics"
     to: "update-diagnostics"
@@ -79,7 +84,4 @@ nsis:
   include: build/update-diagnostics.nsh
   oneClick: false
   allowToChangeInstallationDirectory: true
-publish:
-  provider: github
-  owner: Jaxton07
-  repo: percho
+publish: null

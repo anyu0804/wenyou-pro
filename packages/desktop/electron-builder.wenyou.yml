@@ -2,12 +2,12 @@ appId: io.github.anyu.wenyou-pro
 productName: Wenyou Pro
 copyright: "Copyright © 2026 安钰 (Based on Percho MIT)"
 extraMetadata:
-  version: 0.2.0
+  version: 0.2.4
   releaseChannel: stable
   productName: Wenyou Pro
   disableAutoUpdate: true
 directories:
-  output: ../../dist/wenyou-pro-0.2.0-win-x64/raw
+  output: ../../dist/wenyou-pro-0.2.4-win-x64/raw
 files:
   - out/**
   - package.json
@@ -37,13 +37,20 @@ extraResources:
     to: "ui-plugins"
   - from: "resources/wenyou-skills"
     to: "wenyou-skills"
-  - from: "resources/ntqq-vfs"
-    to: "ntqq-vfs"
-  - from: "resources/update-diagnostics"
-    to: "update-diagnostics"
+  # Wenyou Pro 内置 Pixi 动态推演沙盘（wenyou-sandbox:// 特权协议离线直载）
+  - from: "resources/pixi-sandbox"
+    to: "pixi-sandbox"
 win:
   icon: build/wenyou-pro.ico
   artifactName: Wenyou-Pro-Portable-${version}-${arch}.${ext}
+  extraResources:
+    - from: "resources/ntqq-vfs"
+      to: "ntqq-vfs"
+      filter: ["**/*", "!**/__pycache__/**", "!**/*.pyc", "!**/*.pyo"]
+    - from: "resources/update-diagnostics"
+      to: "update-diagnostics"
+    - from: "build/wenyou-pro.ico"
+      to: "wenyou-pro.ico"
   target:
     - target: nsis
       arch: [x64]
@@ -55,10 +62,37 @@ nsis:
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: true
   createStartMenuShortcut: true
-  shortcutName: Wenyou Pro
+  shortcutName: "司命 · 文游 Pro"
   installerIcon: build/wenyou-pro.ico
   uninstallerIcon: build/wenyou-pro.ico
   installerHeaderIcon: build/wenyou-pro.ico
   language: "2052"
   artifactName: Wenyou-Pro-Setup-${version}-${arch}.${ext}
+mac:
+  category: public.app-category.developer-tools
+  icon: build/icon.png
+  identity: "-"
+  hardenedRuntime: false
+  artifactName: Wenyou-Pro-${version}-mac-${arch}.${ext}
+  extraResources:
+    - from: "resources/ntqq-vfs"
+      to: "ntqq-vfs"
+      filter: ["**/*.py", "!**/__pycache__/**", "!**/*.pyc", "!**/*.pyo", "!python/**", "!**/*.exe", "!**/*.dll", "!**/*.pyd", "!**/*.cat"]
+  target:
+    - target: dmg
+      arch: [arm64, x64]
+    - target: zip
+      arch: [arm64, x64]
+linux:
+  executableName: wenyou-pro
+  category: Development
+  icon: build/icon.png
+  artifactName: Wenyou-Pro-${version}-linux-${arch}.${ext}
+  extraResources:
+    - from: "resources/ntqq-vfs"
+      to: "ntqq-vfs"
+      filter: ["**/*.py", "!**/__pycache__/**", "!**/*.pyc", "!**/*.pyo", "!python/**", "!**/*.exe", "!**/*.dll", "!**/*.pyd", "!**/*.cat"]
+  target:
+    - target: AppImage
+      arch: [x64]
 publish: null

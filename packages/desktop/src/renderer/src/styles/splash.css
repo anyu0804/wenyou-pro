@@ -121,26 +121,55 @@ html[data-theme="dark"] .sp-wave {
 	--po: 0.45;
 }
 
-/* 品牌字：粒子团浮现后淡入；底色同色光晕把字从粒子里托出来 */
+/* 品牌字：粒子团浮现后淡入；中文典雅宋体「司命」居中，下方极简 WENYOU PRO 副标，底色光晕把字从粒子里托出来 */
 .sp-word {
-	font:
-		600 44px / 1 -apple-system,
-		BlinkMacSystemFont,
-		"SF Pro Text",
-		"Helvetica Neue",
-		"PingFang SC",
-		sans-serif;
-	color: #18181b;
-	letter-spacing: 0.02em;
-	text-shadow: 0 0 18px rgba(250, 250, 250, 0.9);
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	justify-content: center;
+	gap: 10px;
+	text-align: center;
 	user-select: none;
 	opacity: 0;
 	transform: translateY(6px);
 	animation: sp-word-in 0.9s cubic-bezier(0.16, 1, 0.3, 1) 0.55s forwards;
 }
-html[data-theme="dark"] .sp-word {
-	color: #e6e6ea;
-	text-shadow: 0 0 18px rgba(23, 23, 26, 0.85);
+.sp-word-main {
+	font-family: "Noto Serif SC", "Source Han Serif SC", "Songti SC", "STZhongsong", "STSong", "SimSun", serif;
+	font-weight: 600;
+	font-size: 54px;
+	line-height: 1.06;
+	color: #18181b;
+	letter-spacing: 0.3em;
+	/* 抵消末字右侧的 letter-spacing，确保中文双字在粒子团正中央像素级居中 */
+	padding-left: 0.3em;
+	text-shadow:
+		0 0 24px rgba(250, 250, 250, 0.98),
+		0 0 10px rgba(250, 250, 250, 0.92);
+}
+.sp-word-sub {
+	font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", "PingFang SC", sans-serif;
+	font-weight: 500;
+	font-size: 11px;
+	line-height: 1;
+	letter-spacing: 0.36em;
+	padding-left: 0.36em;
+	color: rgba(24, 24, 27, 0.64);
+	text-shadow:
+		0 0 12px rgba(250, 250, 250, 0.98),
+		0 0 5px rgba(250, 250, 250, 0.95);
+}
+html[data-theme="dark"] .sp-word-main {
+	color: #ececf0;
+	text-shadow:
+		0 0 24px rgba(23, 23, 26, 0.96),
+		0 0 10px rgba(23, 23, 26, 0.9);
+}
+html[data-theme="dark"] .sp-word-sub {
+	color: rgba(236, 236, 240, 0.66);
+	text-shadow:
+		0 0 12px rgba(23, 23, 26, 0.96),
+		0 0 5px rgba(23, 23, 26, 0.92);
 }
 
 /* 慢加载细线：1.2s 后淡入，与整个启动共用同一起点。 */

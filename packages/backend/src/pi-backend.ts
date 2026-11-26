@@ -1013,6 +1013,7 @@ export class PiBackend {
 						}
 					},
 					onEvent: (sessionId, event, abort) => this.emitSubagentEvent(sessionId, event, abort),
+					extraExtensions: (subCwd) => [makeWenyouExtension({ service: this.wenyou, cwd: subCwd })],
 				}),
 			);
 		}

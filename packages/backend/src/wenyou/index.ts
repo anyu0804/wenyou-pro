@@ -1,6 +1,21 @@
 export { buildPolicyDocx, buildZipBuffer, computeCrc32, type PolicyDocxInput } from "./docx-builder";
 export { makeWenyouExtension, type WenyouExtensionOptions } from "./extension";
 export {
+	computeCardinalSector,
+	decodeCellLayerRle,
+	diffMapSnapshots,
+	encodeCellLayerRle,
+	inspectMapSnapshot,
+	listMapSnapshots,
+	type MapInspectOptions,
+	type NormalizedMapSnapshot,
+	type PackedCellLayerV2,
+	parseMapSnapshotContent,
+	readMapSnapshotRaw,
+	saveMapSnapshot,
+} from "./map-state";
+export {
+	decodeIniBuffer,
 	NtqqSyncService,
 	type NtqqSyncServiceOptions,
 	normalizeQqUin,
@@ -26,11 +41,14 @@ export {
 } from "./qq-ingest";
 export {
 	assertPathInsideWorkspace,
+	assertRealTargetInsideWorkspace,
 	canViewerSee,
 	isPrivateVaultPath,
+	isRawChatPath,
 	normalizeVaultPath,
 	type ParsedFrontmatterDoc,
 	parseMarkdownWithFrontmatter,
+	parseVisibility,
 	resolveRealPathInsideWorkspace,
 	type SecretBlockStripResult,
 	stripRestrictedMarkdownBlocks,

@@ -32,6 +32,7 @@ export function computeCrc32(buf: Uint8Array): number {
 
 function escapeXml(text: string): string {
 	return text
+		.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, "")
 		.replace(/&/g, "&amp;")
 		.replace(/</g, "&lt;")
 		.replace(/>/g, "&gt;")
@@ -40,11 +41,13 @@ function escapeXml(text: string): string {
 }
 
 function stripFrontmatter(markdown: string): string {
-	const normalized = markdown.replace(/^\uFEFF/, "").replace(/\r\n/g, "\n");
-	if (!normalized.startsWith("---\n")) return normalized;
-	const end = normalized.indexOf("\n---\n", 4);
-	if (end === -1) return normalized;
-	return normalized.slice(end + 5).replace(/^\n+/, "");
+	const normalized = markdown.replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n");
+	const openMatch = normalized.match(/^---[ \t]*\n/);
+	if (!openMatch) return normalized;
+	const rest = normalized.slice(openMatch[0].length);
+	const closeMatch = rest.match(/(?:^|\n)---[ \t]*(?:\n|$)/);
+	if (!closeMatch || closeMatch.index === undefined) return normalized;
+	return rest.slice(closeMatch.index + closeMatch[0].length).replace(/^\n+/, "");
 }
 
 interface InlineRun {
@@ -160,13 +163,25 @@ function buildBodyParagraphsXml(input: PolicyDocxInput): string {
 			);
 			continue;
 		}
-		// 单级列表项转为规范正文缩进段（保留序号或短横前缀语义，不做 Word 乱缩进）
+		// 单级无序列表项转为规范正文缩进段（不做 Word 乱缩进）
 		const bulletMatch = trimmed.match(/^(?:[-*+]\s+)(.+)$/);
 		if (bulletMatch && bulletMatch[1]) {
 			flushParagraph();
 			blocks.push(
 				`<w:p><w:pPr><w:spacing w:before="0" w:after="80" w:line="300" w:lineRule="auto"/><w:ind w:firstLineChars="200" w:firstLine="420"/></w:pPr>${renderRunsXml(
 					parseInlineRuns(bulletMatch[1].trim()),
+					{ szHalfPts: 21, font: "SimSun" },
+				)}</w:p>`,
+			);
+			continue;
+		}
+		// 单级有序列表项独立分段并保留序号文本，不与前后段粘连
+		const orderedMatch = trimmed.match(/^(?:\d+[.、)）]|[一二三四五六七八九十]+[、.）])\s+.+$/);
+		if (orderedMatch) {
+			flushParagraph();
+			blocks.push(
+				`<w:p><w:pPr><w:spacing w:before="0" w:after="80" w:line="300" w:lineRule="auto"/><w:ind w:firstLineChars="200" w:firstLine="420"/></w:pPr>${renderRunsXml(
+					parseInlineRuns(trimmed),
 					{ szHalfPts: 21, font: "SimSun" },
 				)}</w:p>`,
 			);

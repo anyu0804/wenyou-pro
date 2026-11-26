@@ -1,12 +1,12 @@
-# Percho UI 插件开发规范（SPEC）
+# 司命 · 文游 Pro（Wenyou Pro）UI 插件开发规范（SPEC）
 
-> 本文件随 Percho 分发（`userData/ui-plugins/SPEC.md`），是 agent 编写 UI 插件的唯一权威依据。
+> 本文件随 Wenyou Pro 分发（`userData/ui-plugins/SPEC.md`），是 agent 编写 UI 插件的唯一权威依据。
 > 配套类型声明：同目录 `percho-ui.d.ts`（与宿主 `window.PerchoUI` 暴露清单**逐名一致**）。
 > 完整示例：`examples/token-meter/` 与 `examples/overlay-pet/`。
 
 ## 1. 什么是 UI 插件
 
-Percho 的某些前端组件是**可替换的命名槽位（Slot）**。插件 = `userData/ui-plugins/<name>/` 目录下的一个 TSX 包，构建在宿主 main 进程完成，产物在应用内运行，替换默认组件渲染。插件与宿主**共享同一个 React 实例**。
+Wenyou Pro 的某些前端组件是**可替换的命名槽位（Slot）**。插件 = `userData/ui-plugins/<name>/` 目录下的一个 TSX 包，构建在宿主 main 进程完成，产物在应用内运行，替换默认组件渲染。插件与宿主**共享同一个 React 实例**。
 
 ```
 my-plugin/
@@ -142,7 +142,7 @@ export const stores: {                      // 宿主 zustand store（与宿主�
 ## 9. 交付闭环（agent 标准流程）
 
 1. 读本 SPEC + `percho-ui.d.ts`；
-2. 在 `~/.percho/ui-plugins/<name>/`（=`userData/ui-plugins/<name>/`，宿主已建 symlink）scaffold：`plugin.json` + `src/index.tsx`；
+2. 在 `~/.wenyou-pro/ui-plugins/<name>/`（=`userData/ui-plugins/<name>/`，宿主已建 symlink）scaffold：`plugin.json` + `src/index.tsx`；
 3. 保存 → 宿主自动构建（面板若显示「构建失败」则修语法/导入问题）；
 4. **引导用户去 设置 → UI 插件 面板启用**（总开关 + 插件启用带工作台级信任确认，agent 无权代劳——这是信任门）；
 5. 用户确认替换生效后，迭代样式时直接改 `src/index.tsx` 保存即可热替换。

@@ -258,7 +258,10 @@ function eventFor(method: string, value: unknown, environment: EnvironmentRef): 
 	) {
 		next.id = environmentEntityKey(environment, next.id);
 	}
-	if (["onTrustRequest", "onExtensionDialogRequest"].includes(method) && typeof next.cwd === "string")
+	if (
+		["onTrustRequest", "onExtensionDialogRequest", "onWenyouCanvasEvent"].includes(method) &&
+		typeof next.cwd === "string"
+	)
 		next.cwd = environmentEntityKey(environment, next.cwd);
 	if (method === "onEvent" && record(next.event)) {
 		const event = next.event;

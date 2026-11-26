@@ -59,13 +59,23 @@ describe("application channel identity", () => {
 		identity.configureAppIdentity();
 		expect(fake.setPath).toHaveBeenCalledWith("userData", fake.custom);
 	});
-	it("keeps existing dev profiles while using a separate dev identity", async () => {
+	it("isolates dev profile under appData/appIdentity.name after setting app name", async () => {
 		fake.packaged = false;
 		const identity = await import("./app-identity");
 		identity.configureAppIdentity();
 		expect(identity.releaseChannel).toBe("dev");
 		expect(identity.supportsUpdates).toBe(false);
-		expect(fake.setPath).toHaveBeenCalledWith("userData", "/isolated/support/old-profile-dev");
+		expect(fake.setName).toHaveBeenCalledWith("Wenyou Pro Dev");
+		expect(fake.setPath).toHaveBeenCalledWith("userData", join("/isolated/support", "Wenyou Pro Dev"));
+		expect(fake.setName.mock.invocationCallOrder[0]!).toBeLessThan(fake.setPath.mock.invocationCallOrder[0]!);
+	});
+	it("honors an explicit dev --user-data-dir override", async () => {
+		fake.packaged = false;
+		fake.custom = "/isolated/custom-dev-profile";
+		const identity = await import("./app-identity");
+		identity.configureAppIdentity();
+		expect(fake.setName).toHaveBeenCalledWith("Wenyou Pro Dev");
+		expect(fake.setPath).toHaveBeenCalledWith("userData", fake.custom);
 	});
 	it("rejects unknown packaged identities instead of silently selecting stable", async () => {
 		fake.channel = "dev";

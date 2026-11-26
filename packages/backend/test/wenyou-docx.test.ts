@@ -76,4 +76,32 @@ describe("纯 Node 原生 .docx 生成器", () => {
 		expect(doc).not.toContain("**清源城**");
 		expect(doc).toContain("清源城");
 	});
+
+	it("单级有序列表独立分段保留序号，且剥离 XML 1.0 非法控制字符", () => {
+		const buf = buildPolicyDocx({
+			title: "清源军政条陈\x00\x07",
+			bodyMarkdown: [
+				"今春防务以稳守清源为主。",
+				"1. 河阳镇收拢三县常平仓春粮八万石。",
+				"2. 临河渡北岸增筑烽燧三座。",
+				"一、官盐三万引按约发往凉州\x0B\x1F。",
+			].join("\n"),
+			createdAt: "2026-11-26T00:00:00.000Z",
+		});
+
+		const entries = unzipEntries(buf);
+		const doc = entries.get("word/document.xml")!;
+		const core = entries.get("docProps/core.xml")!;
+
+		// 不含非法控制字符
+		expect(/[\x00-\x08\x0B\x0C\x0E-\x1F]/.test(doc)).toBe(false);
+		expect(/[\x00-\x08\x0B\x0C\x0E-\x1F]/.test(core)).toBe(false);
+
+		// 每条有序列表均为独立 <w:p> 且保留原始序号，不粘连成同一段
+		const paragraphs = [...doc.matchAll(/<w:p>[\s\S]*?<\/w:p>/g)].map((m) => m[0]);
+		expect(paragraphs.some((p) => p.includes("今春防务以稳守清源为主。") && !p.includes("1. 河阳镇"))).toBe(true);
+		expect(paragraphs.some((p) => p.includes("1. 河阳镇收拢三县常平仓春粮八万石。") && !p.includes("2. 临河渡"))).toBe(true);
+		expect(paragraphs.some((p) => p.includes("2. 临河渡北岸增筑烽燧三座。"))).toBe(true);
+		expect(paragraphs.some((p) => p.includes("一、官盐三万引按约发往凉州。"))).toBe(true);
+	});
 });

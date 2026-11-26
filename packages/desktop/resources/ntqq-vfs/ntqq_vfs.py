@@ -8,10 +8,12 @@ Implements NTQQ SQLCipher page decryption (matching assets/qq_decrypt.cjs):
 - In-memory WAL committed-frame parsing & overlay (no disk copy of main DB)
 - Anti-torn-read consistency checks with bounded exponential-backoff retries
 
-Crypto backends (auto-selected, zero third-party deps on Windows):
+Crypto backends (auto-selected, zero third-party deps on Windows/macOS/Linux):
   1. win32-bcrypt (Windows CNG bcrypt.dll, hardware AES-NI, fastest cold start)
-  2. cryptography (cryptography.hazmat)
-  3. Cryptodome / Crypto (pycryptodomex / pycryptodome)
+  2. darwin-commoncrypto (macOS native CommonCrypto CCCrypt)
+  3. openssl-libcrypto (POSIX OpenSSL libcrypto EVP AES-256-CBC)
+  4. cryptography (cryptography.hazmat)
+  5. Cryptodome / Crypto (pycryptodomex / pycryptodome)
 """
 from __future__ import annotations
 
@@ -169,12 +171,259 @@ class _BcryptAesCbc:
         return out_buf.raw[: out_len.value]
 
     def close(self) -> None:
-        if self._h_key:
-            self._lib.BCryptDestroyKey(self._h_key)
+        lib = getattr(self, "_lib", None)
+        h_key = getattr(self, "_h_key", None)
+        if h_key and lib is not None:
+            lib.BCryptDestroyKey(h_key)
             self._h_key = ctypes.c_void_p()
-        if self._h_alg:
-            self._lib.BCryptCloseAlgorithmProvider(self._h_alg, 0)
+        h_alg = getattr(self, "_h_alg", None)
+        if h_alg and lib is not None:
+            lib.BCryptCloseAlgorithmProvider(h_alg, 0)
             self._h_alg = ctypes.c_void_p()
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass
+
+
+class _CommonCryptoAesCbc:
+    """Zero-dependency macOS CommonCrypto AES-256-CBC decryptor (no padding)."""
+
+    _K_CC_DECRYPT = 1
+    _K_CC_ALGORITHM_AES = 0
+    _K_CC_OPTIONS_CBC_NO_PADDING = 0
+    _K_CC_SUCCESS = 0
+
+    def __init__(self, key_bytes: bytes):
+        if sys.platform != "darwin":
+            raise OSError("darwin-commoncrypto is only available on macOS")
+        if len(key_bytes) != 32:
+            raise ValueError(f"AES-256 requires a 32-byte key, got {len(key_bytes)}")
+
+        lib = None
+        last_err: Exception | None = None
+        for candidate in (
+            "/usr/lib/system/libcommonCrypto.dylib",
+            "/usr/lib/libSystem.B.dylib",
+            "libSystem.B.dylib",
+        ):
+            try:
+                loaded = ctypes.CDLL(candidate)
+                if hasattr(loaded, "CCCrypt"):
+                    lib = loaded
+                    break
+            except OSError as exc:
+                last_err = exc
+        if lib is None:
+            raise OSError(f"Unable to load CommonCrypto CCCrypt: {last_err}") from last_err
+
+        lib.CCCrypt.argtypes = [
+            ctypes.c_uint32,
+            ctypes.c_uint32,
+            ctypes.c_uint32,
+            ctypes.c_void_p,
+            ctypes.c_size_t,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_size_t,
+            ctypes.c_void_p,
+            ctypes.c_size_t,
+            ctypes.POINTER(ctypes.c_size_t),
+        ]
+        lib.CCCrypt.restype = ctypes.c_int32
+
+        self._lib = lib
+        self._key_len = len(key_bytes)
+        self._key_buf = (ctypes.c_ubyte * self._key_len).from_buffer_copy(key_bytes)
+
+    def decrypt(self, ciphertext: bytes, iv: bytes) -> bytes:
+        if len(iv) != 16:
+            raise ValueError(f"AES-CBC requires a 16-byte IV, got {len(iv)}")
+        ct_len = len(ciphertext)
+        if ct_len % 16 != 0:
+            raise ValueError(f"AES-CBC ciphertext length must be multiple of 16, got {ct_len}")
+        if ct_len == 0:
+            return b""
+
+        ct_buf = (ctypes.c_ubyte * ct_len).from_buffer_copy(ciphertext)
+        iv_buf = (ctypes.c_ubyte * 16).from_buffer_copy(iv)
+        out_buf = ctypes.create_string_buffer(ct_len)
+        out_moved = ctypes.c_size_t(0)
+        status = self._lib.CCCrypt(
+            self._K_CC_DECRYPT,
+            self._K_CC_ALGORITHM_AES,
+            self._K_CC_OPTIONS_CBC_NO_PADDING,
+            self._key_buf,
+            self._key_len,
+            iv_buf,
+            ct_buf,
+            ct_len,
+            out_buf,
+            ct_len,
+            ctypes.byref(out_moved),
+        )
+        if status != self._K_CC_SUCCESS:
+            raise OSError(f"CCCrypt failed with status={status}")
+        if out_moved.value != ct_len:
+            raise OSError(f"CCCrypt output length mismatch: expected {ct_len}, got {out_moved.value}")
+        return out_buf.raw[: out_moved.value]
+
+    def close(self) -> None:
+        pass
+
+
+def _load_openssl_libcrypto() -> ctypes.CDLL:
+    """Locate a usable POSIX OpenSSL libcrypto shared library without hitting macOS system stubs."""
+    candidates: list[str] = []
+    if sys.platform == "darwin":
+        candidates.extend(
+            [
+                "libcrypto.3.dylib",
+                "libcrypto.1.1.dylib",
+                "/opt/homebrew/opt/openssl@3/lib/libcrypto.3.dylib",
+                "/usr/local/opt/openssl@3/lib/libcrypto.3.dylib",
+            ]
+        )
+    else:
+        candidates.extend(["libcrypto.so.3", "libcrypto.so.1.1"])
+
+    try:
+        found = ctypes.util.find_library("crypto")
+    except Exception:
+        found = None
+    if found:
+        # Avoid loading macOS's unsafe /usr/lib/libcrypto.dylib stub which may abort the process
+        if sys.platform != "darwin" or (
+            found != "libcrypto.dylib" and not found.startswith("/usr/lib/libcrypto")
+        ):
+            candidates.append(found)
+
+    if sys.platform != "darwin":
+        candidates.append("libcrypto.so")
+
+    required_syms = (
+        "EVP_CIPHER_CTX_new",
+        "EVP_aes_256_cbc",
+        "EVP_DecryptInit_ex",
+        "EVP_CIPHER_CTX_set_padding",
+        "EVP_DecryptUpdate",
+        "EVP_CIPHER_CTX_free",
+    )
+    seen: set[str] = set()
+    last_err: Exception | None = None
+    for name in candidates:
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        try:
+            lib = ctypes.CDLL(name)
+            if all(hasattr(lib, sym) for sym in required_syms):
+                return lib
+        except Exception as exc:
+            last_err = exc
+    raise OSError(f"Unable to load OpenSSL libcrypto: {last_err}") from last_err
+
+
+class _OpenSslAesCbc:
+    """Zero-dependency POSIX OpenSSL libcrypto AES-256-CBC decryptor (no padding)."""
+
+    def __init__(self, key_bytes: bytes):
+        if sys.platform == "win32":
+            raise OSError("openssl-libcrypto backend is only used on non-Windows platforms")
+        if len(key_bytes) != 32:
+            raise ValueError(f"AES-256 requires a 32-byte key, got {len(key_bytes)}")
+
+        lib = _load_openssl_libcrypto()
+        lib.EVP_CIPHER_CTX_new.argtypes = []
+        lib.EVP_CIPHER_CTX_new.restype = ctypes.c_void_p
+
+        lib.EVP_aes_256_cbc.argtypes = []
+        lib.EVP_aes_256_cbc.restype = ctypes.c_void_p
+
+        lib.EVP_DecryptInit_ex.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+        ]
+        lib.EVP_DecryptInit_ex.restype = ctypes.c_int
+
+        lib.EVP_CIPHER_CTX_set_padding.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        lib.EVP_CIPHER_CTX_set_padding.restype = ctypes.c_int
+
+        lib.EVP_DecryptUpdate.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_int),
+            ctypes.c_void_p,
+            ctypes.c_int,
+        ]
+        lib.EVP_DecryptUpdate.restype = ctypes.c_int
+
+        lib.EVP_CIPHER_CTX_free.argtypes = [ctypes.c_void_p]
+        lib.EVP_CIPHER_CTX_free.restype = None
+
+        self._lib = lib
+        self._ctx: int | None = None
+        self._cipher = lib.EVP_aes_256_cbc()
+        if not self._cipher:
+            raise OSError("EVP_aes_256_cbc returned NULL")
+        ctx = lib.EVP_CIPHER_CTX_new()
+        if not ctx:
+            raise OSError("EVP_CIPHER_CTX_new returned NULL")
+        self._ctx = ctx
+        self._key_buf = (ctypes.c_ubyte * 32).from_buffer_copy(key_bytes)
+        try:
+            zero_iv = (ctypes.c_ubyte * 16)()
+            if lib.EVP_DecryptInit_ex(self._ctx, self._cipher, None, self._key_buf, zero_iv) != 1:
+                raise OSError("EVP_DecryptInit_ex(init) failed")
+            if lib.EVP_CIPHER_CTX_set_padding(self._ctx, 0) != 1:
+                raise OSError("EVP_CIPHER_CTX_set_padding(0) failed")
+        except Exception:
+            self.close()
+            raise
+
+    def decrypt(self, ciphertext: bytes, iv: bytes) -> bytes:
+        if not self._ctx:
+            raise RuntimeError("OpenSSL EVP_CIPHER_CTX is closed")
+        if len(iv) != 16:
+            raise ValueError(f"AES-CBC requires a 16-byte IV, got {len(iv)}")
+        ct_len = len(ciphertext)
+        if ct_len % 16 != 0:
+            raise ValueError(f"AES-CBC ciphertext length must be multiple of 16, got {ct_len}")
+        if ct_len == 0:
+            return b""
+
+        iv_buf = (ctypes.c_ubyte * 16).from_buffer_copy(iv)
+        ct_buf = (ctypes.c_ubyte * ct_len).from_buffer_copy(ciphertext)
+        out_buf = ctypes.create_string_buffer(ct_len)
+        out_len = ctypes.c_int(0)
+
+        if self._lib.EVP_DecryptInit_ex(self._ctx, None, None, None, iv_buf) != 1:
+            raise OSError("EVP_DecryptInit_ex(iv) failed")
+        if self._lib.EVP_CIPHER_CTX_set_padding(self._ctx, 0) != 1:
+            raise OSError("EVP_CIPHER_CTX_set_padding(0) failed")
+        if self._lib.EVP_DecryptUpdate(self._ctx, out_buf, ctypes.byref(out_len), ct_buf, ct_len) != 1:
+            raise OSError("EVP_DecryptUpdate failed")
+        if out_len.value != ct_len:
+            raise OSError(f"EVP_DecryptUpdate output length mismatch: expected {ct_len}, got {out_len.value}")
+        return out_buf.raw[: out_len.value]
+
+    def close(self) -> None:
+        ctx = getattr(self, "_ctx", None)
+        lib = getattr(self, "_lib", None)
+        if ctx and lib is not None:
+            lib.EVP_CIPHER_CTX_free(ctx)
+            self._ctx = None
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass
 
 
 def make_aes_decryptor(
@@ -182,12 +431,24 @@ def make_aes_decryptor(
 ) -> tuple[str, Callable[[bytes, bytes], bytes], Callable[[], None]]:
     """Return (backend_name, decrypt_fn, close_fn) for AES-256-CBC without padding."""
     pref = (preferred_backend or os.environ.get("WENYOU_VFS_CRYPTO_BACKEND", "")).strip().lower()
-    if pref == "bcrypt":
-        pref = "win32-bcrypt"
+    pref_aliases = {
+        "bcrypt": "win32-bcrypt",
+        "commoncrypto": "darwin-commoncrypto",
+        "openssl": "openssl-libcrypto",
+    }
+    pref = pref_aliases.get(pref, pref)
 
     def _try_bcrypt():
         cng = _BcryptAesCbc(key_bytes)
         return "win32-bcrypt", cng.decrypt, cng.close
+
+    def _try_commoncrypto():
+        cc = _CommonCryptoAesCbc(key_bytes)
+        return "darwin-commoncrypto", cc.decrypt, cc.close
+
+    def _try_openssl():
+        ossl = _OpenSslAesCbc(key_bytes)
+        return "openssl-libcrypto", ossl.decrypt, ossl.close
 
     def _try_cryptography():
         from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
@@ -213,6 +474,8 @@ def make_aes_decryptor(
 
     order = [
         ("win32-bcrypt", _try_bcrypt),
+        ("darwin-commoncrypto", _try_commoncrypto),
+        ("openssl-libcrypto", _try_openssl),
         ("cryptography", _try_cryptography),
         ("cryptodome", _try_cryptodome),
     ]
@@ -681,6 +944,74 @@ _Sqlite3Vfs._fields_ = [
 ]
 
 
+def _iter_darwin_sqlite3_candidates() -> list[str]:
+    """Return libsqlite3*.dylib paths colocated with Python's _sqlite3 extension and prefix."""
+    search_dirs: list[str] = []
+    seen_dirs: set[str] = set()
+
+    def _add_dir(path: str | None) -> None:
+        if not path:
+            return
+        norm = os.path.abspath(path)
+        if norm not in seen_dirs:
+            seen_dirs.add(norm)
+            search_dirs.append(norm)
+
+    mod = getattr(sqlite3, "_sqlite3", None)
+    if mod is None:
+        try:
+            import _sqlite3 as mod  # type: ignore
+        except ImportError:
+            mod = None
+    mod_file = getattr(mod, "__file__", None) if mod is not None else None
+    if isinstance(mod_file, str) and mod_file:
+        mod_dir = os.path.dirname(os.path.abspath(mod_file))
+        _add_dir(mod_dir)
+        _add_dir(os.path.join(mod_dir, "lib"))
+        parent = mod_dir
+        for _ in range(3):
+            next_parent = os.path.dirname(parent)
+            if not next_parent or next_parent == parent:
+                break
+            parent = next_parent
+            _add_dir(parent)
+            _add_dir(os.path.join(parent, "lib"))
+
+    _add_dir(os.path.join(sys.prefix, "lib"))
+    _add_dir(os.path.join(sys.base_prefix, "lib"))
+
+    found: list[str] = []
+    seen_files: set[str] = set()
+    for directory in search_dirs:
+        if not os.path.isdir(directory):
+            continue
+        try:
+            names = [
+                name
+                for name in os.listdir(directory)
+                if name.startswith("libsqlite3") and name.endswith(".dylib")
+            ]
+        except OSError:
+            continue
+        names.sort(
+            key=lambda n: (
+                0 if n == "libsqlite3.0.dylib" else 1 if n == "libsqlite3.dylib" else 2,
+                n,
+            )
+        )
+        for name in names:
+            full = os.path.abspath(os.path.join(directory, name))
+            if full not in seen_files and os.path.isfile(full):
+                seen_files.add(full)
+                found.append(full)
+    if isinstance(mod_file, str) and mod_file and os.path.isfile(mod_file):
+        mod_abs = os.path.abspath(mod_file)
+        if mod_abs not in seen_files:
+            seen_files.add(mod_abs)
+            found.append(mod_abs)
+    return found
+
+
 def _load_sqlite3_cdll() -> ctypes.CDLL:
     """Resolve the exact sqlite3 shared library already loaded by Python's _sqlite3."""
     sqlite3.connect(":memory:").close()
@@ -702,18 +1033,33 @@ def _load_sqlite3_cdll() -> ctypes.CDLL:
         if found:
             return ctypes.CDLL(found)
         raise RuntimeError("Unable to locate sqlite3.dll loaded by Python")
-    for candidate in (None, ctypes.util.find_library("sqlite3"), "libsqlite3.so.0", "libsqlite3.dylib"):
-        if candidate is None:
-            lib = ctypes.CDLL(None)
+
+    try:
+        global_lib = ctypes.CDLL(None)
+        if hasattr(global_lib, "sqlite3_vfs_register"):
+            return global_lib
+    except OSError:
+        pass
+
+    candidates: list[str] = []
+    if sys.platform == "darwin":
+        candidates.extend(_iter_darwin_sqlite3_candidates())
+    found = ctypes.util.find_library("sqlite3")
+    if found:
+        candidates.append(found)
+    candidates.extend(("libsqlite3.so.0", "libsqlite3.dylib"))
+
+    seen: set[str] = set()
+    for candidate in candidates:
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+        try:
+            lib = ctypes.CDLL(candidate)
             if hasattr(lib, "sqlite3_vfs_register"):
                 return lib
-        elif candidate:
-            try:
-                lib = ctypes.CDLL(candidate)
-                if hasattr(lib, "sqlite3_vfs_register"):
-                    return lib
-            except OSError:
-                continue
+        except OSError:
+            continue
     raise RuntimeError("Unable to locate libsqlite3 for VFS registration")
 
 

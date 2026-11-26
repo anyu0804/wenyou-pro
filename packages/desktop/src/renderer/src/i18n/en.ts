@@ -14,7 +14,7 @@ export const en: Messages = {
 		targetUnavailable: "The notification's session or connection is no longer available.",
 	},
 	emptyState: {
-		slogan: "Interactive Chronicle & Strategy Copilot",
+		slogan: "Siming · Interactive Chronicle & Strategy Agent",
 	},
 	wenyou: {
 		workbenchLabel: "Campaign Desk",
@@ -23,7 +23,7 @@ export const en: Messages = {
 	storageStartup: {
 		preparing: "Preparing…",
 		chooseTitle: "How would you like to start?",
-		chooseHint: "Previous data was found. Bring it with you to continue using Percho.",
+		chooseHint: "Previous data was found. Bring it with you to continue using Wenyou Pro.",
 		copyOption: "Bring existing data",
 		copyOptionHint: "Copy history, accounts, and extension settings",
 		emptyOption: "Start fresh",
@@ -31,20 +31,20 @@ export const en: Messages = {
 		sourceRetained: "Your original data will be kept.",
 		continue: "Continue",
 		back: "Back",
-		step: "Set up Percho · {step} / 2",
-		reviewTitle: "Bring your data to Percho",
+		step: "Set up Wenyou Pro · {step} / 2",
+		reviewTitle: "Bring your data to Wenyou Pro",
 		reviewHint: "Copy it to a private directory. The original stays in place.",
 		contents: "History, accounts, and settings",
 		contentsHint: "Includes models, extensions, and Skills. It may also contain Pi CLI data.",
-		closeOldApps: "First close the old Percho and any Pi CLI using this directory.",
+		closeOldApps: "First close the old Wenyou Pro and any Pi CLI using this directory.",
 		startCopy: "Start transfer",
-		emptyTitle: "Start with a fresh Percho",
+		emptyTitle: "Start with a fresh Wenyou Pro",
 		emptyHint: "No old history, accounts, or extensions will be imported.",
-		newDirectory: "Create a private directory for Percho",
+		newDirectory: "Create a private directory for Wenyou Pro",
 		emptySummary: "Old data stays in place. New data will be saved in the new directory.",
 		existingTitle: "Continue with existing data",
 		adoptHint: "No merging, overwriting, or automatic import of other old history.",
-		progressTitle: "Preparing your Percho",
+		progressTitle: "Preparing your Wenyou Pro",
 		keepOpen: "Please keep the app open.",
 		scanning: "Checking data to copy…",
 		verifying: "Verifying data…",
@@ -60,18 +60,18 @@ export const en: Messages = {
 		recoveryPath: "Recovery copy location",
 		rescan: "Scan again",
 		restartHint:
-			"Percho could not safely continue. Quit and restart the app. Existing data and recovery copies will be kept.",
+			"Wenyou Pro could not safely continue. Quit and restart the app. Existing data and recovery copies will be kept.",
 		externalHint: "These resources still point to the same locations. Changes may also affect Pi CLI.",
 		errorTitle: "Unable to prepare data",
 		errorHint: "Review the details, resolve the issue, and check again. The original directory is unchanged.",
 		errorDetails: "Error details",
 		cancelTitle: "Cancel preparation and quit?",
 		cancelHint:
-			"The original directory and recovery copies will be kept. Percho will stop safely before quitting.",
+			"The original directory and recovery copies will be kept. Wenyou Pro will stop safely before quitting.",
 		keepWaiting: "Keep waiting",
 		done: "Done",
 		exitSetup: "Quit setup",
-		title: "Prepare Percho user data",
+		title: "Prepare Wenyou Pro user data",
 		inspecting: "Inspecting storage…",
 		choice: "Separate user data from Pi CLI",
 		existing: "An existing private directory was found",
@@ -80,12 +80,12 @@ export const en: Messages = {
 		ready: "Opening workspace…",
 		error:
 			"Preparation did not finish. The original directory is unchanged. Review the error and retry or exit.",
-		target: "Percho data directory",
+		target: "Wenyou Pro data directory",
 		source: "Legacy data candidate",
 		count: "{files} files · {mb} MB",
 		importHint:
-			"Close the old Percho and any Pi CLI using this directory first. The copy includes history, accounts, and extension settings from the shared directory, possibly including CLI data. The original stays in place. Starting empty imports none of it.",
-		existingHint: "An existing Percho data directory was found.",
+			"Close the old Wenyou Pro and any Pi CLI using this directory first. The copy includes history, accounts, and extension settings from the shared directory, possibly including CLI data. The original stays in place. Starting empty imports none of it.",
+		existingHint: "An existing Wenyou Pro data directory was found.",
 		external: "These explicitly configured external resources may remain shared:",
 		copy: "Copy existing data",
 		useEmpty: "Start empty",
@@ -178,7 +178,7 @@ export const en: Messages = {
 		authRunRemotely:
 			"Inside the server terminal, run the same-version maintenance entry and use /login, or /mcp login for MCP authorization. Maintenance refuses to start while the service owns the data directory:",
 		authFinish:
-			"Exit maintenance after login, reconnect in Percho, and refresh models. Credentials stay in this Percho-only directory, separate from an existing Pi CLI:",
+			"Exit maintenance after login, reconnect in Wenyou Pro, and refresh models. Credentials stay in this Wenyou Pro-only directory, separate from an existing Pi CLI:",
 		stopping: "Stopping service",
 		stopService: "Stop remote service",
 		confirmStop: "Confirm stop",
@@ -213,14 +213,14 @@ export const en: Messages = {
 		failure: {
 			network: "Network failure. Retries are bounded and can be cancelled.",
 			authentication: "Configure non-interactive SSH key or agent authentication in an external terminal.",
-			hostKey: "Verify the host key externally. Percho never edits known_hosts.",
+			hostKey: "Verify the host key externally. Wenyou Pro never edits known_hosts.",
 			identity:
 				"Remote identity changed. Old projects are blocked; verify before explicitly removing and adding the connection.",
 			incompatible: "The runtime is incompatible. Use the explicit stop and update flow.",
 			notInstalled: "Install the runtime first. A check never installs it.",
-			busy: "Another client controls this service. Percho will not take over.",
+			busy: "Another client controls this service. Wenyou Pro will not take over.",
 			requirements:
-				"Prepare compatible Node and basic commands, then check again. Percho does not modify the server environment.",
+				"Prepare compatible Node and basic commands, then check again. Wenyou Pro does not modify the server environment.",
 			other: "Review the error details and retry.",
 		},
 
@@ -333,7 +333,7 @@ export const en: Messages = {
 		installUnconfirmed:
 			"Installation of {version} was requested, but that version has not been observed running. This is not proof of an installation failure.",
 		windowsRecovery:
-			"If the installer repeatedly asks you to close Percho, cancel it, restart Windows, then download the official installer using the original installation scope. If it still fails, back up your data before a normal uninstall and reinstall. Do not manually delete user data or registry entries.",
+			"If the installer repeatedly asks you to close Wenyou Pro, cancel it, restart Windows, then download the official installer using the original installation scope. If it still fails, back up your data before a normal uninstall and reinstall. Do not manually delete user data or registry entries.",
 		diagnosticsPrivacy:
 			"Contains update logs, versions and paths; Windows also includes a current snapshot of relevant processes and installation registrations. No conversations, credentials or process command lines. Paths may include your account name: review before sharing. Nothing is uploaded automatically. Internal old-uninstaller file failures may still require system tracing.",
 		exportDiagnostics: "Export update diagnostics",
@@ -343,7 +343,7 @@ export const en: Messages = {
 		manualInstaller: "Official installer",
 	},
 	empty: {
-		hint: "Pick a project directory to start chatting with Pi Agent",
+		hint: "Pick a project directory to start chatting with Siming",
 		cwd: "Working directory: {cwd}",
 		switchDir: "Switch directory",
 		pickDir: "Pick project directory",
@@ -754,7 +754,7 @@ export const en: Messages = {
 		removeProject: "Remove project",
 		removeProjectTitle: "Remove {name}?",
 		removeProjectDesc:
-			"This deletes {count} unarchived and {archived} archived sessions under this project in Percho; the project files on your computer stay untouched.",
+			"This deletes {count} unarchived and {archived} archived sessions under this project in Wenyou Pro; the project files on your computer stay untouched.",
 		removeProjectRetry: "Could not remove {name}. Retry",
 		catalogOffline: "Remote disconnected",
 		catalogConnect: "Connect",
@@ -884,7 +884,7 @@ export const en: Messages = {
 		},
 		about: {
 			version: "Version",
-			poweredBy: "Dedicated Wenyou Agent Workbench · Powered by Pi Coding Agent",
+			poweredBy: 'Built-in Wenyou Agent "Siming" · Powered by Pi Coding Agent',
 			sourceCode: "Source code & feedback",
 			upstreamTitle: "Open-source Attribution",
 			upstreamNotice:
@@ -937,7 +937,7 @@ export const en: Messages = {
 			builtinEditTitle: "Configure {name} endpoint",
 			builtinBaseUrl: "baseUrl (optional; blank = official endpoint)",
 			builtinHint:
-				"Models keep {name}'s official config (thinking/window metadata unchanged); only the request endpoint is overridden. Clear baseUrl and save to return to the official endpoint. The key is stored in Percho's own auth.json (inside its user data directory), not shared with the Pi CLI or other clients.",
+				"Models keep {name}'s official config (thinking/window metadata unchanged); only the request endpoint is overridden. Clear baseUrl and save to return to the official endpoint. The key is stored in Wenyou Pro's own auth.json (inside its user data directory), not shared with the Pi CLI or other clients.",
 			addCustom: "+ Add custom provider",
 			customTitle: "Custom Provider",
 			editCustom: "Edit",
@@ -985,7 +985,7 @@ export const en: Messages = {
 		},
 		skills: {
 			title: "Loaded Skills",
-			hint: "Skills loaded for the current project (active session), from Percho's user-level skills directory and project .pi/skills",
+			hint: "Skills loaded for the current project (active session), from Wenyou Pro's user-level skills directory and project .pi/skills",
 			empty: "No skills loaded for the current project",
 			emptyNoSession:
 				"No open session. Create or open a session first, then the loaded skills for that project will show here",
@@ -1038,9 +1038,9 @@ export const en: Messages = {
 			deleteNow: "Remove",
 			enable: "Enable",
 			restartRequired:
-				"Configuration saved. Restart Percho to apply it; existing connections remain unchanged.",
+				"Configuration saved. Restart Wenyou Pro to apply it; existing connections remain unchanged.",
 			restartRequiredRemote:
-				"Configuration saved. Restart the corresponding remote Percho service to apply it; existing connections remain unchanged.",
+				"Configuration saved. Restart the corresponding remote Wenyou Pro service to apply it; existing connections remain unchanged.",
 			waitingForRestart: "Restart pending",
 			reconnecting: "Reconnecting…",
 			details: "Details",
@@ -1138,7 +1138,7 @@ export const en: Messages = {
 			updateHint:
 				"A newer version is available on npm. Version information only; updating is not available here yet.",
 			npmNotFound:
-				"npm (Node.js package manager) not found. Install Node.js (e.g. brew install node) and restart Percho; if npm lives in a non-standard path, add it to the system PATH and restart.",
+				"npm (Node.js package manager) not found. Install Node.js (e.g. brew install node) and restart Wenyou Pro; if npm lives in a non-standard path, add it to the system PATH and restart.",
 			uninstall: "Uninstall",
 			confirmUninstall: "Uninstall?",
 			removing: "Removing…",
@@ -1158,7 +1158,7 @@ export const en: Messages = {
 			flags: "{count} flags",
 			shortcuts: "{count} shortcuts",
 			subagentInstallWarning:
-				"This package provides subagent capabilities. Percho already includes a deeply integrated built-in subagent; its same-named tools will be taken over after installation.",
+				"This package provides subagent capabilities. Wenyou Pro already includes a deeply integrated built-in subagent; its same-named tools will be taken over after installation.",
 			subagentInstallConfirm: "Built-in takes over — install anyway",
 			subagentBuiltin: "subagent handled by built-in",
 			unavailableBuiltin: "This built-in extension is not available in this client",
@@ -1172,7 +1172,7 @@ export const en: Messages = {
 			empty:
 				"No plugins yet. The plugin directory lives under ui-plugins in the user data directory (ask an agent to write one following the SPEC)",
 			agentHint:
-				"Ask percho (agent) to write a plugin per the SPEC, or drop one into the plugin directory and enable it here",
+				"Ask Wenyou Pro (agent) to write a plugin per the SPEC, or drop one into the plugin directory and enable it here",
 			openDir: "Open folder",
 			enable: "Enable",
 			confirmEnable: "Enable? This plugin's code will run inside the app",

@@ -4,6 +4,7 @@ import type {
 	NtqqGroupSummary,
 	NtqqStatusSnapshot,
 	NtqqSyncCampaignResult,
+	ViewerScope,
 	WenyouWorkspaceOverview,
 } from "@percho/shared";
 import { act } from "react";
@@ -23,6 +24,9 @@ const piMocks = vi.hoisted(() => ({
 const execMocks = vi.hoisted(() => ({
 	wenyouInitCampaign: vi.fn<(args: { cwd: string; worldTitle?: string; currentEra?: string }) => Promise<WenyouWorkspaceOverview>>(),
 	wenyouGetOverview: vi.fn<(args: { cwd: string; viewer?: string }) => Promise<WenyouWorkspaceOverview>>(),
+	wenyouSetViewerScope: vi.fn<
+		(args: { cwd: string; viewer: string; maxViewer?: string }) => Promise<{ viewer: ViewerScope; maxViewer: ViewerScope }>
+	>(),
 	ensureProjectTrust: vi.fn<() => Promise<void>>(),
 	prompt: vi.fn<(args: { sessionId: string; text: string }) => Promise<void>>(),
 }));
@@ -94,11 +98,15 @@ vi.mock("../../stores/toasts", () => ({
 	pushExtensionToast: toastMock,
 }));
 
+import { useUiPreferencesStore } from "../../stores/ui-preferences";
 import { useWenyouCanvasStore } from "../../stores/wenyou-canvas";
 import { CreateWorldDialog } from "./CreateWorldDialog";
 import { buildWorldBootstrapPrompt } from "./world-bootstrap";
 
-function makeSnapshot(ready: boolean): NtqqStatusSnapshot {
+function makeSnapshot(
+	ready: boolean,
+	overrides?: Partial<NtqqStatusSnapshot["status"]>,
+): NtqqStatusSnapshot {
 	return {
 		config: { qqUin: ready ? "10001" : null, dbDir: null, keyMapPath: null, pythonPath: null },
 		status: {
@@ -118,6 +126,7 @@ function makeSnapshot(ready: boolean): NtqqStatusSnapshot {
 			assetsReady: true,
 			ready,
 			missingReasons: ready ? [] : ["尚未配置 QQ 号"],
+			...overrides,
 		},
 	};
 }
@@ -199,6 +208,7 @@ beforeEach(() => {
 		makeOverview(cwd, worldTitle ?? "新建文游世界"),
 	);
 	execMocks.wenyouGetOverview.mockImplementation(async ({ cwd }) => makeOverview(cwd, "顺唐文游主群"));
+	execMocks.wenyouSetViewerScope.mockResolvedValue({ viewer: { kind: "gm" }, maxViewer: { kind: "gm" } });
 	execMocks.prompt.mockResolvedValue(undefined);
 
 	useWenyouCanvasStore.setState({
@@ -207,6 +217,11 @@ beforeEach(() => {
 		cwd: null,
 		overview: null,
 		activeTab: "briefing",
+	});
+	useUiPreferencesStore.setState({
+		onboardingCompleted: true,
+		onboardingForceOpen: false,
+		onboardingInitialStep: 1,
 	});
 
 	host = document.createElement("div");
@@ -328,5 +343,131 @@ describe("CreateWorldDialog", () => {
 		const text = buildWorldBootstrapPrompt({ worldTitle: "空白新局", bindings: [] });
 		expect(text).toContain("空白新局");
 		expect(text).toContain("不要编造任何预设剧情或架空模板");
+	});
+
+	it("支持在新建世界弹窗中调高首轮单群拉取历史深度至 20,000 条上限", async () => {
+		await act(async () => {
+			root.render(<CreateWorldDialog />);
+		});
+
+		const dialog = document.body.querySelector('[role="dialog"]');
+		const checkbox = dialog?.querySelector<HTMLInputElement>('input[type="checkbox"]');
+		await act(async () => {
+			checkbox?.click();
+		});
+
+		const limitSelect = dialog?.querySelector<HTMLSelectElement>('select[aria-label="首轮每群拉取历史条数"]');
+		expect(limitSelect).not.toBeNull();
+		await act(async () => {
+			limitSelect!.value = "20000";
+			limitSelect!.dispatchEvent(new Event("change", { bubbles: true }));
+		});
+
+		const submitBtn = [...(dialog?.querySelectorAll("button") ?? [])].find((b) =>
+			b.textContent?.includes("创建并抓取 1 个群建档"),
+		);
+		await act(async () => {
+			submitBtn?.click();
+		});
+
+		expect(piMocks.wenyouNtqqSyncCampaign).toHaveBeenCalledWith({
+			cwd: "C:\\mock\\.wenyou-pro\\worlds\\顺唐文游主群",
+			limit: 20000,
+		});
+	});
+
+	it("macOS / Linux（platformSupported: false）展示离线导入指引并支持创建空白世界", async () => {
+		piMocks.wenyouGetDefaultWorldsDir.mockResolvedValue("/Users/fixture-mac/.wenyou-pro/worlds");
+		piMocks.wenyouCreateWorldDir.mockImplementation(async ({ worldTitle }) => ({
+			cwd: `/Users/fixture-mac/.wenyou-pro/worlds/${worldTitle || "新世界"}`,
+			worldTitle: worldTitle || "新世界",
+		}));
+		piMocks.wenyouNtqqGetStatus.mockResolvedValue(
+			makeSnapshot(false, {
+				platformSupported: false,
+				canExtractKey: false,
+				pythonPath: "/usr/bin/python3",
+				pythonVersion: "3.12.4",
+				pythonBundled: false,
+				assetsDir: "/Applications/Wenyou Pro.app/Contents/Resources/ntqq-vfs",
+				missingReasons: ["当前系统暂不支持一键提取本机 QQ 密钥"],
+			}),
+		);
+
+		await act(async () => {
+			root.render(<CreateWorldDialog />);
+		});
+
+		const dialog = document.body.querySelector('[role="dialog"]');
+		expect(dialog).not.toBeNull();
+		expect(dialog?.textContent).toContain("当前系统暂不支持一键直采本机 QQ");
+		expect(dialog?.textContent).toContain(".txt");
+		expect(dialog?.textContent).toContain(".json");
+		expect(dialog?.textContent).toContain("00-群聊收集/");
+		expect(dialog?.textContent).not.toContain("本机 QQ 只读抓取未就绪");
+		expect(dialog?.textContent).not.toContain("去配置 QQ 号与密钥");
+		expect(piMocks.wenyouNtqqListGroups).not.toHaveBeenCalled();
+
+		const manualKeyBtn = [...(dialog?.querySelectorAll("button") ?? [])].find(
+			(b) => b.textContent === "手动导入密钥",
+		);
+		expect(manualKeyBtn).toBeDefined();
+
+		const titleInput = dialog?.querySelector<HTMLInputElement>('input[placeholder*="留空则自动使用主群名"]');
+		expect(titleInput).not.toBeNull();
+		await act(async () => {
+			setInputValue(titleInput!, "岭南商路");
+		});
+
+		const emptyWorldBtn = [...(dialog?.querySelectorAll("button") ?? [])].find(
+			(b) => b.textContent === "仅建空世界",
+		);
+		expect(emptyWorldBtn).toBeDefined();
+		await act(async () => {
+			emptyWorldBtn?.click();
+		});
+
+		expect(piMocks.wenyouCreateWorldDir).toHaveBeenCalledWith({ worldTitle: "岭南商路" });
+		expect(execMocks.wenyouInitCampaign).toHaveBeenCalledWith({
+			cwd: "/Users/fixture-mac/.wenyou-pro/worlds/岭南商路",
+			worldTitle: "岭南商路",
+			currentEra: "起始建档",
+		});
+		expect(projectsMocks.addKnownProject).toHaveBeenCalledWith(
+			"/Users/fixture-mac/.wenyou-pro/worlds/岭南商路",
+		);
+		expect(piMocks.wenyouNtqqSyncCampaign).not.toHaveBeenCalled();
+		expect(sessionsState.createSession).not.toHaveBeenCalled();
+		expect(execMocks.prompt).not.toHaveBeenCalled();
+		expect(useWenyouCanvasStore.getState().createWorldDialogOpen).toBe(false);
+		expect(useWenyouCanvasStore.getState().open).toBe(true);
+	});
+
+	it("macOS / Linux 模式下点击「手动导入密钥」关闭当前弹窗并打开引导第 2 步", async () => {
+		piMocks.wenyouNtqqGetStatus.mockResolvedValue(
+			makeSnapshot(false, {
+				platformSupported: false,
+				canExtractKey: false,
+				missingReasons: ["当前系统暂不支持一键提取本机 QQ 密钥"],
+			}),
+		);
+
+		await act(async () => {
+			root.render(<CreateWorldDialog />);
+		});
+
+		const dialog = document.body.querySelector('[role="dialog"]');
+		const manualKeyBtn = [...(dialog?.querySelectorAll("button") ?? [])].find(
+			(b) => b.textContent === "手动导入密钥",
+		);
+		expect(manualKeyBtn).toBeDefined();
+
+		await act(async () => {
+			manualKeyBtn?.click();
+		});
+
+		expect(useWenyouCanvasStore.getState().createWorldDialogOpen).toBe(false);
+		expect(useUiPreferencesStore.getState().onboardingForceOpen).toBe(true);
+		expect(useUiPreferencesStore.getState().onboardingInitialStep).toBe(2);
 	});
 });

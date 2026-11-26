@@ -16,8 +16,8 @@ export interface LanObserverHandle {
 
 /** PWA 轻量壳清单（「添加到主屏」全屏）；token 不进 start_url，页面自行从 localStorage 恢复。 */
 const PWA_MANIFEST = JSON.stringify({
-	name: "Percho Remote",
-	short_name: "Percho",
+	name: "Wenyou Pro Remote",
+	short_name: "Wenyou Pro",
 	start_url: "./",
 	scope: "./",
 	display: "standalone",

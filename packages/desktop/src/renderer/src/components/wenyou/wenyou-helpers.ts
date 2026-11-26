@@ -1,6 +1,8 @@
 import {
 	environmentEntityRef,
 	formatViewerScope,
+	sameEnvironment,
+	WENYOU_SANDBOX_PROTOCOL,
 	type WenyouExportPreflightResult,
 	type WenyouWorkspaceOverview,
 } from "@percho/shared";
@@ -32,7 +34,36 @@ export function normalizeDirForCompare(raw: string): string {
 
 export function sameDirectoryPath(a: string | null | undefined, b: string | null | undefined): boolean {
 	if (!a || !b) return false;
+	try {
+		const refA = environmentEntityRef(a);
+		const refB = environmentEntityRef(b);
+		if (!sameEnvironment(refA.environment, refB.environment)) return false;
+	} catch {
+		return false;
+	}
 	return normalizeDirForCompare(a) === normalizeDirForCompare(b);
+}
+
+/** 仅允许内置 `wenyou-sandbox://app...` 或本机回环 HTTP 调试服务接入沙盘桥接，拒绝外部公网 URL */
+export function sanitizePixiSandboxUrl(rawUrl: string | null | undefined): string | null {
+	if (!rawUrl) return null;
+	const trimmed = rawUrl.trim();
+	if (!trimmed) return null;
+	try {
+		const parsed = new URL(trimmed);
+		if (parsed.protocol === `${WENYOU_SANDBOX_PROTOCOL}:`) {
+			return parsed.hostname.toLowerCase() === "app" ? parsed.toString() : null;
+		}
+		if (parsed.protocol === "http:") {
+			const host = parsed.hostname.toLowerCase();
+			if (host === "127.0.0.1" || host === "localhost" || host === "::1" || host === "[::1]") {
+				return parsed.toString();
+			}
+		}
+		return null;
+	} catch {
+		return null;
+	}
 }
 
 /** 从当前战役概览中收集出现过的阵营 ID，供 ViewerScope 选择器与发包视角复用 */

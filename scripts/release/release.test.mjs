@@ -201,7 +201,7 @@ test("actual asar metadata and external resources are verified", async (t) => {
 	await json(join(source, "package.json"), {
 		version: release.version,
 		releaseChannel: "beta",
-		productName: "Percho Beta",
+		productName: "Wenyou Pro Beta",
 		perchoBuildCommit: release.sourceCommit,
 	});
 	await createPackage(source, join(resources, "app.asar"));

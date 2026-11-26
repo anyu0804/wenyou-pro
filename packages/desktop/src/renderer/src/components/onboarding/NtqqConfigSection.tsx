@@ -160,13 +160,22 @@ export function NtqqConfigSection({
 									: "bg-hover text-ink-dim"
 							}`}
 						>
-							{status.ready ? "本机扒库已就绪" : "待补全配置"}
+							{status.ready ? "本机扒库已就绪" : !status.platformSupported ? "可选离线导入" : "待补全配置"}
 						</span>
 					)}
 				</div>
 				<p className="mt-1 text-ui-11 leading-relaxed text-ink-faint">
 					QQ 号与密钥仅保存在本机用户目录，绝不写入任何战役目录或导出包；读取 QQ 消息库全程只读，不修改原文件。
 				</p>
+				{status && !status.platformSupported && !status.ready && (
+					<p className="mt-2 rounded-lg bg-hover/60 px-3 py-2 text-ui-11 leading-relaxed text-ink-dim">
+						macOS / Linux 暂不支持一键提取本机 QQ 密钥；可直接跳过此步，随时将导出的{" "}
+						<code className="font-mono">.txt</code> / <code className="font-mono">.json</code>{" "}
+						聊天记录放入世界目录 <code className="font-mono">00-群聊收集/</code> 离线导入（若已备好{" "}
+						<code className="font-mono">key_map.json</code> 仍可手动导入密钥与选择{" "}
+						<code className="font-mono">nt_db</code> 目录）。
+					</p>
+				)}
 				<div className="mt-2.5 flex items-center gap-2">
 					<input
 						id="wenyou-qq-uin-input"
@@ -242,13 +251,21 @@ export function NtqqConfigSection({
 									status?.keyMapExists ? "text-emerald-600 dark:text-emerald-400" : "text-ink-faint"
 								}`}
 							>
-								{loading ? "探测中…" : status?.keyMapExists ? "已就绪 (key_map.json)" : "尚未提取"}
+								{loading
+									? "探测中…"
+									: status?.keyMapExists
+										? "已就绪 (key_map.json)"
+										: !status || status.canExtractKey
+											? "尚未提取"
+											: "尚未导入"}
 							</span>
 						</div>
 						<p className="mt-0.5 text-ui-10 text-ink-faint">
 							{status?.keyMapExists
 								? "已定位本机 key_map.json，只读按页解密，不修改原库"
-								: "提取前请保持电脑版 NTQQ 处于已登录状态"}
+								: !status || status.canExtractKey
+									? "提取前请保持电脑版 NTQQ 处于已登录状态"
+									: "一键提取仅支持 Windows；可手动导入已有 key_map.json，或使用 00-群聊收集/ 离线导入"}
 						</p>
 					</div>
 					<div className="flex shrink-0 items-center gap-1.5">
@@ -289,9 +306,11 @@ export function NtqqConfigSection({
 								{loading
 									? "探测中…"
 									: status?.pythonPath && status?.assetsReady
-										? `Python ${status.pythonVersion ?? "3"} · 零依赖就绪`
+										? status.pythonBundled
+											? `随包内置 Python ${status.pythonVersion ?? "3"} · 免安装开箱就绪`
+											: `系统 Python ${status.pythonVersion ?? "3"} · 零第三方依赖就绪`
 										: !status?.pythonPath
-											? "未检测到 Python 3"
+											? "未检测到可用运行环境"
 											: "解库组件缺失"}
 							</span>
 						</div>

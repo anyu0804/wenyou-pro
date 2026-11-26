@@ -17,6 +17,11 @@ node_modules/
 dist/
 dist-electron/
 out/
+packages/desktop/resources/pixi-sandbox/
+packages/desktop/resources/ntqq-vfs/python/
+packages/desktop/resources/ntqq-vfs/__pycache__/
+packages/pixi-sandbox/dist/
+packages/pixi-sandbox/work-packages/
 *.tsbuildinfo
 
 # 日志

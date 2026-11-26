@@ -1,14 +1,43 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
-<title>Percho · 正四棱锥</title>
-<!-- a=320; b=512.6402247190518; h=460.000000。三维顶点投影，左右对称。 -->
-<rect x="64" y="64" width="896" height="896" rx="220" fill="#fff"/>
-<g id="guides" display="none" fill="none" stroke="#c8c8d1" stroke-width="2.5" stroke-dasharray="7 8">
- <path d="M285.726 634.474L738.274 634.474M512.000 503.835L512.000 765.114M512.000 258.886L512.000 634.474"/>
- <path d="M512.000 258.886H240M512.000 634.474H240M250 258.8860599124049V634.4744871391589"/>
-</g>
-<g id="hidden" display="inline" fill="none" stroke="#b9bac1" stroke-width="5" stroke-dasharray="10 12" stroke-linecap="round" stroke-linejoin="round">
- <path d="M512.000 503.835L285.726 634.474M512.000 503.835L738.274 634.474M512.000 258.886L512.000 503.835"/>
-</g>
-<g id="pyramid" fill="none" stroke="#73737b" stroke-width="16" stroke-linecap="round" stroke-linejoin="round">
- <path d="M512.000 258.886L285.726 634.474L512.000 765.114M512.000 258.886L738.274 634.474L512.000 765.114"/><path d="M512.000 258.886L512.000 765.114"/>
-</g></svg>
+	<title>司命 · 文游 Pro</title>
+	<defs>
+		<linearGradient id="paper-bg" x1="128" y1="96" x2="896" y2="928" gradientUnits="userSpaceOnUse">
+			<stop offset="0%" stop-color="#FAF8F3" />
+			<stop offset="55%" stop-color="#F6F3EB" />
+			<stop offset="100%" stop-color="#F2EFE7" />
+		</linearGradient>
+	</defs>
+	<!-- 温润宣纸圆角底板与克制内描边 -->
+	<rect x="64" y="64" width="896" height="896" rx="220" fill="url(#paper-bg)" />
+	<rect x="68" y="68" width="888" height="888" rx="216" fill="none" stroke="#DDD8CC" stroke-width="8" />
+	<!-- 展开双页书卷柔白纸面底衬 -->
+	<path
+		id="scroll-pages-fill"
+		d="M 492 422 C 422 374 300 368 196 384 L 196 700 C 300 684 422 692 492 738 C 562 692 684 684 788 700 L 788 384 C 684 368 562 374 492 422 Z"
+		fill="#FFFDF9"
+		fill-opacity="0.78"
+	/>
+	<!-- 现代几何展开双页书卷主轮廓与书脊中轴（右页上沿为毛笔留出对称圆头负空间断点） -->
+	<g id="scroll-book" fill="none" stroke="#1F2329" stroke-linecap="round" stroke-linejoin="round">
+		<!-- 左页 + 下沿 + 右页外侧 + 右上肩（止于毛笔两侧对称圆头断点） -->
+		<path
+			d="M 564 389 C 538 396 512 408 492 422 C 422 374 300 368 196 384 L 196 700 C 300 684 422 692 492 738 C 562 692 684 684 788 700 L 788 384 C 774 382 758 380 742 379"
+			stroke-width="38"
+		/>
+		<line x1="492" y1="422" x2="492" y2="738" stroke-width="34" />
+	</g>
+	<!-- 左页两道极简书简横纹 -->
+	<g id="scroll-lines" fill="none" stroke="#7A7E87" stroke-width="22" stroke-linecap="round">
+		<path d="M 272 486 C 324 478 380 480 424 492" />
+		<path d="M 272 560 C 316 553 364 554 400 564" />
+	</g>
+	<!-- 点睛朱砂小印 -->
+	<rect id="cinnabar-seal" x="648" y="574" width="62" height="62" rx="14" fill="#C83E37" />
+	<!-- 45° 斜切现代几何毛笔（笔锋与笔杆间留干净负空间环槽） -->
+	<g id="calligraphy-brush" transform="translate(544 514) rotate(-45)" fill="#1F2329">
+		<!-- 饱满水滴锥形笔锋 -->
+		<path d="M 0 0 C 32 -4 60 -42 96 -40 C 120 -39 134 -31 140 -25 Q 146 0 140 25 C 134 31 120 39 96 40 C 60 42 32 4 0 0 Z" />
+		<!-- 极简微收几何笔杆（与笔头留 30px 负空间环槽） -->
+		<path d="M 170 -25 Q 176 0 170 25 L 386 21 A 21 21 0 0 0 386 -21 Z" />
+	</g>
+</svg>

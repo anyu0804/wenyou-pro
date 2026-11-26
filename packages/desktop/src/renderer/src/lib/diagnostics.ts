@@ -13,7 +13,7 @@ export function buildDiagnosticsText(
 	const dir = sessionFile.includes("/") ? sessionFile.slice(0, sessionFile.lastIndexOf("/")) : "";
 	const traceFile = dir ? `${dir}/traces/trace-${session.sessionId}.jsonl` : "(内存会话)";
 	return [
-		"Percho 诊断信息",
+		"司命 · 文游 Pro 诊断信息",
 		`sessionId: ${session.sessionId}`,
 		`name: ${session.name ?? "(未命名)"}`,
 		`sessionFile: ${sessionFile}`,

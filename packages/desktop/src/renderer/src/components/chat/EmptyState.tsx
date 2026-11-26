@@ -41,10 +41,10 @@ const WENYOU_QUICK_CARDS: QuickPromptCard[] = [
 		id: "intel",
 		tag: "情报核查",
 		title: "核查群内传闻辨明真伪",
-		desc: "回溯前后 10 条群聊原文，拆解 GM 裁定事实、单方宣传口径与小群未定案草案",
+		desc: "跨全库长程回溯（最高 20,000 条/群）追查传话源头与曲解链路，拆解 GM 裁定、单方宣传与未定案草案",
 		tab: "briefing",
 		prompt:
-			"请检索近期群聊记录并调用 wenyou_lookup_source 回查关键发言的前后 10 条原始上下文，帮我逐条核查群内传闻与各方宣称，明确区分：1）GM 裁定事实、2）单方外交宣传口径、3）小群未定案草案、4）玩家 OOC，并给出可点击的 [sourceId] 证据链。",
+			"请先全库检索相关群聊记录（单群最高可覆盖 20,000 条历史；追源时优先用 order='earliest' 查最早原话，再查近期传播，如当前群库记录较浅可先调 wenyou_pull_qq 设 historyLimit/backfill 补抓历史），并调用 wenyou_lookup_source 拉长上下文窗口（默认前后 30 条，争议传话可扩至前后 100～200 条或按首尾 sourceId 分段续查）核查传闻与转述是否曲解原意。请按时间线还原「最初原话 → 传话走样点」，明确区分：1）GM 裁定事实、2）单方外交宣传口径、3）小群未定案草案、4）玩家 OOC，并附可点击的 [sourceId] 证据链。",
 	},
 	{
 		id: "maps",
@@ -108,12 +108,12 @@ export function EmptyState() {
 					))}
 				</div>
 			) : (
-				/* 世界留空态：直接引导新建空白世界并绑群让 Agent 抓取建档 */
+				/* 世界留空态：直接引导新建空白世界并绑群让司命抓取建档 */
 				<div className="flex w-full max-w-[680px] flex-wrap items-center justify-between gap-3 rounded-2xl border border-border bg-surface/85 px-4 py-3.5">
 					<div className="min-w-0 flex-1">
 						<p className="text-ui-13 font-medium text-ink">从空白世界开始</p>
 						<p className="mt-0.5 text-ui-12 text-ink-dim">
-							不预设剧情模板。指定主要 QQ 群后，由 Agent 直接抓取群聊梳理世界观与首轮局势。
+							不预设剧情模板。指定主要 QQ 群后，由司命直接抓取群聊梳理世界观与首轮局势。
 						</p>
 					</div>
 					<div className="flex shrink-0 items-center gap-2">

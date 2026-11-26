@@ -1,4 +1,5 @@
 import {
+	BUILTIN_PIXI_SANDBOX_URL,
 	formatViewerScope,
 	parseViewerScope,
 	type SourceContextWindow,
@@ -14,7 +15,7 @@ import { COMPOSER_FOCUS_EVENT, newSessionDraftKey, useDraftStore, withDraftText 
 import { useSessionsStore } from "./sessions";
 import { pushExtensionToast } from "./toasts";
 import { useUiStore } from "./ui";
-import { sameDirectoryPath } from "../components/wenyou/wenyou-helpers";
+import { sameDirectoryPath, sanitizePixiSandboxUrl } from "../components/wenyou/wenyou-helpers";
 
 export const WENYOU_CANVAS_MIN_WIDTH = 380;
 export const WENYOU_CANVAS_MAX_WIDTH = 1040;
@@ -30,6 +31,7 @@ export interface SourceContextDrawerState {
 	loading: boolean;
 	sourceId: string | null;
 	highlightQuote?: string;
+	windowSize: number;
 	data: SourceContextWindow | null;
 	error: string | null;
 }
@@ -56,24 +58,58 @@ function readStoredWidth(): number {
 	}
 }
 
+const PIXI_URL_MIGRATED_KEY = "wenyou.canvas.pixiUrl.migratedBuiltin";
+const LEGACY_ALWAYS_UPGRADE_URLS = new Set(["http://127.0.0.1:4173", "http://127.0.0.1:4173/"]);
+const LEGACY_PRE_BUILTIN_URLS = new Set([
+	"http://127.0.0.1:4173",
+	"http://127.0.0.1:4173/",
+	"http://127.0.0.1:5173",
+	"http://127.0.0.1:5173/",
+]);
+
 function readStoredPixiUrl(): string {
 	try {
-		return localStorage.getItem(PIXI_URL_STORAGE_KEY) || "http://127.0.0.1:4173";
+		const saved = localStorage.getItem(PIXI_URL_STORAGE_KEY)?.trim();
+		const migrated = localStorage.getItem(PIXI_URL_MIGRATED_KEY) === "1";
+		if (!saved) {
+			localStorage.setItem(PIXI_URL_MIGRATED_KEY, "1");
+			return BUILTIN_PIXI_SANDBOX_URL;
+		}
+		if (LEGACY_ALWAYS_UPGRADE_URLS.has(saved) || (!migrated && LEGACY_PRE_BUILTIN_URLS.has(saved))) {
+			localStorage.setItem(PIXI_URL_STORAGE_KEY, BUILTIN_PIXI_SANDBOX_URL);
+			localStorage.setItem(PIXI_URL_MIGRATED_KEY, "1");
+			return BUILTIN_PIXI_SANDBOX_URL;
+		}
+		const sanitized = sanitizePixiSandboxUrl(saved);
+		if (!sanitized) {
+			localStorage.setItem(PIXI_URL_STORAGE_KEY, BUILTIN_PIXI_SANDBOX_URL);
+			localStorage.setItem(PIXI_URL_MIGRATED_KEY, "1");
+			return BUILTIN_PIXI_SANDBOX_URL;
+		}
+		return sanitized;
 	} catch {
-		return "http://127.0.0.1:4173";
+		return BUILTIN_PIXI_SANDBOX_URL;
 	}
 }
+
+const DEFAULT_SOURCE_DRAWER_WINDOW = 30;
 
 const EMPTY_SOURCE_DRAWER: SourceContextDrawerState = {
 	open: false,
 	loading: false,
 	sourceId: null,
+	windowSize: DEFAULT_SOURCE_DRAWER_WINDOW,
 	data: null,
 	error: null,
 };
 
 let overviewRequestSeq = 0;
 let sourceRequestSeq = 0;
+let viewerScopeRequestSeq = 0;
+let initCampaignRequestSeq = 0;
+let pullQqRequestSeq = 0;
+let decideProposalRequestSeq = 0;
+let preflightRequestSeq = 0;
 
 interface WenyouCanvasState {
 	open: boolean;
@@ -133,7 +169,8 @@ interface WenyouCanvasState {
 	setSelectedBriefingId: (id: string | null) => void;
 	setBriefingSubView: (view: "briefing" | "ledger") => void;
 	pullQqIncremental: (groupId?: string) => Promise<void>;
-	openSourceContext: (sourceId: string, highlightQuote?: string) => Promise<void>;
+	openSourceContext: (sourceId: string, highlightQuote?: string, windowSize?: number) => Promise<void>;
+	setSourceContextWindow: (windowSize: number) => Promise<void>;
 	closeSourceContext: () => void;
 
 	// Tab 2 Actions
@@ -229,8 +266,33 @@ export const useWenyouCanvasStore = create<WenyouCanvasState>((set, get) => ({
 			pushExtensionToast("warning", error instanceof Error ? error.message : String(error), "Wenyou Pro");
 			return;
 		}
+		const targetCwd = get().cwd;
+		if (!targetCwd) {
+			set({ viewerScope: parsed, preflightResult: null });
+			return;
+		}
+		const seq = ++viewerScopeRequestSeq;
 		set({ viewerScope: parsed, preflightResult: null });
-		await get().refreshOverview(get().cwd);
+		try {
+			const api = getExecutionApi(targetCwd);
+			if (typeof api.wenyouSetViewerScope === "function") {
+				const res = await api.wenyouSetViewerScope({
+					cwd: targetCwd,
+					viewer: formatViewerScope(parsed),
+				});
+				if (seq !== viewerScopeRequestSeq || !sameDirectoryPath(get().cwd, targetCwd)) return;
+				set({ viewerScope: res.viewer, preflightResult: null });
+			}
+		} catch (error) {
+			if (seq !== viewerScopeRequestSeq || !sameDirectoryPath(get().cwd, targetCwd)) return;
+			pushExtensionToast(
+				"warning",
+				`切换视角失败：${error instanceof Error ? error.message : String(error)}`,
+				"Wenyou Pro",
+			);
+		}
+		if (seq !== viewerScopeRequestSeq || !sameDirectoryPath(get().cwd, targetCwd)) return;
+		await get().refreshOverview(targetCwd);
 	},
 
 	syncActiveCwd: async (cwd) => {
@@ -239,9 +301,18 @@ export const useWenyouCanvasStore = create<WenyouCanvasState>((set, get) => ({
 			if (prevCwd !== cwd) set({ cwd });
 			return;
 		}
+		overviewRequestSeq += 1;
+		sourceRequestSeq += 1;
+		viewerScopeRequestSeq += 1;
+		initCampaignRequestSeq += 1;
+		pullQqRequestSeq += 1;
+		decideProposalRequestSeq += 1;
+		preflightRequestSeq += 1;
 		set({
 			cwd,
+			viewerScope: { kind: "gm" },
 			overview: null,
+			loading: false,
 			error: null,
 			selectedBriefingId: null,
 			selectedPolicyId: null,
@@ -250,7 +321,10 @@ export const useWenyouCanvasStore = create<WenyouCanvasState>((set, get) => ({
 			selectedProposalId: null,
 			sourceDrawer: EMPTY_SOURCE_DRAWER,
 			lastPullSummary: null,
+			pullingQq: false,
+			preflightTargetViewer: "public",
 			preflightResult: null,
+			preflightLoading: false,
 		});
 		if (cwd) {
 			await get().refreshOverview(cwd, { silent: true });
@@ -268,7 +342,7 @@ export const useWenyouCanvasStore = create<WenyouCanvasState>((set, get) => ({
 		try {
 			const viewer = formatViewerScope(get().viewerScope);
 			const overview = await getExecutionApi(cwd).wenyouGetOverview({ cwd, viewer });
-			if (seq !== overviewRequestSeq) return;
+			if (seq !== overviewRequestSeq || !sameDirectoryPath(get().cwd, cwd)) return;
 			set((state) => {
 				const selectedBriefingId =
 					state.selectedBriefingId && overview.briefings.some((b) => b.id === state.selectedBriefingId)
@@ -294,6 +368,7 @@ export const useWenyouCanvasStore = create<WenyouCanvasState>((set, get) => ({
 						: (pending?.proposalId ?? overview.proposals[0]?.proposalId ?? null);
 				return {
 					overview,
+					viewerScope: overview.viewer,
 					loading: false,
 					error: null,
 					selectedBriefingId,
@@ -304,7 +379,7 @@ export const useWenyouCanvasStore = create<WenyouCanvasState>((set, get) => ({
 				};
 			});
 		} catch (error) {
-			if (seq !== overviewRequestSeq) return;
+			if (seq !== overviewRequestSeq || !sameDirectoryPath(get().cwd, cwd)) return;
 			set({
 				loading: false,
 				error: error instanceof Error ? error.message : String(error),
@@ -313,18 +388,21 @@ export const useWenyouCanvasStore = create<WenyouCanvasState>((set, get) => ({
 	},
 
 	initCampaign: async (worldTitle, currentEra) => {
-		const cwd = get().cwd;
-		if (!cwd) return;
+		const targetCwd = get().cwd;
+		if (!targetCwd) return;
+		const seq = ++initCampaignRequestSeq;
 		set({ loading: true, error: null });
 		try {
-			const overview = await getExecutionApi(cwd).wenyouInitCampaign({
-				cwd,
+			const overview = await getExecutionApi(targetCwd).wenyouInitCampaign({
+				cwd: targetCwd,
 				...(worldTitle?.trim() ? { worldTitle: worldTitle.trim() } : {}),
 				...(currentEra?.trim() ? { currentEra: currentEra.trim() } : {}),
 			});
-			set({ overview, loading: false, error: null });
+			if (seq !== initCampaignRequestSeq || !sameDirectoryPath(get().cwd, targetCwd)) return;
+			set({ overview, viewerScope: overview.viewer, loading: false, error: null });
 			pushExtensionToast("info", `已初始化标准文游工作区：${overview.worldTitle}`, "Wenyou Pro");
 		} catch (error) {
+			if (seq !== initCampaignRequestSeq || !sameDirectoryPath(get().cwd, targetCwd)) return;
 			const message = error instanceof Error ? error.message : String(error);
 			set({ loading: false, error: message });
 			pushExtensionToast("error", `初始化文游工作区失败：${message}`, "Wenyou Pro");
@@ -335,14 +413,16 @@ export const useWenyouCanvasStore = create<WenyouCanvasState>((set, get) => ({
 	setBriefingSubView: (briefingSubView) => set({ briefingSubView }),
 
 	pullQqIncremental: async (groupId) => {
-		const cwd = get().cwd;
-		if (!cwd || get().pullingQq) return;
+		const targetCwd = get().cwd;
+		if (!targetCwd || get().pullingQq) return;
+		const seq = ++pullQqRequestSeq;
 		set({ pullingQq: true });
 		try {
-			const res = await getExecutionApi(cwd).wenyouPullQq({
-				cwd,
+			const res = await getExecutionApi(targetCwd).wenyouPullQq({
+				cwd: targetCwd,
 				...(groupId ? { groupId } : {}),
 			});
+			if (seq !== pullQqRequestSeq || !sameDirectoryPath(get().cwd, targetCwd)) return;
 			const unreportedCount = res.cursors.reduce((sum, c) => sum + c.unreportedCount, 0);
 			set({
 				pullingQq: false,
@@ -358,8 +438,9 @@ export const useWenyouCanvasStore = create<WenyouCanvasState>((set, get) => ({
 				`群聊增量扫描完成：新入库 ${res.newlyIngested} 条${res.ntqqSyncedCount ? `（NTQQ 直读 ${res.ntqqSyncedCount} 条）` : ""}，去重 ${res.skippedDuplicates} 条，待汇报 ${unreportedCount} 条${res.ntqqWarning ? `；提示：${res.ntqqWarning}` : ""}`,
 				"Wenyou Pro",
 			);
-			await get().refreshOverview(cwd, { silent: true });
+			await get().refreshOverview(targetCwd, { silent: true });
 		} catch (error) {
+			if (seq !== pullQqRequestSeq || !sameDirectoryPath(get().cwd, targetCwd)) return;
 			set({ pullingQq: false });
 			pushExtensionToast(
 				"error",
@@ -369,10 +450,16 @@ export const useWenyouCanvasStore = create<WenyouCanvasState>((set, get) => ({
 		}
 	},
 
-	openSourceContext: async (sourceId, highlightQuote) => {
+	openSourceContext: async (sourceId, highlightQuote, windowSizeArg) => {
 		const cwd = get().cwd;
 		const cleanId = sourceId.trim().replace(/^\[|\]$/g, "");
 		if (!cwd || !cleanId) return;
+		const prevDrawer = get().sourceDrawer;
+		const effectiveWindow =
+			windowSizeArg !== undefined
+				? Math.max(0, Math.min(10_000, Math.floor(windowSizeArg)))
+				: DEFAULT_SOURCE_DRAWER_WINDOW;
+		const preservePrevData = prevDrawer.open && prevDrawer.sourceId === cleanId ? prevDrawer.data : null;
 		const seq = ++sourceRequestSeq;
 		set({
 			sourceDrawer: {
@@ -380,7 +467,8 @@ export const useWenyouCanvasStore = create<WenyouCanvasState>((set, get) => ({
 				loading: true,
 				sourceId: cleanId,
 				highlightQuote,
-				data: null,
+				windowSize: effectiveWindow,
+				data: preservePrevData,
 				error: null,
 			},
 		});
@@ -389,10 +477,10 @@ export const useWenyouCanvasStore = create<WenyouCanvasState>((set, get) => ({
 			const data = await getExecutionApi(cwd).wenyouLookupSource({
 				cwd,
 				sourceId: cleanId,
-				window: 10,
+				window: effectiveWindow,
 				viewer,
 			});
-			if (seq !== sourceRequestSeq) return;
+			if (seq !== sourceRequestSeq || !sameDirectoryPath(get().cwd, cwd)) return;
 			if (!data) {
 				set({
 					sourceDrawer: {
@@ -400,6 +488,7 @@ export const useWenyouCanvasStore = create<WenyouCanvasState>((set, get) => ({
 						loading: false,
 						sourceId: cleanId,
 						highlightQuote,
+						windowSize: effectiveWindow,
 						data: null,
 						error: `未在当前视角（${viewer}）下找到编号为 ${cleanId} 的群聊原文`,
 					},
@@ -412,18 +501,20 @@ export const useWenyouCanvasStore = create<WenyouCanvasState>((set, get) => ({
 					loading: false,
 					sourceId: cleanId,
 					highlightQuote,
+					windowSize: data.windowSize ?? effectiveWindow,
 					data,
 					error: null,
 				},
 			});
 		} catch (error) {
-			if (seq !== sourceRequestSeq) return;
+			if (seq !== sourceRequestSeq || !sameDirectoryPath(get().cwd, cwd)) return;
 			set({
 				sourceDrawer: {
 					open: true,
 					loading: false,
 					sourceId: cleanId,
 					highlightQuote,
+					windowSize: effectiveWindow,
 					data: null,
 					error: error instanceof Error ? error.message : String(error),
 				},
@@ -431,7 +522,16 @@ export const useWenyouCanvasStore = create<WenyouCanvasState>((set, get) => ({
 		}
 	},
 
-	closeSourceContext: () => set({ sourceDrawer: EMPTY_SOURCE_DRAWER }),
+	setSourceContextWindow: async (windowSize) => {
+		const drawer = get().sourceDrawer;
+		if (!drawer.open || !drawer.sourceId) return;
+		await get().openSourceContext(drawer.sourceId, drawer.highlightQuote, windowSize);
+	},
+
+	closeSourceContext: () => {
+		sourceRequestSeq += 1;
+		set({ sourceDrawer: EMPTY_SOURCE_DRAWER });
+	},
 
 	setSelectedPolicyId: (selectedPolicyId) => set({ selectedPolicyId }),
 
@@ -440,9 +540,19 @@ export const useWenyouCanvasStore = create<WenyouCanvasState>((set, get) => ({
 	setRightMapPath: (rightMapPath) => set({ rightMapPath }),
 	setSyncViewport: (syncViewport) => set({ syncViewport }),
 	setPixiUrl: (pixiUrl) => {
-		set({ pixiUrl });
+		const sanitized = sanitizePixiSandboxUrl(pixiUrl);
+		if (!sanitized) {
+			pushExtensionToast(
+				"warning",
+				"沙盘仅支持内置 wenyou-sandbox://app 或本机回环 http://127.0.0.1 / localhost 地址",
+				"Wenyou Pro",
+			);
+			return;
+		}
+		set({ pixiUrl: sanitized });
 		try {
-			localStorage.setItem(PIXI_URL_STORAGE_KEY, pixiUrl);
+			localStorage.setItem(PIXI_URL_STORAGE_KEY, sanitized);
+			localStorage.setItem(PIXI_URL_MIGRATED_KEY, "1");
 		} catch {
 			// ignore storage failure
 		}
@@ -451,16 +561,19 @@ export const useWenyouCanvasStore = create<WenyouCanvasState>((set, get) => ({
 	setSelectedProposalId: (selectedProposalId) => set({ selectedProposalId }),
 
 	decideProposal: async (proposalId, decision) => {
-		const cwd = get().cwd;
-		if (!cwd) return;
+		const targetCwd = get().cwd;
+		if (!targetCwd) return;
+		const seq = ++decideProposalRequestSeq;
 		try {
 			const viewer = formatViewerScope(get().viewerScope);
-			const updated = await getExecutionApi(cwd).wenyouDecideProposal({
-				cwd,
+			const updated = await getExecutionApi(targetCwd).wenyouDecideProposal({
+				cwd: targetCwd,
 				proposalId,
 				decision,
 				viewer,
 			});
+			if (seq !== decideProposalRequestSeq || !sameDirectoryPath(get().cwd, targetCwd)) return;
+			set({ preflightResult: null });
 			pushExtensionToast(
 				"info",
 				decision === "approved"
@@ -468,8 +581,9 @@ export const useWenyouCanvasStore = create<WenyouCanvasState>((set, get) => ({
 					: `已驳回正史提案：${updated.targetPath}`,
 				"Wenyou Pro",
 			);
-			await get().refreshOverview(cwd, { silent: true });
+			await get().refreshOverview(targetCwd, { silent: true });
 		} catch (error) {
+			if (seq !== decideProposalRequestSeq || !sameDirectoryPath(get().cwd, targetCwd)) return;
 			pushExtensionToast(
 				"error",
 				`提案裁决失败：${error instanceof Error ? error.message : String(error)}`,
@@ -478,22 +592,39 @@ export const useWenyouCanvasStore = create<WenyouCanvasState>((set, get) => ({
 		}
 	},
 
-	setPreflightTargetViewer: (preflightTargetViewer) =>
-		set({ preflightTargetViewer, preflightResult: null }),
+	setPreflightTargetViewer: (preflightTargetViewer) => {
+		preflightRequestSeq += 1;
+		set({ preflightTargetViewer, preflightResult: null, preflightLoading: false });
+	},
 
 	runExportPreflight: async (targetViewerArg) => {
-		const cwd = get().cwd;
-		if (!cwd) return null;
+		const targetCwd = get().cwd;
+		if (!targetCwd) return null;
 		const targetViewer = (targetViewerArg ?? get().preflightTargetViewer).trim() || "public";
+		const seq = ++preflightRequestSeq;
 		set({ preflightLoading: true, preflightTargetViewer: targetViewer });
 		try {
-			const result = await getExecutionApi(cwd).wenyouExportPreflight({
-				cwd,
+			const result = await getExecutionApi(targetCwd).wenyouExportPreflight({
+				cwd: targetCwd,
 				targetViewer,
 			});
+			if (
+				seq !== preflightRequestSeq ||
+				!sameDirectoryPath(get().cwd, targetCwd) ||
+				get().preflightTargetViewer !== targetViewer
+			) {
+				return null;
+			}
 			set({ preflightLoading: false, preflightResult: result });
 			return result;
 		} catch (error) {
+			if (
+				seq !== preflightRequestSeq ||
+				!sameDirectoryPath(get().cwd, targetCwd) ||
+				get().preflightTargetViewer !== targetViewer
+			) {
+				return null;
+			}
 			set({ preflightLoading: false });
 			pushExtensionToast(
 				"error",
@@ -507,14 +638,16 @@ export const useWenyouCanvasStore = create<WenyouCanvasState>((set, get) => ({
 	handleCanvasEvent: (event) => {
 		const state = get();
 		const activeSessionId = useSessionsStore.getState().activeSessionId;
-		const matchesCwd = !state.cwd || sameDirectoryPath(state.cwd, event.cwd);
-		const matchesSession = !event.sessionId || !activeSessionId || event.sessionId === activeSessionId;
+		const matchesCwd = Boolean(state.cwd) && sameDirectoryPath(state.cwd, event.cwd);
+		const matchesSession =
+			Boolean(event.sessionId) && Boolean(activeSessionId) && event.sessionId === activeSessionId;
 		if (!matchesCwd && !matchesSession) return;
 
-		const targetCwd = state.cwd && sameDirectoryPath(state.cwd, event.cwd) ? state.cwd : event.cwd;
+		const targetCwd = matchesCwd && state.cwd ? state.cwd : event.cwd;
 
 		if (event.kind === "workspace_changed") {
-			if (sameDirectoryPath(state.cwd, event.cwd)) {
+			if (state.cwd && sameDirectoryPath(state.cwd, event.cwd)) {
+				set({ preflightResult: null });
 				void get().refreshOverview(state.cwd, { silent: true });
 			}
 			return;
@@ -574,10 +707,11 @@ export const useWenyouCanvasStore = create<WenyouCanvasState>((set, get) => ({
 					cwd: targetCwd,
 					activeTab: "briefing",
 				});
-				void get().openSourceContext(event.sourceId, event.highlightQuote);
+				void get().openSourceContext(event.sourceId, event.highlightQuote, event.window);
 				break;
 
-			case "open_maps":
+			case "open_maps": {
+				const safePixiUrl = event.pixiUrl ? sanitizePixiSandboxUrl(event.pixiUrl) : null;
 				set((prev) => ({
 					open: true,
 					unreadCount: 0,
@@ -587,10 +721,11 @@ export const useWenyouCanvasStore = create<WenyouCanvasState>((set, get) => ({
 					leftMapPath: event.leftMapPath ?? prev.leftMapPath,
 					rightMapPath: event.rightMapPath ?? prev.rightMapPath,
 					syncViewport: event.mode === "side-by-side" ? true : prev.syncViewport,
-					...(event.pixiUrl ? { pixiUrl: event.pixiUrl } : {}),
+					...(safePixiUrl ? { pixiUrl: safePixiUrl } : {}),
 				}));
 				void get().refreshOverview(targetCwd, { silent: true });
 				break;
+			}
 
 			case "proposal_created":
 				set((prev) => {

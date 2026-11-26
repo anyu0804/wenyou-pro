@@ -1,0 +1,275 @@
+name: Wenyou Pro Release Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      mac_arch:
+        description: "macOS target architecture (all = Apple Silicon + Intel)"
+        required: false
+        default: "all"
+        type: choice
+        options:
+          - all
+          - arm64
+          - x64
+      include_windows:
+        description: "Also build Windows x64 installer and portable zip"
+        required: false
+        default: false
+        type: boolean
+      create_github_release:
+        description: "Publish built artifacts to a GitHub Release"
+        required: false
+        default: false
+        type: boolean
+  push:
+    tags:
+      - "wenyou-v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wenyou-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  hygiene-and-tests:
+    name: Path hygiene & release script tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Run repository anti-doxxing and local path gate
+        run: npm run check:paths
+
+      - name: Install workspace dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Install pixi-sandbox dependencies
+        run: npm --prefix packages/pixi-sandbox ci --no-audit --no-fund
+
+      - name: Run wenyou-release unit tests
+        run: node --test scripts/wenyou-release/*.test.mjs
+
+  build-macos:
+    name: Build & verify macOS (${{ github.event_name == 'workflow_dispatch' && inputs.mac_arch || 'all' }})
+    needs: hygiene-and-tests
+    runs-on: macos-latest
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      CSC_FOR_PULL_REQUEST: "true"
+      NODE_OPTIONS: "--max-old-space-size=4096"
+      TARGET_MAC_ARCH: ${{ github.event_name == 'workflow_dispatch' && inputs.mac_arch || 'all' }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install workspace dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Install pixi-sandbox dependencies
+        run: npm --prefix packages/pixi-sandbox ci --no-audit --no-fund
+
+      - name: Provision cross-arch @esbuild macOS binaries for packaging
+        shell: bash
+        run: |
+          set -euo pipefail
+          ESBUILD_VER="$(node -p "require('./packages/desktop/package.json').dependencies.esbuild")"
+          ensure_esbuild_pkg() {
+            local arch="$1"
+            local target_dir="node_modules/@esbuild/darwin-${arch}"
+            if [ -f "${target_dir}/bin/esbuild" ]; then
+              echo "@esbuild/darwin-${arch}@${ESBUILD_VER} already present"
+              return 0
+            fi
+            echo "Provisioning @esbuild/darwin-${arch}@${ESBUILD_VER} for macOS ${arch} bundle..."
+            local tgz
+            tgz="$(npm pack "@esbuild/darwin-${arch}@${ESBUILD_VER}" --pack-destination "${RUNNER_TEMP}" | tail -n 1)"
+            mkdir -p "${target_dir}"
+            tar -xzf "${RUNNER_TEMP}/${tgz}" -C "${target_dir}" --strip-components=1
+            chmod +x "${target_dir}/bin/esbuild"
+            rm -f "${RUNNER_TEMP}/${tgz}"
+          }
+          if [ "${TARGET_MAC_ARCH}" = "all" ] || [ "${TARGET_MAC_ARCH}" = "x64" ]; then
+            ensure_esbuild_pkg x64
+          fi
+          if [ "${TARGET_MAC_ARCH}" = "all" ] || [ "${TARGET_MAC_ARCH}" = "arm64" ]; then
+            ensure_esbuild_pkg arm64
+          fi
+
+      - name: Build macOS DMG and ZIP installers
+        run: node scripts/wenyou-release/build-installer.mjs --platform mac --arch "${TARGET_MAC_ARCH}"
+
+      - name: Verify macOS release package (asar, esbuild, codesign, hdiutil, path gate)
+        run: node scripts/wenyou-release/verify-package.mjs --platform mac --arch "${TARGET_MAC_ARCH}"
+
+      - name: Upload macOS release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Wenyou-Pro-macOS
+          path: |
+            dist/wenyou-pro-*-mac/*.dmg
+            dist/wenyou-pro-*-mac/*.zip
+            dist/wenyou-pro-*-mac/SHA256SUMS.txt
+            dist/wenyou-pro-*-mac/使用说明.txt
+          if-no-files-found: error
+
+  build-windows:
+    name: Build & verify Windows x64
+    needs: hygiene-and-tests
+    if: github.event_name == 'push' || inputs.include_windows == true
+    runs-on: windows-latest
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      NODE_OPTIONS: "--max-old-space-size=4096"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Provision embedded Python 3.13.2 runtime for Windows ntqq-vfs
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $pythonDir = "packages/desktop/resources/ntqq-vfs/python"
+          $pythonExe = Join-Path $pythonDir "python.exe"
+          if (-not (Test-Path $pythonExe)) {
+            $zipPath = Join-Path $env:RUNNER_TEMP "python-3.13.2-embed-amd64.zip"
+            New-Item -ItemType Directory -Force -Path $pythonDir | Out-Null
+            Invoke-WebRequest -Uri "https://www.python.org/ftp/python/3.13.2/python-3.13.2-embed-amd64.zip" -OutFile $zipPath
+            Expand-Archive -Path $zipPath -DestinationPath $pythonDir -Force
+            Remove-Item -Force $zipPath
+          }
+          if (-not (Test-Path $pythonExe)) {
+            throw "Failed to provision embedded Python runtime at $pythonExe"
+          }
+          & $pythonExe -B -c "import sys, sqlite3, ctypes; assert sys.version_info[:2] == (3, 13); print('py-ok')"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Embedded Python smoke check failed with exit code $LASTEXITCODE"
+          }
+
+      - name: Install workspace dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Install pixi-sandbox dependencies
+        run: npm --prefix packages/pixi-sandbox ci --no-audit --no-fund
+
+      - name: Build Windows x64 Setup and Portable zip
+        run: npm run package:wenyou
+
+      - name: Verify Windows x64 release package
+        run: npm run package:wenyou:verify
+
+      - name: Upload Windows x64 release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: Wenyou-Pro-Windows-x64
+          path: |
+            dist/wenyou-pro-*-win-x64/*.exe
+            dist/wenyou-pro-*-win-x64/*.zip
+            dist/wenyou-pro-*-win-x64/SHA256SUMS.txt
+            dist/wenyou-pro-*-win-x64/使用说明.txt
+          if-no-files-found: error
+
+  github-release:
+    name: Publish GitHub Release
+    needs: [build-macos, build-windows]
+    if: >-
+      always() && !cancelled() &&
+      needs.build-macos.result == 'success' &&
+      (needs.build-windows.result == 'success' || needs.build-windows.result == 'skipped') &&
+      (github.event_name == 'push' || inputs.create_github_release == true)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download macOS release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: Wenyou-Pro-macOS
+          path: release-staging/mac
+
+      - name: Download Windows release artifacts (when built)
+        if: needs.build-windows.result == 'success'
+        uses: actions/download-artifact@v4
+        with:
+          name: Wenyou-Pro-Windows-x64
+          path: release-staging/win
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="$(node -p "require('./packages/desktop/package.json').version")"
+          if [ "${GITHUB_EVENT_NAME}" = "push" ]; then
+            TAG="${GITHUB_REF_NAME}"
+          else
+            TAG="wenyou-v${VERSION}"
+          fi
+
+          mkdir -p release-upload
+          shopt -s nullglob
+
+          for f in release-staging/mac/*.dmg release-staging/mac/*.zip; do
+            cp "$f" release-upload/
+          done
+          if [ -f release-staging/mac/SHA256SUMS.txt ]; then
+            cp release-staging/mac/SHA256SUMS.txt release-upload/SHA256SUMS-macOS.txt
+          fi
+          if [ -f release-staging/mac/使用说明.txt ]; then
+            cp release-staging/mac/使用说明.txt release-upload/使用说明-macOS.txt
+          fi
+
+          if [ -d release-staging/win ]; then
+            for f in release-staging/win/*.exe release-staging/win/*.zip; do
+              cp "$f" release-upload/
+            done
+            if [ -f release-staging/win/SHA256SUMS.txt ]; then
+              cp release-staging/win/SHA256SUMS.txt release-upload/SHA256SUMS-Windows-x64.txt
+            fi
+            if [ -f release-staging/win/使用说明.txt ]; then
+              cp release-staging/win/使用说明.txt release-upload/使用说明-Windows-x64.txt
+            fi
+          fi
+
+          printf '%s\n' \
+            "## 司命 · 文游 Pro（Wenyou Pro v${VERSION}）" \
+            "" \
+            "制作与整理：安钰（基于 Percho MIT 开源底座定制）" \
+            "" \
+            "- **macOS**：Apple Silicon (M1–M4) 选择 \`arm64.dmg\`，Intel Mac 选择 \`x64.dmg\`；首次打开请按 \`使用说明-macOS.txt\` 放行 Gatekeeper 或执行 \`xattr -cr \"/Applications/Wenyou Pro.app\"\`。" \
+            "- **Windows x64**（如随本次构建发布）：选择 \`Setup-x64.exe\` 或绿色便携版 \`Portable-x64.zip\`。" \
+            "- 所有安装包均附带对应平台 \`SHA256SUMS\` 校验清单。" \
+            > release-notes.md
+
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            gh release upload "${TAG}" release-upload/* --clobber
+          else
+            gh release create "${TAG}" release-upload/* \
+              --title "Wenyou Pro v${VERSION}" \
+              --notes-file release-notes.md
+          fi

@@ -1,0 +1,33 @@
+{
+  "name": "wenyou-pixi-app",
+  "private": true,
+  "version": "0.9.1",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 5173 --strictPort",
+    "build": "tsc && vite build",
+    "build:desktop": "tsc && vite build --outDir ../desktop/resources/pixi-sandbox --emptyOutDir",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test tests/unit.test.mjs",
+    "test:battle": "node --test --test-concurrency=1 tests/battle-1-acceptance.test.mjs tests/battle-deployment.test.mjs tests/battle-editor.test.mjs tests/battle-export.test.mjs tests/battle-layer.test.mjs tests/battle-orbat.test.mjs tests/battle-terrain.test.mjs tests/battle-runtime.test.mjs tests/battle-import.test.mjs tests/tactical-drawer.test.mjs tests/military-symbols.test.mjs tests/battle-panel.test.mjs",
+    "test:browser": "node bugfix.test.mjs && node theater-switch.test.mjs && node export-import.test.mjs",
+    "setup:browser": "playwright install chromium --only-shell",
+    "test:package": "node tests/battle-release.test.mjs",
+    "check": "npm run typecheck && npm test && npm run test:battle && npm run test:browser && node tests/field-battle-acceptance.test.mjs"
+  },
+  "dependencies": {
+    "delaunator": "^5.0.1",
+    "idb-keyval": "^6.3.0",
+    "martinez-polygon-clipping": "0.9.0",
+    "perfect-freehand": "^1.2.3",
+    "pixi-viewport": "^6.0.3",
+    "pixi.js": "8.22.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "playwright": "^1.64.1",
+    "typescript": "^5.6.2",
+    "vite": "^5.4.10"
+  }
+}

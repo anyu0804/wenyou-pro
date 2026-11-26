@@ -1,5 +1,5 @@
-import type { ProposalStatus } from "@percho/shared";
-import { useMemo, useState } from "react";
+import { formatViewerScope, type ProposalStatus, type ViewerScope } from "@percho/shared";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getPi } from "../../api";
 import { getExecutionApi } from "../../environment-api";
 import { pushExtensionToast } from "../../stores/toasts";
@@ -53,7 +53,14 @@ export function ProposalsExportPanel() {
 		content: string;
 		strippedSecretBlocks: number;
 	} | null>(null);
+	const [previewError, setPreviewError] = useState<string | null>(null);
 	const [previewLoading, setPreviewLoading] = useState(false);
+	const previewRequestSeqRef = useRef(0);
+	const previewDocPathRef = useRef<string | null>(null);
+	previewDocPathRef.current = previewDocPath;
+	const cwdRef = useRef(cwd);
+	cwdRef.current = cwd;
+	const viewerKey = formatViewerScope(viewerScope);
 
 	const proposals = overview?.proposals ?? [];
 	const pendingCount = proposals.filter((p) => p.status === "pending").length;
@@ -119,28 +126,67 @@ export function ProposalsExportPanel() {
 		}
 	};
 
+	const loadCanonDoc = useCallback(
+		async (targetCwd: string, relPath: string, scope: ViewerScope, notifyOnError: boolean) => {
+			const seq = ++previewRequestSeqRef.current;
+			setPreviewLoading(true);
+			setPreviewError(null);
+			try {
+				const viewer = formatViewerScope(scope);
+				const res = await getExecutionApi(targetCwd).wenyouReadCanonDoc({
+					cwd: targetCwd,
+					relPath,
+					viewer,
+				});
+				if (seq !== previewRequestSeqRef.current || cwdRef.current !== targetCwd) return;
+				setPreviewDocContent({
+					content: res.content,
+					strippedSecretBlocks: res.strippedSecretBlocks,
+				});
+				setPreviewError(null);
+			} catch (error) {
+				if (seq !== previewRequestSeqRef.current || cwdRef.current !== targetCwd) return;
+				const msg = error instanceof Error ? error.message : String(error);
+				setPreviewDocContent(null);
+				setPreviewError(msg);
+				if (notifyOnError) {
+					pushExtensionToast("error", `读取档案失败：${msg}`, "Wenyou Pro");
+				}
+			} finally {
+				if (seq === previewRequestSeqRef.current) {
+					setPreviewLoading(false);
+				}
+			}
+		},
+		[],
+	);
+
+	// 切换世界时清空档案预览与在途请求
+	useEffect(() => {
+		previewRequestSeqRef.current += 1;
+		previewDocPathRef.current = null;
+		setPreviewDocPath(null);
+		setPreviewDocContent(null);
+		setPreviewError(null);
+		setPreviewLoading(false);
+	}, [cwd]);
+
+	// 切换视角时立即清除旧密文缓存并按新视角重拉当前打开的档案
+	useEffect(() => {
+		const openedPath = previewDocPathRef.current;
+		if (!cwd || !openedPath) return;
+		setPreviewDocContent(null);
+		setPreviewError(null);
+		void loadCanonDoc(cwd, openedPath, viewerScope, false);
+	}, [cwd, viewerKey, viewerScope, loadCanonDoc]);
+
 	const handleOpenCanonDoc = async (relPath: string) => {
 		if (!cwd) return;
+		previewDocPathRef.current = relPath;
 		setPreviewDocPath(relPath);
-		setPreviewLoading(true);
-		try {
-			const viewer =
-				viewerScope.kind === "faction" ? `faction:${viewerScope.factionId}` : viewerScope.kind;
-			const res = await getExecutionApi(cwd).wenyouReadCanonDoc({ cwd, relPath, viewer });
-			setPreviewDocContent({
-				content: res.content,
-				strippedSecretBlocks: res.strippedSecretBlocks,
-			});
-		} catch (error) {
-			setPreviewDocContent(null);
-			pushExtensionToast(
-				"error",
-				`读取档案失败：${error instanceof Error ? error.message : String(error)}`,
-				"Wenyou Pro",
-			);
-		} finally {
-			setPreviewLoading(false);
-		}
+		setPreviewDocContent(null);
+		setPreviewError(null);
+		await loadCanonDoc(cwd, relPath, viewerScope, true);
 	};
 
 	return (
@@ -221,7 +267,7 @@ export function ProposalsExportPanel() {
 							<div className="py-12 text-center">
 								<p className="text-ui-13 font-medium text-ink">暂无符合条件的正史变更提案</p>
 								<p className="mt-1 text-ui-12 text-ink-dim">
-									Agent 调用 <code className="font-mono">wenyou_propose_canon</code> 提交对{" "}
+									司命调用 <code className="font-mono">wenyou_propose_canon</code> 提交对{" "}
 									<code className="font-mono">01-设定与国力实册/</code> 或{" "}
 									<code className="font-mono">04-编年史与条约/</code> 的改动后，会在此等待人工落锤审批。
 								</p>
@@ -573,6 +619,10 @@ export function ProposalsExportPanel() {
 								</div>
 								{previewLoading ? (
 									<p className="py-6 text-center text-ui-12 text-ink-faint">读取中…</p>
+								) : previewError ? (
+									<div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-3.5 py-2.5 text-ui-12 text-amber-700 dark:text-amber-300">
+										当前视角（{viewerKey}）无法查阅此档案：{previewError}
+									</div>
 								) : previewDocContent ? (
 									<pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-xl border border-border bg-surface p-3.5 text-ui-12 leading-relaxed text-ink select-text">
 										{previewDocContent.content}

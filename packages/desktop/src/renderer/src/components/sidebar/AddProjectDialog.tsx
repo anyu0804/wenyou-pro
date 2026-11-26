@@ -23,7 +23,7 @@ export function AddProjectDialog({
 			<div className="w-[400px] max-w-[calc(100vw-32px)] rounded-xl border border-border bg-surface p-5 shadow-dialog">
 				<h2 className="text-ui-14 font-semibold text-ink">{t("sidebar.addProject")}</h2>
 				<p className="mt-1.5 text-ui-12 text-ink-dim">
-					新建空白文游世界（不带模板，选定主群后由 Agent 自动抓取建档），或打开已有项目目录。
+					新建空白文游世界（不带模板，选定主群后由司命自动抓取建档），或打开已有项目目录。
 				</p>
 				<div className="mt-4 flex flex-col gap-2">
 					<button

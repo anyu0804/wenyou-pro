@@ -77,7 +77,7 @@ export function attachRendererWatchdog(backend: PiBackend): void {
 				const win = BrowserWindow.fromWebContents(contents);
 				const options: Electron.MessageBoxOptions = {
 					type: "error",
-					title: "Percho",
+					title: "司命 · 文游 Pro",
 					message: "界面进程反复崩溃",
 					detail: "自动恢复已暂停，避免崩溃循环。可重试加载或退出（后台任务不受影响）。",
 					buttons: ["重新加载", "退出"],

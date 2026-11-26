@@ -67,14 +67,67 @@ export function AboutPanel() {
 				? t("update.goDownload")
 				: t("update.checkForUpdates");
 
-	const displayAppName = !info?.name || info.name === "Percho" ? "Wenyou Pro" : info.name;
+	const displayAppName =
+		info?.name && (info.name.startsWith("Wenyou Pro ") || info.name.startsWith("司命 · 文游 Pro"))
+			? info.name
+			: "司命 · 文游 Pro";
 	const upstreamUrl = "https://github.com/Jaxton07/percho";
 
 	return (
 		<div className="flex flex-col items-center gap-1.5 py-10 text-center">
-			<div className="flex h-12 w-12 items-center justify-center rounded-xl bg-ink text-ui-16 font-bold text-on-ink">
-				W
-			</div>
+			<svg
+				viewBox="0 0 48 48"
+				fill="none"
+				xmlns="http://www.w3.org/2000/svg"
+				className="h-12 w-12 shrink-0 rounded-xl shadow-sm"
+				aria-hidden="true"
+			>
+				<rect
+					x="1.5"
+					y="1.5"
+					width="45"
+					height="45"
+					rx="11.5"
+					fill="#F8F5EE"
+					stroke="#E5DFD3"
+					strokeWidth="1.2"
+				/>
+				<path
+					d="M24 34.2C19.6 32.4 14.6 32 9.8 32.8V17.4C14.6 16.6 19.6 17.1 24 19.2Z"
+					fill="#FFFDF9"
+					stroke="#1F2329"
+					strokeWidth="1.75"
+					strokeLinecap="round"
+					strokeLinejoin="round"
+				/>
+				<path
+					d="M24 34.2C28.4 32.4 33.4 32 38.2 32.8V17.4C33.4 16.6 28.4 17.1 24 19.2Z"
+					fill="#FFFDF9"
+					stroke="#1F2329"
+					strokeWidth="1.75"
+					strokeLinecap="round"
+					strokeLinejoin="round"
+				/>
+				<path
+					d="M13.4 22.1C15.8 21.7 18.2 21.9 20.4 22.7M13.4 25.7C15.8 25.3 18.2 25.5 20.4 26.3M13.4 29.2C15.4 28.9 17.4 29 19.1 29.6"
+					stroke="#6A707A"
+					strokeWidth="1.2"
+					strokeLinecap="round"
+				/>
+				<path d="M36.8 11.2L29.2 18.8" stroke="#F8F5EE" strokeWidth="5.4" strokeLinecap="round" />
+				<path
+					d="M36.1 9.9L38.1 11.9L31.4 18.6L29.4 16.6Z"
+					fill="#1F2329"
+					stroke="#1F2329"
+					strokeWidth="0.6"
+					strokeLinejoin="round"
+				/>
+				<path
+					d="M28.2 18.1C29.3 17.8 30.2 18.7 29.9 19.8C29.4 21.6 27.6 23.4 25.1 24.5C26.1 22 26.9 19.4 28.2 18.1Z"
+					fill="#1F2329"
+				/>
+				<rect x="31.4" y="25.6" width="4.2" height="4.2" rx="1" fill="#c83e37" />
+			</svg>
 			<p className="mt-2 text-ui-14 font-semibold text-ink">{displayAppName}</p>
 			<p className="text-ui-11 text-ink-faint">{t("settings.about.poweredBy")}</p>
 			<p className="mt-2 font-mono text-ui-12 text-ink-dim">
@@ -105,9 +158,7 @@ export function AboutPanel() {
 			</div>
 			<div className="mt-5 max-w-md rounded-xl border border-border bg-surface px-4 py-3 text-left">
 				<p className="text-ui-12 font-medium text-ink">{t("settings.about.upstreamTitle")}</p>
-				<p className="mt-1 text-ui-11 leading-relaxed text-ink-dim">
-					{t("settings.about.upstreamNotice")}
-				</p>
+				<p className="mt-1 text-ui-11 leading-relaxed text-ink-dim">{t("settings.about.upstreamNotice")}</p>
 				<button
 					type="button"
 					onClick={() => void getPi().openExternal({ url: upstreamUrl })}

@@ -11,6 +11,7 @@ import { useSessionsStore } from "../../stores/sessions";
 import { pushExtensionToast } from "../../stores/toasts";
 import { useTranscriptStore } from "../../stores/transcript";
 import { fillWenyouPrompt, useWenyouCanvasStore } from "../../stores/wenyou-canvas";
+import { sameDirectoryPath } from "./wenyou-helpers";
 
 export const WENYOU_GROUP_ROLE_LABELS: Record<GroupRole, string> = {
 	main: "主群",
@@ -69,6 +70,8 @@ export interface BootstrapCampaignWorldInput {
 	currentEra?: string;
 	bindings: CampaignNtqqGroupBinding[];
 	ntqqReady?: boolean;
+	/** 首次同步单群拉取历史条数上限（默认 500，最高 20,000） */
+	syncLimit?: number;
 	/** 是否在建完并同步后自动发起 Agent 首轮抓取建档 */
 	autoStartAgent: boolean;
 }
@@ -130,7 +133,8 @@ export async function bootstrapCampaignWorld(
 		await pi.wenyouNtqqSaveCampaignBindings({ cwd, bindings: input.bindings });
 		if (input.ntqqReady) {
 			try {
-				syncResult = await pi.wenyouNtqqSyncCampaign({ cwd, limit: 500 });
+				const limit = Math.max(1, Math.min(20_000, Math.floor(input.syncLimit ?? 500)));
+				syncResult = await pi.wenyouNtqqSyncCampaign({ cwd, limit });
 			} catch (error) {
 				syncWarning = error instanceof Error ? error.message : String(error);
 			}
@@ -139,9 +143,28 @@ export async function bootstrapCampaignWorld(
 		}
 	}
 
+	const isStillFocusedOnNewWorldDraft = (): boolean => {
+		const sessions = useSessionsStore.getState();
+		return (
+			sessions.activeSessionId === null && sameDirectoryPath(sessions.newSessionDraft?.cwd, cwd)
+		);
+	};
+
+	if (!isStillFocusedOnNewWorldDraft()) {
+		pushExtensionToast(
+			"info",
+			`空白世界「${finalTitle}」已创建完成（你已切换到其他会话，未覆盖当前视图）`,
+			"Wenyou Pro",
+		);
+		return { cwd, worldTitle: finalTitle, syncResult, syncWarning, agentTriggered: "skipped" };
+	}
+
 	// 打开右侧文游画布并同步新世界概览
 	const canvas = useWenyouCanvasStore.getState();
 	await canvas.syncActiveCwd(cwd);
+	if (!isStillFocusedOnNewWorldDraft()) {
+		return { cwd, worldTitle: finalTitle, syncResult, syncWarning, agentTriggered: "skipped" };
+	}
 	canvas.setActiveTab("briefing");
 	canvas.setOpen(true);
 	await canvas.refreshOverview(cwd, { silent: true });
@@ -152,6 +175,15 @@ export async function bootstrapCampaignWorld(
 			syncResult
 				? `已创建空白世界「${finalTitle}」并同步 ${syncResult.newlyIngested} 条群聊消息`
 				: `已创建空白世界「${finalTitle}」`,
+			"Wenyou Pro",
+		);
+		return { cwd, worldTitle: finalTitle, syncResult, syncWarning, agentTriggered: "skipped" };
+	}
+
+	if (!isStillFocusedOnNewWorldDraft()) {
+		pushExtensionToast(
+			"info",
+			`空白世界「${finalTitle}」已创建完成（你已切换到其他会话，未自动新建会话）`,
 			"Wenyou Pro",
 		);
 		return { cwd, worldTitle: finalTitle, syncResult, syncWarning, agentTriggered: "skipped" };
@@ -196,8 +228,8 @@ export async function bootstrapCampaignWorld(
 		pushExtensionToast(
 			"info",
 			syncResult
-				? `已创建「${finalTitle}」（同步 ${syncResult.newlyIngested} 条消息），Agent 已开始抓取建档`
-				: `已创建「${finalTitle}」，Agent 已开始抓取建档`,
+				? `已创建「${finalTitle}」（同步 ${syncResult.newlyIngested} 条消息），司命已开始抓取建档`
+				: `已创建「${finalTitle}」，司命已开始抓取建档`,
 			"Wenyou Pro",
 		);
 		return { cwd, worldTitle: finalTitle, syncResult, syncWarning, agentTriggered: "sent" };

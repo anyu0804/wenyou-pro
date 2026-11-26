@@ -1,0 +1,105 @@
+{
+  "id": "fieldbattle-sample-1",
+  "name": "战场1",
+  "createdAt": "2026-10-21T00:00:00.000Z",
+  "cellIds": [1, 2],
+  "anchor": [40, 40],
+  "bounds": { "x": 20, "y": 20, "width": 40, "height": 40 },
+  "terrain": {
+    "displayOutline": [{
+      "outer": [[0, 0], [120, 0], [120, 40], [80, 40], [80, 100], [0, 100], [0, 0]],
+      "holes": []
+    }],
+    "battleOutline": [{
+      "outer": [[20, 20], [60, 20], [60, 60], [20, 60], [20, 20]], "holes": []
+    }],
+    "contextOutline": [{
+      "outer": [[0, 0], [120, 0], [120, 40], [80, 40], [80, 100], [0, 100], [0, 0]],
+      "holes": [[[20, 20], [20, 60], [60, 60], [60, 20], [20, 20]]]
+    }],
+    "cells": [
+      { "polygon": [[20, 20], [60, 20], [60, 40], [20, 40], [20, 20]], "color": "#8eaa65", "context": false },
+      { "polygon": [[20, 40], [60, 40], [60, 60], [20, 60], [20, 40]], "color": "#9db66d", "context": false },
+      { "polygon": [[0, 0], [120, 0], [120, 20], [0, 20], [0, 0]], "color": "#b6ba88", "context": true }
+    ],
+    "coastBands": [{
+      "parts": [{ "outer": [[0, 0], [120, 0], [120, 4], [0, 4], [0, 0]], "holes": [] }],
+      "color": "#8dcbd6", "alpha": 0.3
+    }],
+    "lakes": [{
+      "parts": [{
+        "outer": [[8, 68], [32, 68], [32, 92], [8, 92], [8, 68]],
+        "holes": [[[16, 76], [16, 84], [24, 84], [24, 76], [16, 76]]]
+      }],
+      "color": "#62a7cb"
+    }],
+    "rivers": [
+      { "parts": [{ "outer": [[38, 0], [42, 0], [42, 34], [38, 34], [38, 0]], "holes": [] }], "color": "#63a4cf", "alpha": 0.9 },
+      { "parts": [{ "outer": [[38, 46], [42, 46], [42, 100], [38, 100], [38, 46]], "holes": [] }], "color": "#63a4cf", "alpha": 0.9 }
+    ],
+    "coastlines": [{
+      "lines": [{ "points": [[0, 0], [120, 0]], "closed": false }],
+      "style": { "color": "#396b80", "width": 1, "alpha": 1 }
+    }],
+    "contours": [{
+      "lines": [
+        { "points": [[60, 10], [70, 30], [68, 55]], "closed": false },
+        { "points": [[65, 8], [76, 28], [74, 56]], "closed": false }
+      ],
+      "style": { "color": "#6d7350", "width": 0.6, "alpha": 0.5 }
+    }],
+    "burgs": [{ "name": "演示城", "x": 28, "y": 30, "tier": "city" }]
+  },
+  "units": [
+    {
+      "id": "field-unit-1", "sourceUnitId": "main-unit-1", "color": "#cc4444", "assertion": "plan",
+      "unitName": { "state": "known", "value": "演示团", "evidence": [{ "sourceId": "sample-source-1", "basis": "assumption", "excerpt": "演示团率预备营", "note": "合成测试设定" }] },
+      "provinceId": { "state": "known", "value": null, "evidence": [] },
+      "status": { "state": "known", "value": "驻防", "evidence": [] },
+      "parentUnitId": { "state": "known", "value": null, "evidence": [] },
+      "echelon": { "state": "known", "value": "团", "evidence": [] },
+      "branch": { "state": "known", "value": "步兵", "evidence": [] },
+      "side": { "state": "known", "value": "演示方", "evidence": [] },
+      "childrenCompleteness": { "state": "known", "value": "partial", "evidence": [] },
+      "personnel": { "scope": "own", "count": { "state": "known", "value": 2200, "evidence": [] } }
+    },
+    {
+      "id": "field-unit-2", "sourceUnitId": "", "color": "#cc4444", "assertion": "plan",
+      "unitName": { "state": "known", "value": "预备营", "evidence": [] },
+      "provinceId": { "state": "known", "value": null, "evidence": [] },
+      "status": { "state": "known", "value": "驻防", "evidence": [] },
+      "parentUnitId": { "state": "known", "value": "field-unit-1", "evidence": [] },
+      "echelon": { "state": "known", "value": "营", "evidence": [] },
+      "branch": { "state": "known", "value": "步兵", "evidence": [] },
+      "side": { "state": "known", "value": "演示方", "evidence": [] },
+      "childrenCompleteness": { "state": "known", "value": "complete", "evidence": [] },
+      "personnel": { "scope": "own", "count": { "state": "known", "value": 700, "evidence": [] } }
+    }
+  ],
+  "deployments": [
+    {
+      "unitId": "field-unit-1", "assertion": "plan",
+      "battlefieldId": { "state": "unknown", "reason": "来源战役未纳入此快照（原 id: main-battlefield-1）", "evidence": [] },
+      "placement": { "state": "known", "value": { "anchor": [30, 35], "shape": { "kind": "point" } }, "evidence": [] },
+      "facingDegrees": { "state": "known", "value": 90, "evidence": [] },
+      "depthMapUnits": { "state": "known", "value": 4, "evidence": [] },
+      "formationLine": { "state": "known", "value": 1, "evidence": [] },
+      "role": { "state": "known", "value": "line", "evidence": [] },
+      "reserveForUnitId": { "state": "known", "value": null, "evidence": [] }
+    },
+    {
+      "unitId": "field-unit-2", "assertion": "plan",
+      "battlefieldId": { "state": "unknown", "reason": "来源战役未纳入此快照（原 id: main-battlefield-1）", "evidence": [] },
+      "placement": { "state": "unknown", "reason": "合成设定没有给出预备营位置", "evidence": [] },
+      "facingDegrees": { "state": "unknown", "reason": "位置未定", "evidence": [] },
+      "depthMapUnits": { "state": "unknown", "reason": "位置未定", "evidence": [] },
+      "formationLine": { "state": "known", "value": 2, "evidence": [] },
+      "role": { "state": "known", "value": "reserve", "evidence": [] },
+      "reserveForUnitId": { "state": "known", "value": "field-unit-1", "evidence": [] }
+    }
+  ],
+  "sources": [{ "id": "sample-source-1", "kind": "manual", "title": "合成演示", "text": "演示团率预备营；预备营位置未给出。", "locator": null }],
+  "badgeStyle": "standard",
+  "badgeScale": 1,
+  "view": { "scale": 2, "x": 120, "y": 80 }
+}

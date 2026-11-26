@@ -1,6 +1,7 @@
+import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
-import { basename, extname, join } from "node:path";
+import { mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
+import { basename, dirname, extname, join } from "node:path";
 import type {
 	EvidenceMessageKind,
 	EvidenceMessageRecord,
@@ -13,9 +14,26 @@ import type {
 } from "@percho/shared";
 import { canViewerSee } from "./secret-blocks";
 
-const QQ_DATE_TIME_RE = /^(.+?)\s+(\d{4})[-/](\d{1,2})[-/](\d{1,2})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?$/;
-const QQ_TIME_WITH_SEC_RE = /^(.+?)\s+(\d{1,2}):(\d{2}):(\d{2})$/;
-const QQ_TIME_NO_SEC_RE = /^(.+?)\s+(\d{1,2}):(\d{2})$/;
+const QQ_DATE_TIME_RE =
+	/^(.+?)\s+(\d{4})[-/](\d{1,2})[-/](\d{1,2})\s+([01]?\d|2[0-3]):([0-5]\d)(?::([0-5]\d))?$/;
+const QQ_TIME_WITH_SEC_RE = /^(.+?)\s+([01]?\d|2[0-3]):([0-5]\d):([0-5]\d)$/;
+const QQ_TIME_NO_SEC_RE = /^(.+?)\s+([01]?\d|2[0-3]):([0-5]\d)$/;
+
+function isPlausibleShortTimeSender(rawSender: string): boolean {
+	const trimmed = rawSender.trim();
+	if (!trimmed || trimmed.length > 40) return false;
+	// 排除包含正文句末/分句标点或以冒号/等号收尾的普通句子，避免误拆正文中的 "12:30" 或比分
+	if (/[。！？，；、：]/.test(trimmed)) return false;
+	if (/[.,!?;:=]$/.test(trimmed)) return false;
+	return true;
+}
+
+async function atomicWriteUtf8(filePath: string, content: string): Promise<void> {
+	await mkdir(dirname(filePath), { recursive: true });
+	const tmp = `${filePath}.tmp-${randomUUID().slice(0, 8)}`;
+	await writeFile(tmp, content, "utf8");
+	await rename(tmp, filePath);
+}
 
 function pad2(val: string): string {
 	return val.padStart(2, "0");
@@ -159,7 +177,7 @@ function parsePlainTextMessages(
 		}
 		if (lastSeenDate) {
 			const shortMatch = trimmed.match(QQ_TIME_NO_SEC_RE);
-			if (shortMatch && shortMatch[1] && shortMatch[2] && shortMatch[3]) {
+			if (shortMatch && shortMatch[1] && shortMatch[2] && shortMatch[3] && isPlausibleShortTimeSender(shortMatch[1])) {
 				flush();
 				const cleaned = cleanSender(shortMatch[1]);
 				current = {
@@ -281,9 +299,8 @@ export async function loadEvidenceRecords(cwd: string): Promise<EvidenceMessageR
 }
 
 export async function saveEvidenceRecords(cwd: string, records: readonly EvidenceMessageRecord[]): Promise<void> {
-	await mkdir(join(cwd, ".wenyou"), { recursive: true });
 	const lines = records.map((rec, idx) => JSON.stringify({ ...rec, lineIndex: idx }));
-	await writeFile(evidenceJsonlPath(cwd), lines.length ? `${lines.join("\n")}\n` : "", "utf8");
+	await atomicWriteUtf8(evidenceJsonlPath(cwd), lines.length ? `${lines.join("\n")}\n` : "");
 }
 
 export async function loadCursors(cwd: string): Promise<Record<string, GroupCursorRecord>> {
@@ -301,8 +318,7 @@ export async function loadCursors(cwd: string): Promise<Record<string, GroupCurs
 }
 
 export async function saveCursors(cwd: string, cursors: Record<string, GroupCursorRecord>): Promise<void> {
-	await mkdir(join(cwd, ".wenyou"), { recursive: true });
-	await writeFile(cursorsJsonPath(cwd), JSON.stringify({ version: 1, groups: cursors }, null, 2), "utf8");
+	await atomicWriteUtf8(cursorsJsonPath(cwd), JSON.stringify({ version: 1, groups: cursors }, null, 2));
 }
 
 export function computeUnreportedMessages(
@@ -394,8 +410,46 @@ async function listCollectFiles(dir: string, relPrefix = ""): Promise<Array<{ ab
 	return out;
 }
 
+export const DEFAULT_SOURCE_CONTEXT_WINDOW = 30;
+export const MAX_SOURCE_CONTEXT_WINDOW = 10_000;
+export const DEFAULT_EVIDENCE_SEARCH_LIMIT = 50;
+export const MAX_EVIDENCE_SEARCH_LIMIT = 500;
+
+function extractNtqqRowid(sourceId: string): number | null {
+	const match = sourceId.match(/^qq-\d+-(\d+)(?:-\d+)?$/);
+	if (!match?.[1]) return null;
+	const num = Number.parseInt(match[1], 10);
+	return Number.isFinite(num) ? num : null;
+}
+
+function sortEvidenceChronologically(records: EvidenceMessageRecord[]): EvidenceMessageRecord[] {
+	return records
+		.map((rec, orderIdx) => ({ rec, orderIdx }))
+		.sort((a, b) => {
+			const tsCmp = a.rec.timestamp.localeCompare(b.rec.timestamp);
+			if (tsCmp !== 0) return tsCmp;
+			if (a.rec.groupId === b.rec.groupId) {
+				const rowA = extractNtqqRowid(a.rec.sourceId);
+				const rowB = extractNtqqRowid(b.rec.sourceId);
+				if (rowA !== null && rowB !== null && rowA !== rowB) return rowA - rowB;
+			}
+			return a.orderIdx - b.orderIdx;
+		})
+		.map(({ rec }, idx) => ({ ...rec, lineIndex: idx }));
+}
+
+function normalizeDateBound(raw: string | undefined, bound: "since" | "until"): string | undefined {
+	const trimmed = raw?.trim();
+	if (!trimmed) return undefined;
+	if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+		return bound === "since" ? `${trimmed} 00:00:00` : `${trimmed} 23:59:59`;
+	}
+	return trimmed.replace("T", " ");
+}
+
 /**
  * 将外部已解码的消息集合（如本机 NTQQ VFS 直读拉取结果）按统一指纹幂等合入 `.wenyou/evidence.jsonl` 并推进双游标。
+ * 若回溯补抓了早于现有记录的历史消息，自动按时间线重排以保持上下文邻接与未汇报游标准确。
  */
 export interface ExternalEvidenceMessageInput {
 	sourceId?: string;
@@ -424,12 +478,20 @@ export async function ingestExternalMessages(
 	const cursors = await loadCursors(cwd);
 	const seenFp = new Set(existing.map((r) => r.fingerprint));
 	const usedIds = new Set(existing.map((r) => r.sourceId));
-	const merged: EvidenceMessageRecord[] = [...existing];
+	const lastExistingTsByGroup = new Map<string, string>();
+	for (const rec of existing) {
+		const prevTs = lastExistingTsByGroup.get(rec.groupId);
+		if (!prevTs || rec.timestamp > prevTs) {
+			lastExistingTsByGroup.set(rec.groupId, rec.timestamp);
+		}
+	}
+	let merged: EvidenceMessageRecord[] = [...existing];
 	const sourceFilesByGroup = new Map<string, Set<string>>();
 	const perGroupCounts: Record<string, { newlyIngested: number; skippedDuplicates: number }> = {};
 
 	let newlyIngested = 0;
 	let skippedDuplicates = 0;
+	let needsChronoSort = false;
 
 	for (const raw of items) {
 		const text = raw.text.trim();
@@ -451,19 +513,33 @@ export async function ingestExternalMessages(
 		const counter = perGroupCounts[groupId] ?? { newlyIngested: 0, skippedDuplicates: 0 };
 		perGroupCounts[groupId] = counter;
 
-		if (seenFp.has(fp)) {
+		const explicitSourceId = raw.sourceId?.trim() || "";
+		if (explicitSourceId) {
+			if (usedIds.has(explicitSourceId)) {
+				skippedDuplicates += 1;
+				counter.skippedDuplicates += 1;
+				continue;
+			}
+		} else if (seenFp.has(fp)) {
 			skippedDuplicates += 1;
 			counter.skippedDuplicates += 1;
 			continue;
 		}
-		let sourceId = raw.sourceId?.trim() || `qq-${groupId}-${fp.slice(0, 8)}`;
-		if (usedIds.has(sourceId)) {
+		const prevGroupMaxTs = lastExistingTsByGroup.get(groupId);
+		if (prevGroupMaxTs && timestamp < prevGroupMaxTs) {
+			needsChronoSort = true;
+		}
+		let sourceId = explicitSourceId || `qq-${groupId}-${fp.slice(0, 8)}`;
+		if (!explicitSourceId && usedIds.has(sourceId)) {
 			let suffix = 2;
 			while (usedIds.has(`${sourceId}-${suffix}`)) suffix += 1;
 			sourceId = `${sourceId}-${suffix}`;
 		}
 		seenFp.add(fp);
 		usedIds.add(sourceId);
+		if (!prevGroupMaxTs || timestamp > prevGroupMaxTs) {
+			lastExistingTsByGroup.set(groupId, timestamp);
+		}
 		merged.push({
 			sourceId,
 			groupId,
@@ -479,6 +555,10 @@ export async function ingestExternalMessages(
 		});
 		newlyIngested += 1;
 		counter.newlyIngested += 1;
+	}
+
+	if (newlyIngested > 0 || needsChronoSort) {
+		merged = sortEvidenceChronologically(merged);
 	}
 
 	if (newlyIngested > 0 || !existsSync(evidenceJsonlPath(cwd))) {
@@ -515,7 +595,7 @@ export async function pullQqGroupsIncremental(cwd: string, groupIdFilter?: strin
 	const cursors = await loadCursors(cwd);
 	const seenFp = new Set(existing.map((r) => r.fingerprint));
 	const usedIds = new Set(existing.map((r) => r.sourceId));
-	const merged: EvidenceMessageRecord[] = [...existing];
+	let merged: EvidenceMessageRecord[] = [...existing];
 	const sourceFilesByGroup = new Map<string, Set<string>>();
 
 	let newlyIngested = 0;
@@ -600,6 +680,10 @@ export async function pullQqGroupsIncremental(cwd: string, groupIdFilter?: strin
 		}
 	}
 
+	if (newlyIngested > 0) {
+		merged = sortEvidenceChronologically(merged);
+	}
+
 	if (newlyIngested > 0 || !existsSync(evidenceJsonlPath(cwd))) {
 		await saveEvidenceRecords(cwd, merged);
 	}
@@ -617,11 +701,11 @@ export async function pullQqGroupsIncremental(cwd: string, groupIdFilter?: strin
 	};
 }
 
-/** 按 sourceId 极速回查同群前后 N（默认 10）条上下文，并遵守视角可见性裁剪 */
+/** 按 sourceId 回查同群前后 N（默认 30，最高支持 10,000 单侧即覆盖 20,000 条单群上限）条上下文，并遵守视角可见性裁剪 */
 export async function lookupSourceContext(
 	cwd: string,
 	sourceId: string,
-	windowSize = 10,
+	windowSize = DEFAULT_SOURCE_CONTEXT_WINDOW,
 	viewer: ViewerScope = { kind: "gm" },
 ): Promise<SourceContextWindow | null> {
 	const all = await loadEvidenceRecords(cwd);
@@ -631,7 +715,7 @@ export async function lookupSourceContext(
 	const sameGroup = visible.filter((rec) => rec.groupId === hit.groupId);
 	const idx = sameGroup.findIndex((rec) => rec.sourceId === sourceId);
 	if (idx === -1) return null;
-	const win = Math.max(0, Math.min(50, Math.floor(windowSize)));
+	const win = Math.max(0, Math.min(MAX_SOURCE_CONTEXT_WINDOW, Math.floor(windowSize)));
 	const start = Math.max(0, idx - win);
 	const end = Math.min(sameGroup.length, idx + win + 1);
 	return {
@@ -640,25 +724,67 @@ export async function lookupSourceContext(
 		groupName: hit.groupName,
 		targetIndex: idx - start,
 		messages: sameGroup.slice(start, end),
+		windowSize: win,
+		totalGroupMessages: sameGroup.length,
+		beforeRemaining: start,
+		afterRemaining: Math.max(0, sameGroup.length - end),
+	};
+}
+
+export interface SearchEvidenceQuery {
+	keyword?: string;
+	sender?: string;
+	groupId?: string;
+	since?: string;
+	until?: string;
+	order?: "latest" | "earliest";
+	limit?: number;
+	viewer?: ViewerScope;
+}
+
+export interface SearchEvidenceResult {
+	records: EvidenceMessageRecord[];
+	totalScanned: number;
+	totalMatched: number;
+	order: "latest" | "earliest";
+}
+
+/** 按关键词/发言人/时间段全库检索 L0 证据库，返回全库扫描与命中统计，支持按最早或最近顺序回溯 */
+export async function searchEvidenceWithStats(
+	cwd: string,
+	query: SearchEvidenceQuery,
+): Promise<SearchEvidenceResult> {
+	const viewer = query.viewer ?? { kind: "gm" };
+	const all = await loadEvidenceRecords(cwd);
+	const visible = all.filter((rec) => canViewerSee(rec.visibility, rec.visibleToFactions, viewer));
+	const kw = query.keyword?.trim().toLowerCase();
+	const senderKw = query.sender?.trim().toLowerCase();
+	const sinceNorm = normalizeDateBound(query.since, "since");
+	const untilNorm = normalizeDateBound(query.until, "until");
+	const limit = Math.max(1, Math.min(MAX_EVIDENCE_SEARCH_LIMIT, Math.floor(query.limit ?? DEFAULT_EVIDENCE_SEARCH_LIMIT)));
+	const order: "latest" | "earliest" = query.order === "earliest" ? "earliest" : "latest";
+	const matched = visible.filter((rec) => {
+		if (query.groupId && rec.groupId !== query.groupId) return false;
+		if (sinceNorm && rec.timestamp < sinceNorm) return false;
+		if (untilNorm && rec.timestamp > untilNorm) return false;
+		if (senderKw && !rec.sender.toLowerCase().includes(senderKw)) return false;
+		if (kw && !rec.text.toLowerCase().includes(kw) && !rec.sender.toLowerCase().includes(kw)) return false;
+		return true;
+	});
+	const records = order === "earliest" ? matched.slice(0, limit) : matched.slice(-limit);
+	return {
+		records,
+		totalScanned: visible.length,
+		totalMatched: matched.length,
+		order,
 	};
 }
 
 /** 按关键词/发言人检索 L0 证据库 */
 export async function searchEvidenceRecords(
 	cwd: string,
-	query: { keyword?: string; sender?: string; groupId?: string; limit?: number; viewer?: ViewerScope },
+	query: SearchEvidenceQuery,
 ): Promise<EvidenceMessageRecord[]> {
-	const viewer = query.viewer ?? { kind: "gm" };
-	const all = await loadEvidenceRecords(cwd);
-	const kw = query.keyword?.trim().toLowerCase();
-	const senderKw = query.sender?.trim().toLowerCase();
-	const limit = Math.max(1, Math.min(100, query.limit ?? 20));
-	const matched = all.filter((rec) => {
-		if (!canViewerSee(rec.visibility, rec.visibleToFactions, viewer)) return false;
-		if (query.groupId && rec.groupId !== query.groupId) return false;
-		if (senderKw && !rec.sender.toLowerCase().includes(senderKw)) return false;
-		if (kw && !rec.text.toLowerCase().includes(kw) && !rec.sender.toLowerCase().includes(kw)) return false;
-		return true;
-	});
-	return matched.slice(-limit);
+	const res = await searchEvidenceWithStats(cwd, query);
+	return res.records;
 }

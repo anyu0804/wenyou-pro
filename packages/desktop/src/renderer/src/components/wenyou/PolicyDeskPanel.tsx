@@ -1,5 +1,5 @@
 import { formatViewerScope, type PolicyLintCode, type PolicyLintReport } from "@percho/shared";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { getPi } from "../../api";
 import { getExecutionApi } from "../../environment-api";
 import { pushExtensionToast } from "../../stores/toasts";
@@ -103,6 +103,10 @@ export function PolicyDeskPanel() {
 	const [linting, setLinting] = useState(false);
 	const [writingDocx, setWritingDocx] = useState(false);
 	const [liveLintReport, setLiveLintReport] = useState<PolicyLintReport | null>(null);
+	const cwdRef = useRef(cwd);
+	cwdRef.current = cwd;
+	const lintRequestSeqRef = useRef(0);
+	const writeRequestSeqRef = useRef(0);
 
 	const policies = overview?.policies ?? [];
 	const currentPolicy =
@@ -110,6 +114,20 @@ export function PolicyDeskPanel() {
 
 	const rawCwd = unwrapCwdPath(cwd);
 	const remote = isRemoteCwd(cwd);
+
+	// 切换世界时重置本地体检台草稿与请求序号
+	useEffect(() => {
+		lintRequestSeqRef.current += 1;
+		writeRequestSeqRef.current += 1;
+		setDraftTitle("");
+		setDraftActor("");
+		setDraftTurn("");
+		setDraftText("");
+		setLiveLintReport(null);
+		setLinting(false);
+		setWritingDocx(false);
+		setShowLintDetail(false);
+	}, [cwd]);
 
 	// 切换国策时收起旧体检展开态
 	useEffect(() => {
@@ -187,40 +205,50 @@ export function PolicyDeskPanel() {
 	};
 
 	const handleRunLiveLint = async () => {
-		if (!cwd || !draftText.trim()) return;
+		const targetCwd = cwd;
+		if (!targetCwd || !draftText.trim()) return;
+		const seq = ++lintRequestSeqRef.current;
 		setLinting(true);
 		try {
-			const report = await getExecutionApi(cwd).wenyouLintPolicy({
-				cwd,
+			const report = await getExecutionApi(targetCwd).wenyouLintPolicy({
+				cwd: targetCwd,
 				text: draftText,
 				viewer: formatViewerScope(viewerScope),
 			});
+			if (seq !== lintRequestSeqRef.current || cwdRef.current !== targetCwd) return;
 			setLiveLintReport(report);
 		} catch (error) {
+			if (seq !== lintRequestSeqRef.current || cwdRef.current !== targetCwd) return;
 			pushExtensionToast(
 				"error",
 				`静态体检失败：${error instanceof Error ? error.message : String(error)}`,
 				"Wenyou Pro",
 			);
 		} finally {
-			setLinting(false);
+			if (seq === lintRequestSeqRef.current) {
+				setLinting(false);
+			}
 		}
 	};
 
 	const handleGenerateDocxFromDraft = async () => {
-		if (!cwd || !draftTitle.trim() || !draftText.trim()) {
+		const targetCwd = cwd;
+		if (!targetCwd || !draftTitle.trim() || !draftText.trim()) {
 			pushExtensionToast("warning", "请先填写国策标题与正文内容", "Wenyou Pro");
 			return;
 		}
+		const seq = ++writeRequestSeqRef.current;
 		setWritingDocx(true);
 		try {
-			const res = await getExecutionApi(cwd).wenyouWritePolicyDocx({
-				cwd,
+			const res = await getExecutionApi(targetCwd).wenyouWritePolicyDocx({
+				cwd: targetCwd,
 				title: draftTitle.trim(),
 				content: draftText,
+				viewer: formatViewerScope(viewerScope),
 				...(draftActor.trim() ? { actor: draftActor.trim() } : {}),
 				...(draftTurn.trim() ? { turnLabel: draftTurn.trim() } : {}),
 			});
+			if (seq !== writeRequestSeqRef.current || cwdRef.current !== targetCwd) return;
 			setLiveLintReport(res.lintReport);
 			if (!res.ok || !res.artifact) {
 				pushExtensionToast("warning", res.error ?? "门禁未通过，请按提示修订正文后再生成", "Wenyou Pro");
@@ -229,15 +257,18 @@ export function PolicyDeskPanel() {
 			pushExtensionToast("info", `已生成规范国策 Word 文档：${res.artifact.docxPath}`, "Wenyou Pro");
 			setSelectedPolicyId(res.artifact.id);
 			setMode("preview");
-			await refreshOverview(cwd, { silent: true });
+			await refreshOverview(targetCwd, { silent: true });
 		} catch (error) {
+			if (seq !== writeRequestSeqRef.current || cwdRef.current !== targetCwd) return;
 			pushExtensionToast(
 				"error",
 				`生成国策文档失败：${error instanceof Error ? error.message : String(error)}`,
 				"Wenyou Pro",
 			);
 		} finally {
-			setWritingDocx(false);
+			if (seq === writeRequestSeqRef.current) {
+				setWritingDocx(false);
+			}
 		}
 	};
 
@@ -400,7 +431,7 @@ export function PolicyDeskPanel() {
 						<div className="flex flex-col items-center justify-center gap-3 py-14 text-center">
 							<p className="text-ui-14 font-medium text-ink">03-国策与文书/ 尚无国策文档</p>
 							<p className="max-w-sm text-ui-12 leading-relaxed text-ink-dim">
-								可让 Agent 依据最新局势书与国力实册起草并自动过门禁生成宋体规范 Word（.docx），也可直接切到「实时门禁体检台」手工校验草稿。
+								可让司命依据最新局势书与国力实册起草并自动过门禁生成宋体规范 Word（.docx），也可直接切到「实时门禁体检台」手工校验草稿。
 							</p>
 							<div className="mt-1 flex items-center gap-2">
 								<button
@@ -419,7 +450,7 @@ export function PolicyDeskPanel() {
 									}
 									className="rounded-lg bg-ink px-3 py-1.5 text-ui-12 font-medium text-on-ink transition-opacity hover:opacity-90"
 								>
-									让 Agent 起草本轮国策
+									让司命起草本轮国策
 								</button>
 							</div>
 						</div>

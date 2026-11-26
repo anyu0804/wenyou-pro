@@ -14,6 +14,13 @@ const ROLE_OPTIONS: Array<{ value: GroupRole; label: string }> = [
 	{ value: "other", label: WENYOU_GROUP_ROLE_LABELS.other },
 ];
 
+const INITIAL_SYNC_LIMIT_OPTIONS = [
+	{ value: 500, label: "500 条（默认快启）" },
+	{ value: 2000, label: "2,000 条（推荐）" },
+	{ value: 5000, label: "5,000 条（长程）" },
+	{ value: 20000, label: "20,000 条（上限）" },
+] as const;
+
 function stripInvokePrefix(err: unknown): string {
 	const raw = err instanceof Error ? err.message : String(err);
 	return raw.replace(/^Error invoking remote method '[^']*':\s*(?:Error:\s*)?/, "");
@@ -43,6 +50,7 @@ function CreateWorldDialogBody({ onClose }: { onClose: () => void }) {
 	const [search, setSearch] = useState("");
 	const [manualGroupId, setManualGroupId] = useState("");
 	const [manualGroupName, setManualGroupName] = useState("");
+	const [syncLimit, setSyncLimit] = useState<number>(500);
 
 	const [loadingInit, setLoadingInit] = useState(true);
 	const [loadingGroups, setLoadingGroups] = useState(false);
@@ -107,12 +115,15 @@ function CreateWorldDialogBody({ onClose }: { onClose: () => void }) {
 	};
 
 	const toggleGroup = (group: NtqqGroupSummary) => {
+		const exists = bindings.some((b) => b.groupId === group.groupId);
+		if (!exists && bindings.length === 0) {
+			maybeAutofillTitle(group.groupName);
+		}
 		setBindings((prev) => {
 			if (prev.some((b) => b.groupId === group.groupId)) {
 				return prev.filter((b) => b.groupId !== group.groupId);
 			}
 			const isFirst = prev.length === 0;
-			if (isFirst) maybeAutofillTitle(group.groupName);
 			return [
 				...prev,
 				{
@@ -140,10 +151,13 @@ function CreateWorldDialogBody({ onClose }: { onClose: () => void }) {
 		}
 		setError(null);
 		const name = manualGroupName.trim() || gid;
+		const exists = bindings.some((b) => b.groupId === gid);
+		if (!exists && bindings.length === 0 && manualGroupName.trim()) {
+			maybeAutofillTitle(manualGroupName);
+		}
 		setBindings((prev) => {
 			if (prev.some((b) => b.groupId === gid)) return prev;
 			const isFirst = prev.length === 0;
-			if (isFirst && manualGroupName.trim()) maybeAutofillTitle(manualGroupName);
 			return [
 				...prev,
 				{
@@ -185,6 +199,7 @@ function CreateWorldDialogBody({ onClose }: { onClose: () => void }) {
 				worldTitle: worldTitle.trim() || undefined,
 				bindings: finalBindings,
 				ntqqReady: snapshot?.status.ready === true,
+				syncLimit,
 				autoStartAgent,
 			});
 			onClose();
@@ -196,6 +211,7 @@ function CreateWorldDialogBody({ onClose }: { onClose: () => void }) {
 	};
 
 	const ready = snapshot?.status.ready === true;
+	const isOfflinePlatform = snapshot !== null && !snapshot.status.platformSupported;
 	const targetLocation = customParentDir ?? defaultWorldsDir;
 	const effectiveGroupCount =
 		bindings.length +
@@ -216,7 +232,7 @@ function CreateWorldDialogBody({ onClose }: { onClose: () => void }) {
 					<div>
 						<h2 className="text-ui-15 font-semibold text-ink">新建空白文游世界</h2>
 						<p className="mt-0.5 text-ui-12 text-ink-dim">
-							不塞演示模板；选定或输入主要 QQ 群后，由 Agent 直接抓取群聊梳理设定与局势
+							不塞演示模板；选定或输入主要 QQ 群后，由司命直接抓取群聊梳理设定与局势
 						</p>
 					</div>
 					<button
@@ -370,6 +386,24 @@ function CreateWorldDialogBody({ onClose }: { onClose: () => void }) {
 									)}
 								</div>
 							</div>
+						) : isOfflinePlatform ? (
+							<div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-border bg-canvas/50 px-3.5 py-2.5 text-ui-12">
+								<span className="min-w-0 flex-1 text-ink-dim">
+									当前系统暂不支持一键直采本机 QQ；创建世界后直接将导出的{" "}
+									<code className="font-mono">.txt</code> / <code className="font-mono">.json</code>{" "}
+									聊天记录放入 <code className="font-mono">00-群聊收集/</code> 即可交由司命梳理
+								</span>
+								<button
+									type="button"
+									onClick={() => {
+										onClose();
+										useUiPreferencesStore.getState().openOnboarding(2);
+									}}
+									className="shrink-0 rounded-lg border border-border bg-surface px-2.5 py-1 text-ui-11 text-ink-2 transition-colors hover:bg-hover hover:text-ink"
+								>
+									手动导入密钥
+								</button>
+							</div>
 						) : (
 							<div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-border bg-canvas/50 px-3.5 py-2.5 text-ui-12">
 								<span className="min-w-0 flex-1 text-ink-dim">
@@ -418,6 +452,24 @@ function CreateWorldDialogBody({ onClose }: { onClose: () => void }) {
 								添加
 							</button>
 						</div>
+
+						{ready && (
+							<div className="flex items-center justify-between gap-2 pt-1 text-ui-11 text-ink-dim">
+								<span>首轮每群拉取历史深度（后续可在「绑定 QQ 群」随时补抓至 20,000 条）</span>
+								<select
+									aria-label="首轮每群拉取历史条数"
+									value={syncLimit}
+									onChange={(e) => setSyncLimit(Number(e.target.value))}
+									className="shrink-0 rounded-md border border-border bg-canvas px-2 py-1 text-ui-11 text-ink outline-none focus:border-accent"
+								>
+									{INITIAL_SYNC_LIMIT_OPTIONS.map((opt) => (
+										<option key={opt.value} value={opt.value}>
+											{opt.label}
+										</option>
+									))}
+								</select>
+							</div>
+						)}
 					</div>
 
 					{error && (
@@ -453,10 +505,10 @@ function CreateWorldDialogBody({ onClose }: { onClose: () => void }) {
 							className="rounded-lg bg-ink px-4 py-1.5 text-ui-12 font-medium text-on-ink transition-opacity hover:opacity-90 disabled:opacity-40"
 						>
 							{submitting === "agent"
-								? "正在同步并唤起 Agent…"
+								? "正在同步并唤起司命…"
 								: effectiveGroupCount > 0
 									? `创建并抓取 ${effectiveGroupCount} 个群建档`
-									: "创建并让 Agent 引导建档"}
+									: "创建并让司命引导建档"}
 						</button>
 					</div>
 				</div>

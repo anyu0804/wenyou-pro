@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import type { Model } from "@earendil-works/pi-ai";
-import type { AgentSessionEvent, ModelRuntime } from "@earendil-works/pi-coding-agent";
+import type { AgentSessionEvent, InlineExtension, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import {
 	createAgentSession,
 	DefaultResourceLoader,
@@ -76,6 +76,8 @@ export interface RunSubagentDeps {
 	onEvent?: (sessionId: string, event: AgentSessionEvent, abort: () => Promise<void>) => void;
 	registerRun?: (sessionId: string, handle: SubagentRunHandle) => void;
 	unregisterRun?: (sessionId: string) => void;
+	/** 宿主注入的额外内联扩展（如 makeWenyouExtension，使子代理同步享有 wenyou_* 工具与 tool_call 物理门控）。 */
+	extraExtensions?: (cwd: string) => InlineExtension[];
 }
 
 export interface SubagentRunHandle {
@@ -265,6 +267,7 @@ export async function runSubagent(deps: RunSubagentDeps, input: RunSubagentInput
 				getMode: () =>
 					subagentPermissionMode(deps.getPermissionMode?.() ?? "default", input.agent.permissionMode),
 			}),
+			...(deps.extraExtensions ? deps.extraExtensions(input.cwd) : []),
 		],
 	});
 	await resourceLoader.reload();

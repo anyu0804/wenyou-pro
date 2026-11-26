@@ -3,7 +3,7 @@
  * 按 navigator.language 选择，en 为兜底。
  */
 const zh = {
-	"app.eyebrow": "Percho · 跨设备互联",
+	"app.eyebrow": "司命 · 文游 Pro · 跨设备互联",
 	"list.title": "会话",
 	"list.sectionActive": "正在运行",
 	"list.sectionHistory": "历史 · 只读",
@@ -70,7 +70,7 @@ const zh = {
 };
 
 const en: Record<keyof typeof zh, string> = {
-	"app.eyebrow": "Percho · Cross-device",
+	"app.eyebrow": "Wenyou Pro · Cross-device",
 	"list.title": "Sessions",
 	"list.sectionActive": "Running",
 	"list.sectionHistory": "History · Read-only",
