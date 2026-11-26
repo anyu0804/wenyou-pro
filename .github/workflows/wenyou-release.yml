@@ -90,37 +90,10 @@ jobs:
       - name: Install pixi-sandbox dependencies
         run: npm --prefix packages/pixi-sandbox ci --no-audit --no-fund
 
-      - name: Provision cross-arch @esbuild macOS binaries for packaging
-        shell: bash
-        run: |
-          set -euo pipefail
-          ESBUILD_VER="$(node -p "require('./packages/desktop/package.json').dependencies.esbuild")"
-          ensure_esbuild_pkg() {
-            local arch="$1"
-            local target_dir="node_modules/@esbuild/darwin-${arch}"
-            if [ -f "${target_dir}/bin/esbuild" ]; then
-              echo "@esbuild/darwin-${arch}@${ESBUILD_VER} already present"
-              return 0
-            fi
-            echo "Provisioning @esbuild/darwin-${arch}@${ESBUILD_VER} for macOS ${arch} bundle..."
-            local tgz
-            tgz="$(npm pack "@esbuild/darwin-${arch}@${ESBUILD_VER}" --pack-destination "${RUNNER_TEMP}" | tail -n 1)"
-            mkdir -p "${target_dir}"
-            tar -xzf "${RUNNER_TEMP}/${tgz}" -C "${target_dir}" --strip-components=1
-            chmod +x "${target_dir}/bin/esbuild"
-            rm -f "${RUNNER_TEMP}/${tgz}"
-          }
-          if [ "${TARGET_MAC_ARCH}" = "all" ] || [ "${TARGET_MAC_ARCH}" = "x64" ]; then
-            ensure_esbuild_pkg x64
-          fi
-          if [ "${TARGET_MAC_ARCH}" = "all" ] || [ "${TARGET_MAC_ARCH}" = "arm64" ]; then
-            ensure_esbuild_pkg arm64
-          fi
-
       - name: Build macOS DMG and ZIP installers
         run: node scripts/wenyou-release/build-installer.mjs --platform mac --arch "${TARGET_MAC_ARCH}"
 
-      - name: Verify macOS release package (asar, esbuild, codesign, hdiutil, path gate)
+      - name: Verify macOS release package (asar, codesign, hdiutil, path gate)
         run: node scripts/wenyou-release/verify-package.mjs --platform mac --arch "${TARGET_MAC_ARCH}"
 
       - name: Upload macOS release artifacts

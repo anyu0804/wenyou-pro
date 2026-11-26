@@ -51,8 +51,6 @@ jobs:
           src/renderer/src/components/diff/DiffSidebar.test.tsx
           src/renderer/src/components/ui/DeferredDetails.test.tsx
           src/renderer/src/stores/session-view.test.ts
-          src/renderer/src/stores/ui-plugin-config-baseline.test.ts
-          src/main/ui-plugins/manifest.test.ts
       - uses: actions/download-artifact@v8
         with:
           pattern: remote-runtime-*

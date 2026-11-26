@@ -11,7 +11,7 @@
   <a href="https://github.com/anyu0804/wenyou-pro/releases"><img src="https://img.shields.io/github/v/release/anyu0804/wenyou-pro?style=flat-square" alt="Release"></a>
   <a href="https://github.com/anyu0804/wenyou-pro/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/anyu0804/wenyou-pro/ci.yml?label=CI&style=flat-square" alt="CI"></a>
   <a href="https://github.com/anyu0804/wenyou-pro/actions/workflows/wenyou-release.yml"><img src="https://img.shields.io/github/actions/workflow/status/anyu0804/wenyou-pro/wenyou-release.yml?label=Release%20Build&style=flat-square" alt="Release Build"></a>
-  <img src="https://img.shields.io/badge/version-v0.2.5-C83E37?style=flat-square" alt="Version v0.2.5">
+  <img src="https://img.shields.io/badge/version-v0.2.6-C83E37?style=flat-square" alt="Version v0.2.6">
   <img src="https://img.shields.io/badge/node-%3E%3D22.19-339933?logo=nodedotjs&style=flat-square" alt="Node >=22.19">
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-blue?style=flat-square" alt="Windows | macOS | Linux">
 </p>

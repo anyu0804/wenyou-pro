@@ -5,9 +5,6 @@ extraMetadata:
   disableAutoUpdate: true
 beforePack: resources/remote-runtime/before-pack.cjs
 afterPack: scripts/after-pack.cjs
-electronLanguages:
-  - zh_CN
-  - en
 directories:
   output: dist
 files:

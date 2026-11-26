@@ -62,10 +62,41 @@ function PlainDiagramCodeBlock({
 	);
 }
 
+function PlainMathInline({
+	node,
+}: {
+	node?: { raw?: string; content?: string };
+}) {
+	const text = node?.raw ?? (node?.content ? `$${node.content}$` : "");
+	return (
+		<code data-math-fallback="inline" className="font-mono text-ui-13">
+			{text}
+		</code>
+	);
+}
+
+function PlainMathBlock({
+	node,
+}: {
+	node?: { raw?: string; content?: string };
+}) {
+	const text = node?.raw ?? node?.content ?? "";
+	return (
+		<pre
+			data-math-fallback="block"
+			className="my-2 overflow-x-auto rounded-lg border border-border bg-surface/60 px-3 py-2 font-mono text-ui-12 leading-relaxed text-ink"
+		>
+			<code>{text}</code>
+		</pre>
+	);
+}
+
 setCustomComponents({
 	mermaid: PlainDiagramCodeBlock as MarkstreamCustomComponent,
 	d2: PlainDiagramCodeBlock as MarkstreamCustomComponent,
 	infographic: PlainDiagramCodeBlock as MarkstreamCustomComponent,
+	math_inline: PlainMathInline as MarkstreamCustomComponent,
+	math_block: PlainMathBlock as MarkstreamCustomComponent,
 });
 
 /** 首次直出已有正文，让库先 reset 到当前内容；挂载后只对新增 delta 启用 pacing。 */
