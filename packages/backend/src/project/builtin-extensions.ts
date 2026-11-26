@@ -21,11 +21,12 @@ export function builtinExtensions(deps: {
 	agentDir?: string;
 	mcpObserver?: () => (snapshot: McpRuntimeSnapshot) => void;
 }): InlineExtension[] {
+	const codemodeConfig = readCodemodeConfig(deps.agentDir ?? getAgentDir());
 	return [
 		{
 			name: "codemode",
 			factory: createCodemodeExtension({
-				mode: readCodemodeConfig(deps.agentDir ?? getAgentDir()).only ? "only" : "on",
+				mode: codemodeConfig.enabled && codemodeConfig.only ? "only" : "on",
 			}),
 			builtin: true,
 			replaceable: true,

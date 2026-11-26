@@ -438,4 +438,147 @@ describe("WenyouService 端到端领域闭环", () => {
 		expect(dateFiltered.records.some((m) => m.sourceId === "dip-1")).toBe(false);
 		expect(dateFiltered.records.some((m) => m.sender === "先遣哨")).toBe(false);
 	});
+
+	it("无日期与纯时分秒消息不阻塞后续带日期消息的未汇报游标，且 .txt 时间顺序不反转", async () => {
+		const root = await mkdtemp(join(tmpdir(), "wenyou-undated-cursor-"));
+		tempDirs.push(root);
+		const service = new WenyouService();
+		await service.initCampaign(root, { worldTitle: "游标无日期回归", currentEra: "T1" });
+
+		// 1. 先入库含空时间戳与纯时分秒的记录，再发布简报推进 lastReportedSourceId
+		await ingestExternalMessages(root, [
+			{ sourceId: "g1-empty", groupId: "g1", groupName: "主群", sender: "甲", timestamp: "", text: "无时间戳开场" },
+			{ sourceId: "g1-timeonly", groupId: "g1", groupName: "主群", sender: "乙", timestamp: "09:15:30", text: "纯时分秒消息" },
+		]);
+		await service.publishBriefing({
+			cwd: root,
+			title: "首报",
+			turnLabel: "T1",
+			headline: "首报覆盖无日期记录",
+			progressItems: [],
+			diplomacySummary: "平稳",
+			intelChecks: [],
+			strategicJudgment: "继续",
+		});
+
+		const ovAfterFirst = await service.getOverview(root);
+		expect(ovAfterFirst.unreportedCount).toBe(0);
+		expect(ovAfterFirst.cursors[0]?.lastReportedSourceId).toBe("g1-timeonly");
+
+		// 2. 随后新到来带完整日期的消息（包含触发重排的乱序日期），必须全部落在新未汇报队列尾部，绝不被吞掉
+		await ingestExternalMessages(root, [
+			{ sourceId: "g1-d2", groupId: "g1", groupName: "主群", sender: "丙", timestamp: "2026-11-26 11:00:00", text: "后发带日期消息" },
+			{ sourceId: "g1-d1", groupId: "g1", groupName: "主群", sender: "丁", timestamp: "2026-11-26 10:00:00", text: "较早带日期消息" },
+		]);
+		const pulled = await service.pullQq(root);
+		expect(pulled.unreportedMessages.map((m) => m.sourceId)).toEqual(["g1-d1", "g1-d2"]);
+		const g1Cursor = pulled.cursors.find((c) => c.groupId === "g1");
+		expect(g1Cursor?.unreportedCount).toBe(2);
+		expect(g1Cursor?.lastIngestedSourceId).toBe("g1-d2");
+		expect(g1Cursor?.lastIngestedTimestamp).toBe("2026-11-26 11:00:00");
+
+		// 3. .txt 中纯时分秒在前、带日期在后，触发排序后仍保持纯时分秒在前、完整日期在后
+		await writeFile(
+			join(root, "00-群聊收集", "外交群_group-dip-200.txt"),
+			[
+				"先遣哨 09:15:30",
+				"无前置日期消息",
+				"燕王 2026-11-26 11:00:00",
+				"较晚消息",
+				"周相 2026-11-26 10:00:00",
+				"较早消息",
+			].join("\n"),
+			"utf8",
+		);
+		const pullTxt = await service.pullQq(root, "group-dip-200");
+		expect(pullTxt.unreportedMessages.map((m) => m.sender)).toEqual(["先遣哨", "周相", "燕王"]);
+	});
+
+	it("until/since 边界补齐 HH:MM / ISO-T / 纯日期，且 pullQqGroupsIncremental 优先按显式 JSON id 去重", async () => {
+		const root = await mkdtemp(join(tmpdir(), "wenyou-bounds-dedup-"));
+		tempDirs.push(root);
+		const service = new WenyouService();
+		await service.initCampaign(root, { worldTitle: "边界与去重测试", currentEra: "T1" });
+
+		await writeFile(
+			join(root, "00-群聊收集", "主群_group-main-300.json"),
+			JSON.stringify({
+				groupId: "group-main-300",
+				groupName: "主群",
+				messages: [
+					{ id: "m-t1", sender: "哨兵", timestamp: "09:15:30", text: "准点回报" },
+					{ id: "m-t2", sender: "哨兵", timestamp: "09:16:00", text: "超出一分钟" },
+					{ id: "m-iso", sender: "使节", timestamp: "2026-11-26T09:30:00Z", text: "ISO 格式时间" },
+					{ id: "m-dateonly", sender: "史官", timestamp: "2026-11-26", text: "纯日期记录" },
+					{ id: "m-dup-a", sender: "甲", timestamp: "", text: "收到" },
+					{ id: "m-dup-b", sender: "甲", timestamp: "", text: "收到" },
+					{ id: "m-dup-a", sender: "甲", timestamp: "", text: "收到（重复ID改文）" },
+				],
+			}),
+			"utf8",
+		);
+
+		const pulled = await pullQqGroupsIncremental(root);
+		expect(pulled.newlyIngested).toBe(6);
+		expect(pulled.skippedDuplicates).toBe(1);
+		expect(pulled.unreportedMessages.some((m) => m.sourceId === "m-dup-a")).toBe(true);
+		expect(pulled.unreportedMessages.some((m) => m.sourceId === "m-dup-b")).toBe(true);
+
+		const untilMinute = await service.searchSourcesWithStats(root, { until: "09:15" });
+		expect(untilMinute.records.map((m) => m.sourceId)).toEqual(["m-t1"]);
+
+		const fullDateRange = await service.searchSourcesWithStats(root, {
+			since: "2026-11-26",
+			until: "2026-11-26",
+		});
+		expect(fullDateRange.records.map((m) => m.sourceId).sort()).toEqual(["m-dateonly", "m-iso"]);
+	});
+
+	it("writePolicyDocx 拒绝空白标题、并发写串行编号不冲突、.docx 失败回滚 .md，且 readCanonDoc 拒绝目录目标", async () => {
+		const root = await mkdtemp(join(tmpdir(), "wenyou-policy-atomic-"));
+		tempDirs.push(root);
+		const events: WenyouCanvasEvent[] = [];
+		const service = new WenyouService((ev) => events.push(ev));
+		await service.initCampaign(root, { worldTitle: "原子性测试", currentEra: "T1" });
+
+		// 1. 空白标题返回 ok: false 且不落盘
+		const blankRes = await service.writePolicyDocx({
+			cwd: root,
+			title: "   \t  ",
+			content: "正文",
+		});
+		expect(blankRes.ok).toBe(false);
+		expect(blankRes.error).toContain("不能为空");
+		expect(await service.listPolicies(root)).toHaveLength(0);
+
+		// 2. 并发写两份无显式编号的国策，经 workspace lock 串行获得 001 / 002 互不撞号
+		const [p1, p2] = await Promise.all([
+			service.writePolicyDocx({ cwd: root, title: "并发国策甲", content: "正文甲" }),
+			service.writePolicyDocx({ cwd: root, title: "并发国策乙", content: "正文乙" }),
+		]);
+		expect(p1.ok).toBe(true);
+		expect(p2.ok).toBe(true);
+		expect([p1.artifact?.serialNo, p2.artifact?.serialNo].sort()).toEqual(["001", "002"]);
+		expect(existsSync(join(root, p1.artifact!.docxPath!))).toBe(true);
+		expect(existsSync(join(root, p2.artifact!.docxPath!))).toBe(true);
+
+		// 3. 在目标 .docx 路径预先占一个目录导致 .docx 写入失败，必须返回 ok: false 并回滚新建的 .md（且不触发 policy_written）
+		const beforeEventCount = events.length;
+		const occupiedDocxPath = join(root, "03-国策与文书", "099-回滚校验.docx");
+		const orphanMdPath = join(root, "03-国策与文书", "099-回滚校验.md");
+		await mkdir(occupiedDocxPath, { recursive: true });
+		const failRes = await service.writePolicyDocx({
+			cwd: root,
+			serialNo: "099",
+			title: "回滚校验",
+			content: "应当被回滚的国策正文",
+		});
+		expect(failRes.ok).toBe(false);
+		expect(failRes.error).toBeTruthy();
+		expect(existsSync(orphanMdPath)).toBe(false);
+		expect(events.length).toBe(beforeEventCount);
+
+		// 4. readCanonDoc 指向目录时抛出清晰错误
+		await expect(service.readCanonDoc(root, "01-设定与国力实册")).rejects.toThrow("目标不是常规文件");
+	});
 });

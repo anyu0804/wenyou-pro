@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, readdir, readFile, realpath, rename, stat, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, join, relative, resolve } from "node:path";
 import {
 	type BriefingIntelCheck,
@@ -77,15 +77,25 @@ function slugSafe(raw: string): string {
 async function atomicWriteUtf8(filePath: string, content: string): Promise<void> {
 	await mkdir(dirname(filePath), { recursive: true });
 	const tmp = `${filePath}.tmp-${randomUUID().slice(0, 8)}`;
-	await writeFile(tmp, content, "utf8");
-	await rename(tmp, filePath);
+	try {
+		await writeFile(tmp, content, "utf8");
+		await rename(tmp, filePath);
+	} catch (err) {
+		await rm(tmp, { force: true }).catch(() => undefined);
+		throw err;
+	}
 }
 
 async function atomicWriteBuffer(filePath: string, content: Buffer): Promise<void> {
 	await mkdir(dirname(filePath), { recursive: true });
 	const tmp = `${filePath}.tmp-${randomUUID().slice(0, 8)}`;
-	await writeFile(tmp, content);
-	await rename(tmp, filePath);
+	try {
+		await writeFile(tmp, content);
+		await rename(tmp, filePath);
+	} catch (err) {
+		await rm(tmp, { force: true }).catch(() => undefined);
+		throw err;
+	}
 }
 
 async function walkRelativeFiles(root: string, relPrefix = ""): Promise<string[]> {
@@ -663,6 +673,11 @@ export class WenyouService {
 		author?: string;
 		sessionId?: string;
 	}): Promise<WenyouWritePolicyResult> {
+		const trimmedTitle = input.title.trim();
+		if (!trimmedTitle) {
+			return { ok: false, error: "国策标题不能为空" };
+		}
+
 		if (input.serialNo !== undefined && input.serialNo.trim() !== "") {
 			const trimmedSerial = input.serialNo.trim();
 			if (!SERIAL_NO_RE.test(trimmedSerial)) {
@@ -672,72 +687,105 @@ export class WenyouService {
 			}
 		}
 
-		const dir = join(input.cwd, "03-国策与文书");
-		await mkdir(dir, { recursive: true });
-		const nextNum = await this.nextPolicySerialNumber(dir);
-		const serialNo = input.serialNo?.trim() || String(nextNum).padStart(3, "0");
-		if (!SERIAL_NO_RE.test(serialNo)) {
-			throw new Error(`非法国策编号 serialNo：${serialNo}`);
-		}
-		const stem = `${serialNo}-${slugSafe(input.title)}`;
-		const mdRel = `03-国策与文书/${stem}.md`;
-		const docxRel = `03-国策与文书/${stem}.docx`;
-		const [mdChecked, docxChecked] = await Promise.all([
-			assertRealTargetInsideWorkspace(input.cwd, mdRel),
-			assertRealTargetInsideWorkspace(input.cwd, docxRel),
-		]);
-		if (
-			!mdChecked.realRelPath.startsWith("03-国策与文书/") ||
-			!docxChecked.realRelPath.startsWith("03-国策与文书/")
-		) {
-			throw new Error("国策输出路径越界或落入受限目录，已拒绝写入");
-		}
-		const createdAt = new Date().toISOString();
+		return this.withWorkspaceLock(input.cwd, async () => {
+			const dir = join(input.cwd, "03-国策与文书");
+			await mkdir(dir, { recursive: true });
+			const nextNum = await this.nextPolicySerialNumber(dir);
+			const serialNo = input.serialNo?.trim() || String(nextNum).padStart(3, "0");
+			if (!SERIAL_NO_RE.test(serialNo)) {
+				throw new Error(`非法国策编号 serialNo：${serialNo}`);
+			}
+			const stem = `${serialNo}-${slugSafe(trimmedTitle)}`;
+			const mdRel = `03-国策与文书/${stem}.md`;
+			const docxRel = `03-国策与文书/${stem}.docx`;
+			const [mdChecked, docxChecked] = await Promise.all([
+				assertRealTargetInsideWorkspace(input.cwd, mdRel),
+				assertRealTargetInsideWorkspace(input.cwd, docxRel),
+			]);
+			if (
+				!mdChecked.realRelPath.startsWith("03-国策与文书/") ||
+				!docxChecked.realRelPath.startsWith("03-国策与文书/")
+			) {
+				throw new Error("国策输出路径越界或落入受限目录，已拒绝写入");
+			}
+			const createdAt = new Date().toISOString();
+			const trimmedActor = input.actor?.trim();
+			const trimmedTurnLabel = input.turnLabel?.trim();
 
-		const fmLines = [
-			"---",
-			`id: ${stem}`,
-			`serialNo: "${serialNo}"`,
-			`title: ${JSON.stringify(input.title.trim())}`,
-			...(input.actor ? [`actor: ${JSON.stringify(input.actor.trim())}`] : []),
-			...(input.turnLabel ? [`turnLabel: ${JSON.stringify(input.turnLabel.trim())}`] : []),
-			`createdAt: ${JSON.stringify(createdAt)}`,
-			"---",
-		];
-		const cleanBody = input.content.replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n").trim();
-		await atomicWriteUtf8(mdChecked.absPath, `${fmLines.join("\n")}\n\n${cleanBody}\n`);
+			const fmLines = [
+				"---",
+				`id: ${stem}`,
+				`serialNo: "${serialNo}"`,
+				`title: ${JSON.stringify(trimmedTitle)}`,
+				...(trimmedActor ? [`actor: ${JSON.stringify(trimmedActor)}`] : []),
+				...(trimmedTurnLabel ? [`turnLabel: ${JSON.stringify(trimmedTurnLabel)}`] : []),
+				`createdAt: ${JSON.stringify(createdAt)}`,
+				"---",
+			];
+			const cleanBody = input.content.replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n").trim();
+			const subtitleParts = [trimmedActor, trimmedTurnLabel].filter(Boolean);
 
-		const subtitleParts = [input.actor?.trim(), input.turnLabel?.trim()].filter(Boolean);
-		const docxBuf = buildPolicyDocx({
-			title: input.title.trim(),
-			bodyMarkdown: cleanBody,
-			subtitle: subtitleParts.length ? subtitleParts.join(" · ") : undefined,
-			createdAt,
-			author: input.author,
+			let docxBuf: Buffer;
+			try {
+				docxBuf = buildPolicyDocx({
+					title: trimmedTitle,
+					bodyMarkdown: cleanBody,
+					subtitle: subtitleParts.length ? subtitleParts.join(" · ") : undefined,
+					createdAt,
+					author: input.author,
+				});
+			} catch (err) {
+				return { ok: false, error: err instanceof Error ? err.message : String(err) };
+			}
+
+			let prevMdBuf: Buffer | null = null;
+			if (existsSync(mdChecked.absPath)) {
+				try {
+					prevMdBuf = await readFile(mdChecked.absPath);
+				} catch {
+					prevMdBuf = null;
+				}
+			}
+
+			try {
+				await atomicWriteUtf8(mdChecked.absPath, `${fmLines.join("\n")}\n\n${cleanBody}\n`);
+			} catch (err) {
+				return { ok: false, error: err instanceof Error ? err.message : String(err) };
+			}
+
+			try {
+				await atomicWriteBuffer(docxChecked.absPath, docxBuf);
+			} catch (err) {
+				if (prevMdBuf !== null) {
+					await atomicWriteBuffer(mdChecked.absPath, prevMdBuf).catch(() => undefined);
+				} else {
+					await rm(mdChecked.absPath, { force: true }).catch(() => undefined);
+				}
+				return { ok: false, error: err instanceof Error ? err.message : String(err) };
+			}
+
+			const artifact: PolicyArtifact = {
+				id: stem,
+				serialNo,
+				title: trimmedTitle,
+				...(trimmedActor ? { actor: trimmedActor } : {}),
+				...(trimmedTurnLabel ? { turnLabel: trimmedTurnLabel } : {}),
+				createdAt,
+				markdownPath: mdRel,
+				docxPath: docxRel,
+				excerpt: cleanBody.replace(/^#.*$/gm, "").replace(/\s+/g, " ").trim().slice(0, 140),
+				content: cleanBody,
+			};
+
+			this.emitCanvas({
+				kind: "policy_written",
+				cwd: input.cwd,
+				policy: artifact,
+				...(input.sessionId ? { sessionId: input.sessionId } : {}),
+			});
+
+			return { ok: true, artifact };
 		});
-		await atomicWriteBuffer(docxChecked.absPath, docxBuf);
-
-		const artifact: PolicyArtifact = {
-			id: stem,
-			serialNo,
-			title: input.title.trim(),
-			...(input.actor ? { actor: input.actor.trim() } : {}),
-			...(input.turnLabel ? { turnLabel: input.turnLabel.trim() } : {}),
-			createdAt,
-			markdownPath: mdRel,
-			docxPath: docxRel,
-			excerpt: cleanBody.replace(/^#.*$/gm, "").replace(/\s+/g, " ").trim().slice(0, 140),
-			content: cleanBody,
-		};
-
-		this.emitCanvas({
-			kind: "policy_written",
-			cwd: input.cwd,
-			policy: artifact,
-			...(input.sessionId ? { sessionId: input.sessionId } : {}),
-		});
-
-		return { ok: true, artifact };
 	}
 
 	async listMaps(cwd: string): Promise<MapAssetItem[]> {
@@ -853,6 +901,10 @@ export class WenyouService {
 		}
 		if (isPrivateVaultPath(realRel)) {
 			throw new Error("符号链接目标落入受限目录，已拒绝读取");
+		}
+		const targetStat = await stat(realTarget);
+		if (!targetStat.isFile()) {
+			throw new Error(`目标不是常规文件：${normalized}`);
 		}
 		const raw = await readFile(realTarget, "utf8");
 		const { body } = parseMarkdownWithFrontmatter(raw);

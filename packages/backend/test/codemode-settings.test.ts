@@ -54,6 +54,41 @@ it("缺省关闭，保存开启与重新关闭；不覆盖其他字段", async (
 	expect(readCodemodeEnabled(dir)).toBe(false);
 });
 
+it("仅设置 only=true 而未启用 enabled 时，builtinExtensions 不会误开独占模式", async () => {
+	const { builtinExtensions } = await import("../src/project/builtin-extensions");
+	const dir = isolatedDir();
+	writeFileSync(join(dir, "codemode.json"), JSON.stringify({ only: true }));
+	expect(readCodemodeConfig(dir)).toEqual({ enabled: false, only: true });
+	const settings = SettingsManager.inMemory();
+	const options = codemodeSessionOptions(settings, dir);
+	const resourceLoader = new DefaultResourceLoader({
+		cwd: dir,
+		agentDir: dir,
+		settingsManager: settings,
+		noSkills: true,
+		noPromptTemplates: true,
+		noThemes: true,
+		extensionFactories: builtinExtensions({ agentDir: dir }).filter(
+			(ext) => typeof ext !== "function" && ext.name === "codemode",
+		),
+	});
+	await resourceLoader.reload();
+	const { session } = await createAgentSession({
+		cwd: dir,
+		agentDir: dir,
+		settingsManager: settings,
+		resourceLoader,
+		sessionManager: SessionManager.inMemory(dir),
+		...options,
+	});
+	try {
+		expect(session.getActiveToolNames()).not.toContain("codemode");
+		expect(session.getActiveToolNames()).toEqual(expect.arrayContaining(["read", "write"]));
+	} finally {
+		session.dispose();
+	}
+});
+
 it.each(["{", "null", "[]"])("损坏配置拒绝保存：%s", async (raw) => {
 	const dir = isolatedDir();
 	writeFileSync(join(dir, "codemode.json"), raw);
