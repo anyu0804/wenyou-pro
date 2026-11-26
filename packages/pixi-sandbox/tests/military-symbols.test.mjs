@@ -9,7 +9,6 @@ const {
   ECHELON_TIER_SPECS,
   resolveTroopEchelon,
   getEchelonSymbol,
-  resolveRequirementTotem,
   renderUnitSymbolToContext,
 } = await server.ssrLoadModule('/src/military-symbols.ts');
 
@@ -99,18 +98,6 @@ test('getEchelonSymbol: 7 档层级符号映射与旧符号及人数联动', () 
   assert.equal(getEchelonSymbol('', 80000), 'xxx');
   assert.equal(getEchelonSymbol('', 200000), 'xxxx');
   assert.equal(getEchelonSymbol('', 500000), 'xxxx');
-});
-
-test('resolveRequirementTotem: 兵种关键词与需求标签自动匹配图腾', () => {
-  assert.equal(resolveRequirementTotem('重装步兵').subType, 'heavy-infantry');
-  assert.equal(resolveRequirementTotem('铁骑突击').subType, 'cavalry');
-  assert.equal(resolveRequirementTotem('神机营火炮').subType, 'artillery');
-  assert.equal(resolveRequirementTotem('长江水师').subType, 'naval');
-  assert.equal(resolveRequirementTotem('狮鹫空骑').subType, 'air');
-  assert.equal(resolveRequirementTotem('皇家禁军').subType, 'guard');
-  assert.equal(resolveRequirementTotem('奥术法师团').subType, 'arcane');
-  assert.equal(resolveRequirementTotem('工兵工程队').subType, 'support');
-  assert.equal(resolveRequirementTotem('').subType, 'infantry');
 });
 
 test('renderUnitSymbolToContext: 使用 Mock Context 验证通用分档与文化兵牌绘制', () => {

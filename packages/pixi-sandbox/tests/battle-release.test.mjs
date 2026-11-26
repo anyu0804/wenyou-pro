@@ -70,7 +70,6 @@ try {
 
   const exportProject = async () => {
     if (await page.locator('#battle-panel').isVisible()) await page.locator('#battle-close').click();
-    if (await page.locator('#battle-ai-panel').isVisible()) await page.locator('#battle-ai-close').click();
     const [download] = await Promise.all([
       page.waitForEvent('download'), page.locator('#export-project').click(),
     ]);
@@ -119,31 +118,7 @@ try {
   await page.locator('#battle-redo').click();
   assert.deepEqual(active(await exportProject()).battle.deployments, active(moved).battle.deployments);
 
-  const target = active(moved).garrisons.find(unit => unit.id === ids[0]);
-  const evidence = [{ sourceId: 'browser-ai', basis: 'assumption', excerpt: '合成候选', note: '仅验收' }];
-  const candidate = { format: 'wenyou-battle-candidates', version: 1, mapId: moved.activeMapId,
-    sources: [{ id: 'browser-ai', kind: 'ai', title: '浏览器合成候选', text: '修改合成单位名称', locator: null }],
-    items: [
-      { id: 'ready', state: 'ready', instruction: '修改合成单位名称', evidence,
-        edits: [{ kind: 'upsert-unit', unit: { ...target,
-          unitName: { state: 'known', value: '验收合成团', evidence } } }] },
-      { id: 'unknown', state: 'unresolved', instruction: '未知位置', evidence, reason: '资料未给出位置' },
-    ] };
-  await page.locator('#battle-ai-open').click();
-  await page.locator('#battle-ai-json').fill(JSON.stringify(candidate));
-  await page.locator('#battle-ai-parse').click();
-  await page.locator('#battle-ai-panel input[type=checkbox]:enabled').first().check();
-  await page.locator('#battle-ai-preview').click();
-  await page.locator('#battle-ai-apply').click();
-  const accepted = await exportProject();
-  assert.equal(active(accepted).garrisons.find(unit => unit.id === target.id).unitName.value, '验收合成团');
-  assert.ok(active(accepted).battle.sources.some(source => source.id === 'browser-ai'));
   await page.locator('#battle-open').click();
-  await page.locator('#battle-undo').click();
-  assert.equal(active(await exportProject()).garrisons.find(unit => unit.id === target.id).unitName.value, target.unitName.value);
-  await page.locator('#battle-open').click();
-  await page.locator('#battle-redo').click();
-
   const downloadPng = page.waitForEvent('download');
   await page.locator('#battle-export').click();
   const png = await fs.readFile(await (await downloadPng).path());
@@ -157,8 +132,8 @@ try {
   await page.locator('#battle-open').click();
   assert.equal(await page.locator('#battle-units option').count(), 12);
   const restored = await exportProject();
-  assert.deepEqual(active(restored).garrisons, active(accepted).garrisons);
-  assert.deepEqual(active(restored).battle, active(accepted).battle);
+  assert.deepEqual(active(restored).garrisons, active(moved).garrisons);
+  assert.deepEqual(active(restored).battle, active(moved).battle);
   const second = structuredClone(active(restored));
   const records = second.map.source.split('\r\n');
   const mapHeader = records[0].split('|');
@@ -254,7 +229,7 @@ try {
   const result = { v051, version: '0.9.1', webFiles: webFiles.length, references, http: 'all 200',
     browser: 'isolated Chromium Headless Shell', viewport: '1600x1000', gpu: 'ANGLE d3d11',
     sampleCount: 1, scenarios: ['编制面板', '实际成组旋转与拖动', '撤销重做',
-      'AI部分候选应用及来源同批', 'AI撤销重做', '真实PNG下载', '自动保存刷新与工程逐值往返',
+      '真实PNG下载', '自动保存刷新与工程逐值往返',
       '两战区工程导入与隔离切换', '战场真实涂选生成/按键/窗口/画布尺寸',
       '战场设计器新建/样式/主地图隔离', '战场刷新持久化/新profile工程导入逐值往返'], pageErrors: errors };
   await fs.writeFile(path.join(evidenceRoot, 'release-results.json'), JSON.stringify(result, null, 2));

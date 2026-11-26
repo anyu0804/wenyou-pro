@@ -3,7 +3,7 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { mkdir, mkdtemp, readdir, readFile, rm, stat } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readdir, readFile, rm, stat } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { homedir, tmpdir } from "node:os";
 import {
@@ -70,6 +70,21 @@ const ALLOWED_USER_SEGMENTS = new Set([
 	"default user",
 	"all users",
 ]);
+
+const FORBIDDEN_ASAR_NODE_MODULES = [
+	"happy-dom",
+	"esbuild",
+	"@esbuild",
+	"qrcode",
+	"monaco-editor",
+	"stream-monaco",
+	"mermaid",
+	"katex",
+	"shiki",
+	"react-dom",
+];
+
+const ALLOWED_LOCALE_PAKS = ["en-US.pak", "zh-CN.pak"];
 
 function normalizeSlashes(value) {
 	return String(value).replaceAll("\\", "/");
@@ -340,13 +355,20 @@ async function assertDirectoryExists(dirPath, label) {
 	return info;
 }
 
-async function assertPathAbsent(targetPath, label) {
+async function assertPathAbsent(
+	targetPath,
+	label,
+	reason = "Forbidden Windows-only resource present in non-Windows package",
+) {
 	try {
-		await stat(targetPath);
-	} catch {
-		return;
+		await lstat(targetPath);
+	} catch (error) {
+		if (error && typeof error === "object" && error.code === "ENOENT") {
+			return;
+		}
+		throw error;
 	}
-	throw new Error(`Forbidden Windows-only resource present in non-Windows package: ${label}`);
+	throw new Error(`${reason}: ${label}`);
 }
 
 export async function computeFileSha256(filePath) {
@@ -909,7 +931,11 @@ export async function verifyExtraResources(resourcesDir, options = {}) {
 		await assertPathAbsent(join(resourcesDir, "wenyou-pro.ico"), "resources/wenyou-pro.ico");
 	}
 
-	await assertDirectoryExists(join(resourcesDir, "ui-plugins"), "resources/ui-plugins");
+	await assertPathAbsent(
+		join(resourcesDir, "ui-plugins"),
+		"resources/ui-plugins",
+		"Forbidden removed resource present in package",
+	);
 
 	return {
 		pixiSandbox,
@@ -917,7 +943,6 @@ export async function verifyExtraResources(resourcesDir, options = {}) {
 		skills: [...REQUIRED_WENYOU_SKILLS_FILES],
 		otherFiles: [...otherFiles],
 		...(appIcon ? { appIcon } : {}),
-		uiPlugins: true,
 	};
 }
 
@@ -960,11 +985,6 @@ export async function verifyAppAsar(archivePath, version, options = {}) {
 				`app.asar package.json productName mismatch: expected "Wenyou Pro", actual "${String(metadata.productName)}"`,
 			);
 		}
-		if (metadata.disableAutoUpdate !== true) {
-			throw new Error(
-				`app.asar package.json disableAutoUpdate must be true, actual "${String(metadata.disableAutoUpdate)}"`,
-			);
-		}
 
 		for (const coreFile of REQUIRED_ASAR_CORE_FILES) {
 			assertAsarFilePresent(asar, archivePath, entrySet, coreFile);
@@ -986,12 +1006,16 @@ export async function verifyAppAsar(archivePath, version, options = {}) {
 			throw new Error("Missing .css bundle under app.asar out/renderer/assets/");
 		}
 
-		const forbiddenTestDeps = normalizedEntries.filter((entry) =>
-			/(?:^|\/)node_modules\/happy-dom(?:\/|$)/i.test(entry),
+		const forbiddenAsarPattern = new RegExp(
+			`(?:^|/)node_modules/(?:${FORBIDDEN_ASAR_NODE_MODULES.map(escapeRegex).join("|")})(?:/|$)`,
+			"i",
 		);
-		if (forbiddenTestDeps.length > 0) {
+		const forbiddenBundledDeps = normalizedEntries.filter((entry) =>
+			forbiddenAsarPattern.test(entry),
+		);
+		if (forbiddenBundledDeps.length > 0) {
 			throw new Error(
-				`Test dependency bundled into production app.asar: ${forbiddenTestDeps.slice(0, 3).join(", ")}`,
+				`Forbidden dependency bundled into production app.asar: ${forbiddenBundledDeps.slice(0, 3).join(", ")}`,
 			);
 		}
 
@@ -1041,6 +1065,47 @@ export async function verifyAppAsar(archivePath, version, options = {}) {
 	};
 }
 
+export async function verifyUnpackedLocales(appDir, options = {}) {
+	const statFn = options.statFn ?? stat;
+	const localesDir = join(appDir, "locales");
+	let info;
+	try {
+		info = await statFn(localesDir);
+	} catch (error) {
+		if (error && typeof error === "object" && error.code === "ENOENT") {
+			return { present: false, checkedPaks: [] };
+		}
+		throw error;
+	}
+	if (!info.isDirectory()) {
+		throw new Error("Expected locales to be a directory in unpacked app");
+	}
+	const entries = await readdir(localesDir, { withFileTypes: true });
+	const pakFiles = entries
+		.filter((entry) => (entry.isFile() || entry.isSymbolicLink()) && entry.name.toLowerCase().endsWith(".pak"))
+		.map((entry) => entry.name)
+		.sort();
+	const pakSet = new Set(pakFiles);
+	const missing = ALLOWED_LOCALE_PAKS.filter((name) => !pakSet.has(name));
+	if (missing.length > 0) {
+		throw new Error(`Missing required locale .pak file(s) under locales/: ${missing.join(", ")}`);
+	}
+	for (const requiredPak of ALLOWED_LOCALE_PAKS) {
+		await assertNonEmptyFile(join(localesDir, requiredPak), `locales/${requiredPak}`);
+	}
+	const allowedSet = new Set(ALLOWED_LOCALE_PAKS);
+	const extra = pakFiles.filter((name) => !allowedSet.has(name));
+	if (extra.length > 0) {
+		throw new Error(
+			`Unexpected extra locale .pak file(s) under locales/ (only zh-CN.pak and en-US.pak allowed): ${extra.join(", ")}`,
+		);
+	}
+	return {
+		present: true,
+		checkedPaks: pakFiles,
+	};
+}
+
 export async function verifyUnpackedApp(appDir, version, options = {}) {
 	assertValidVersion(version);
 	await assertDirectoryExists(appDir, `unpacked appDir (${sanitizePathForDisplay(appDir)})`);
@@ -1054,11 +1119,13 @@ export async function verifyUnpackedApp(appDir, version, options = {}) {
 	const archivePath = join(resourcesDir, "app.asar");
 	const asarReport = await verifyAppAsar(archivePath, version, options);
 	const extraResources = await verifyExtraResources(resourcesDir, { platform: "win" });
+	const locales = await verifyUnpackedLocales(appDir);
 
 	return {
 		exeSize: exeInfo.size,
 		...asarReport,
 		extraResources,
+		locales,
 	};
 }
 
@@ -1081,43 +1148,6 @@ export async function resolveMacAppBundlePath(rawDir, arch) {
 	);
 }
 
-export async function verifyMacUnpackedEsbuild(resourcesDir, arch) {
-	if (arch !== "arm64" && arch !== "x64") {
-		throw new Error(`Invalid macOS arch for esbuild binary verification: "${String(arch)}"`);
-	}
-	const unpackedRoot = join(resourcesDir, "app.asar.unpacked");
-	const candidates = [
-		join(unpackedRoot, "node_modules", "@esbuild", `darwin-${arch}`, "bin", "esbuild"),
-		join(
-			unpackedRoot,
-			"packages",
-			"desktop",
-			"node_modules",
-			"@esbuild",
-			`darwin-${arch}`,
-			"bin",
-			"esbuild",
-		),
-	];
-	for (const candidate of candidates) {
-		try {
-			const info = await stat(candidate);
-			if (info.isFile() && info.size > 0) {
-				return {
-					arch,
-					binary: normalizeSlashes(relative(resourcesDir, candidate)),
-					bytes: info.size,
-				};
-			}
-		} catch {
-			// try next candidate
-		}
-	}
-	throw new Error(
-		`Missing required macOS ${arch} esbuild binary under Contents/Resources/app.asar.unpacked (expected @esbuild/darwin-${arch}/bin/esbuild)`,
-	);
-}
-
 export async function verifyMacAppBundle(appBundlePath, version, options = {}) {
 	assertValidVersion(version);
 	await assertDirectoryExists(appBundlePath, `macOS app bundle (${sanitizePathForDisplay(appBundlePath)})`);
@@ -1135,18 +1165,12 @@ export async function verifyMacAppBundle(appBundlePath, version, options = {}) {
 	const asarReport = await verifyAppAsar(archivePath, version, options);
 	const extraResources = await verifyExtraResources(resourcesDir, { platform: "mac" });
 
-	let esbuildBinary = null;
-	if (options.arch !== undefined) {
-		esbuildBinary = await verifyMacUnpackedEsbuild(resourcesDir, options.arch);
-	}
-
 	return {
 		appBundle: sanitizePathForDisplay(appBundlePath),
 		executableSize: exeInfo.size,
 		infoPlistSize: plistInfo.size,
 		...asarReport,
 		extraResources,
-		...(esbuildBinary ? { esbuildBinary } : {}),
 	};
 }
 

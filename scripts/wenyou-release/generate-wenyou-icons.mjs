@@ -7,7 +7,6 @@ import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const ICO_SIZES = Object.freeze([16, 24, 32, 48, 64, 128, 256]);
-export const LAN_ICON_SIZE = 512;
 export const MAIN_PNG_SIZE = 1024;
 export const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
@@ -212,15 +211,6 @@ export function parseIco(buffer) {
 	}
 
 	return { reserved, type, count, entries };
-}
-
-/**
- * 生成 `packages/desktop/src/main/lan-icon.ts` 源码内容。
- */
-export function buildLanIconSource(pngBuffer) {
-	parsePngHeader(pngBuffer);
-	const b64 = pngBuffer.toString("base64");
-	return `/** PWA 图标（司命 · 文游 Pro 应用图标 512px PNG），base64 内联避免 extraResources/dev-packaged 路径分叉。 */\nexport const LAN_ICON_PNG_BASE64 =\n\t"${b64}";\n`;
 }
 
 function resolveGitCommonRepoRoot(repoRoot) {
@@ -430,7 +420,6 @@ async function readChannelMetadata(buildDir) {
 export async function generateWenyouIcons(options = {}) {
 	const repoRoot = resolve(options.repoRoot ?? resolve(dirname(fileURLToPath(import.meta.url)), "../.."));
 	const buildDir = join(repoRoot, "packages/desktop/build");
-	const lanIconPath = join(repoRoot, "packages/desktop/src/main/lan-icon.ts");
 	const icoSizes = options.sizes ?? ICO_SIZES;
 
 	const channels = await readChannelMetadata(buildDir);
@@ -447,7 +436,7 @@ export async function generateWenyouIcons(options = {}) {
 	await writeFile(devSvgPath, devSvg, "utf8");
 
 	const electronBin = options.electronBin ?? resolveElectronBinary(repoRoot);
-	const mainSizes = Array.from(new Set([...icoSizes, LAN_ICON_SIZE, MAIN_PNG_SIZE])).sort((a, b) => a - b);
+	const mainSizes = Array.from(new Set([...icoSizes, MAIN_PNG_SIZE])).sort((a, b) => a - b);
 
 	const rasterized = await rasterizeSvgsWithElectron({
 		electronBin,
@@ -461,7 +450,6 @@ export async function generateWenyouIcons(options = {}) {
 	const mainPng = rasterized.main[MAIN_PNG_SIZE];
 	const betaPng = rasterized.beta[MAIN_PNG_SIZE];
 	const devPng = rasterized.dev[MAIN_PNG_SIZE];
-	const lanPng = rasterized.main[LAN_ICON_SIZE];
 
 	const icoFrames = icoSizes.map((size) => ({
 		size,
@@ -473,13 +461,11 @@ export async function generateWenyouIcons(options = {}) {
 	await writeFile(join(buildDir, "icon-beta.png"), betaPng);
 	await writeFile(join(buildDir, "icon-dev.png"), devPng);
 	await writeFile(join(buildDir, "wenyou-pro.ico"), icoBuffer);
-	await writeFile(lanIconPath, buildLanIconSource(lanPng), "utf8");
 
 	return {
 		icoSizes: [...icoSizes],
 		icoBytes: icoBuffer.length,
 		mainPngBytes: mainPng.length,
-		lanPngBytes: lanPng.length,
 		files: [
 			"packages/desktop/build/icon.svg",
 			"packages/desktop/build/icon-beta.svg",
@@ -488,7 +474,6 @@ export async function generateWenyouIcons(options = {}) {
 			"packages/desktop/build/icon-beta.png",
 			"packages/desktop/build/icon-dev.png",
 			"packages/desktop/build/wenyou-pro.ico",
-			"packages/desktop/src/main/lan-icon.ts",
 		],
 	};
 }

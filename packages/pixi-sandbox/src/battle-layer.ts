@@ -52,13 +52,11 @@ export function getFacingVector(degrees: number): BattlePoint {
 import {
   getEchelonSymbol,
   resolveTroopEchelon,
-  resolveRequirementTotem,
 } from './military-symbols';
 
 export {
   getEchelonSymbol,
   resolveTroopEchelon,
-  resolveRequirementTotem,
 };
 
 /** 辅助：绘制虚线段 */

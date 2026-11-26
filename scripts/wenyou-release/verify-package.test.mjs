@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { homedir, tmpdir, userInfo } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { test } from "node:test";
@@ -20,6 +20,7 @@ import {
 	verifyReadmeFile,
 	verifySha256Sums,
 	verifyUnpackedApp,
+	verifyUnpackedLocales,
 	verifyWenyouRelease,
 } from "./verify-package.mjs";
 
@@ -215,7 +216,6 @@ async function populateSharedExtraResources(resourcesDir, options = {}) {
 		join(resourcesDir, "pi-package/dist/core/export-html/vendor/marked-cjk-friendly.min.js"),
 		"window.marked = {};\n",
 	);
-	await writeFileEnsuringDir(join(resourcesDir, "ui-plugins/SPEC.md"), "# ui plugins\n");
 }
 
 async function createCompleteReleaseFixture(baseDir, options = {}) {
@@ -225,6 +225,8 @@ async function createCompleteReleaseFixture(baseDir, options = {}) {
 	const resourcesDir = join(unpackedDir, "resources");
 
 	await writeFileEnsuringDir(join(unpackedDir, "Wenyou Pro.exe"), Buffer.from("MZ-FAKE-PE-EXE"));
+	await writeFileEnsuringDir(join(unpackedDir, "locales", "zh-CN.pak"), Buffer.from("PAK-ZH"));
+	await writeFileEnsuringDir(join(unpackedDir, "locales", "en-US.pak"), Buffer.from("PAK-EN"));
 
 	const asarFiles = defaultAsarFiles(version, options.asarOverrides);
 	await buildAsarFromFiles(baseDir, join(resourcesDir, "app.asar"), asarFiles);
@@ -312,12 +314,6 @@ async function createCompleteMacReleaseFixture(baseDir, options = {}) {
 		await buildAsarFromFiles(baseDir, join(resourcesDir, "app.asar"), asarFiles);
 		await populateSharedExtraResources(resourcesDir, options);
 
-		// Unpacked arch-matched @esbuild native binary
-		await writeFileEnsuringDir(
-			join(resourcesDir, "app.asar.unpacked", "node_modules", "@esbuild", `darwin-${arch}`, "bin", "esbuild"),
-			Buffer.from(`MACHO-ESBUILD-${arch}`),
-		);
-
 		for (const pyName of ["wenyou_read.py", "wenyou_vfs_sync.py", "ntqq_vfs.py", "wenyou_ntqq_bridge.py"]) {
 			await writeFileEnsuringDir(join(resourcesDir, "ntqq-vfs", pyName), `print('${pyName}')\n`);
 		}
@@ -381,6 +377,10 @@ test("full Wenyou release verification passes including Portable.zip extract-che
 	assert.equal(report.unpacked.extraResources.appIcon.file, "wenyou-pro.ico");
 	assert.equal(report.unpacked.extraResources.appIcon.has256, true);
 	assert.ok(report.unpacked.extraResources.appIcon.sizes.includes("256x256"));
+	assert.deepEqual(report.unpacked.locales, {
+		present: true,
+		checkedPaks: ["en-US.pak", "zh-CN.pak"],
+	});
 	assert.equal(report.portableExtract.extractedChecked, true);
 
 	const leftover = await readdir(extractTempParent);
@@ -415,7 +415,7 @@ test("CLI invocation succeeds with --version, --release-dir and --extract-check 
 	assert.deepEqual(leftover, []);
 });
 
-test("macOS release verification passes for dual-arch (mac-arm64 + mac), checks @esbuild arch binary, and runs codesign/hdiutil on darwin", async (t) => {
+test("macOS release verification passes for dual-arch (mac-arm64 + mac) without esbuild/ui-plugins and runs codesign/hdiutil on darwin", async (t) => {
 	const baseDir = await createTempDir(t);
 	const fixture = await createCompleteMacReleaseFixture(baseDir, { archs: ["arm64", "x64"] });
 
@@ -431,8 +431,8 @@ test("macOS release verification passes for dual-arch (mac-arm64 + mac), checks 
 	assert.deepEqual(nonDarwinReport.archs, ["arm64", "x64"]);
 	assert.equal(nonDarwinReport.appBundles.arm64.extraResources.ntqqVfs.windowsViolations, 0);
 	assert.equal(nonDarwinReport.appBundles.x64.extraResources.ntqqVfs.windowsViolations, 0);
-	assert.equal(nonDarwinReport.appBundles.arm64.esbuildBinary.arch, "arm64");
-	assert.equal(nonDarwinReport.appBundles.x64.esbuildBinary.arch, "x64");
+	assert.equal("esbuildBinary" in nonDarwinReport.appBundles.arm64, false);
+	assert.equal("esbuildBinary" in nonDarwinReport.appBundles.x64, false);
 	assert.equal(nonDarwinReport.nativeVerification.executed, false);
 
 	const nativeCalls = [];
@@ -480,31 +480,18 @@ test("macOS release verification passes for dual-arch (mac-arm64 + mac), checks 
 	);
 });
 
-test("macOS negative gates block Windows .exe/.dll/.pyd/.ico/update-diagnostics leakage, wrong-arch esbuild, and bad Mac README", async (t) => {
+test("macOS negative gates block Windows .exe/.dll/.pyd/.ico/update-diagnostics leakage, removed ui-plugins, and bad Mac README", async (t) => {
 	const baseDir = await createTempDir(t);
 	const fixture = await createCompleteMacReleaseFixture(baseDir, { archs: ["x64"] });
 	const { appBundleDir, resourcesDir } = fixture.appBundles.x64;
 
-	// 1. Missing x64 esbuild binary (e.g., only arm64 binary present on cross-compiled x64 bundle) -> must reject
-	const x64Esbuild = join(
-		resourcesDir,
-		"app.asar.unpacked",
-		"node_modules",
-		"@esbuild",
-		"darwin-x64",
-		"bin",
-		"esbuild",
-	);
-	await rm(x64Esbuild);
-	await writeFileEnsuringDir(
-		join(resourcesDir, "app.asar.unpacked", "node_modules", "@esbuild", "darwin-arm64", "bin", "esbuild"),
-		Buffer.from("MACHO-ESBUILD-ARM64-ONLY"),
-	);
+	// 1. Contaminate Resources with removed ui-plugins directory -> must reject
+	await writeFileEnsuringDir(join(resourcesDir, "ui-plugins", "SPEC.md"), "# legacy ui-plugins\n");
 	await assert.rejects(
 		() => verifyMacAppBundle(appBundleDir, fixture.version, { arch: "x64" }),
-		/@esbuild\/darwin-x64\/bin\/esbuild/i,
+		/resources\/ui-plugins/i,
 	);
-	await writeFileEnsuringDir(x64Esbuild, Buffer.from("MACHO-ESBUILD-X64"));
+	await rm(join(resourcesDir, "ui-plugins"), { recursive: true, force: true });
 
 	// 2. Contaminate ntqq-vfs with qq_dump_db.exe -> must reject
 	const leakedExe = join(resourcesDir, "ntqq-vfs", "qq_dump_db.exe");
@@ -702,17 +689,31 @@ test("Negative #4: broken static asset closure in app.asar or pixi-sandbox and b
 		/missing-chunk\.js/i,
 	);
 
-	await buildAsarFromFiles(
-		baseDir,
-		join(fixture.resourcesDir, "app.asar"),
-		defaultAsarFiles(fixture.version, {
-			extraAsarFiles: { "node_modules/happy-dom/index.js": "module.exports = {};\n" },
-		}),
-	);
-	await assert.rejects(
-		() => verifyUnpackedApp(fixture.unpackedDir, fixture.version),
-		/happy-dom/i,
-	);
+	for (const [depPath, matchRe] of [
+		["node_modules/happy-dom/index.js", /happy-dom/i],
+		["node_modules/esbuild/lib/main.js", /esbuild/i],
+		["node_modules/@esbuild/win32-x64/esbuild.exe", /@esbuild/i],
+		["node_modules/qrcode/lib/index.js", /qrcode/i],
+		["node_modules/monaco-editor/esm/vs/editor/editor.api.js", /monaco-editor/i],
+		["node_modules/stream-monaco/dist/index.js", /stream-monaco/i],
+		["node_modules/mermaid/dist/mermaid.js", /mermaid/i],
+		["node_modules/katex/dist/katex.min.css", /katex/i],
+		["node_modules/shiki/dist/index.mjs", /shiki/i],
+		["node_modules/react-dom/index.js", /react-dom/i],
+	]) {
+		await buildAsarFromFiles(
+			baseDir,
+			join(fixture.resourcesDir, "app.asar"),
+			defaultAsarFiles(fixture.version, {
+				extraAsarFiles: { [depPath]: "module.exports = {};\n" },
+			}),
+		);
+		await assert.rejects(
+			() => verifyUnpackedApp(fixture.unpackedDir, fixture.version),
+			matchRe,
+			`Expected app.asar gate to reject ${depPath}`,
+		);
+	}
 
 	await buildAsarFromFiles(
 		baseDir,
@@ -721,9 +722,21 @@ test("Negative #4: broken static asset closure in app.asar or pixi-sandbox and b
 			packageJson: { disableAutoUpdate: false },
 		}),
 	);
-	await assert.rejects(
-		() => verifyUnpackedApp(fixture.unpackedDir, fixture.version),
-		/disableAutoUpdate/i,
+	const autoUpdateEnabledReport = await verifyUnpackedApp(fixture.unpackedDir, fixture.version);
+	assert.equal(autoUpdateEnabledReport.metadata.disableAutoUpdate, false);
+
+	await buildAsarFromFiles(
+		baseDir,
+		join(fixture.resourcesDir, "app.asar"),
+		defaultAsarFiles(fixture.version, {
+			packageJson: { disableAutoUpdate: undefined },
+		}),
+	);
+	const autoUpdateOmittedReport = await verifyUnpackedApp(fixture.unpackedDir, fixture.version);
+	assert.equal(autoUpdateOmittedReport.metadata.disableAutoUpdate, undefined);
+	assert.equal(
+		autoUpdateOmittedReport.extraResources.pixiSandbox.checkedAssets.includes("battle-ai-template.json"),
+		false,
 	);
 
 	const rootRelativeRendererHtml = [
@@ -761,6 +774,72 @@ test("Negative #4: broken static asset closure in app.asar or pixi-sandbox and b
 	await assert.rejects(
 		() => verifyUnpackedApp(fixture.unpackedDir, fixture.version),
 		/missing-sandbox-chunk\.js/i,
+	);
+});
+
+test("Negative #4b: removed resources/ui-plugins and unpruned or incomplete locales/*.pak are blocked", async (t) => {
+	const baseDir = await createTempDir(t);
+	const fixture = await createCompleteReleaseFixture(baseDir);
+
+	// 1. resources/ui-plugins must be absent (including dangling symlinks / junctions)
+	await writeFileEnsuringDir(join(fixture.resourcesDir, "ui-plugins/SPEC.md"), "# legacy\n");
+	await assert.rejects(
+		() => verifyUnpackedApp(fixture.unpackedDir, fixture.version),
+		/resources\/ui-plugins/i,
+	);
+	await rm(join(fixture.resourcesDir, "ui-plugins"), { recursive: true, force: true });
+
+	const danglingLink = join(fixture.resourcesDir, "ui-plugins");
+	const missingTarget = join(baseDir, "does-not-exist-target");
+	await symlink(missingTarget, danglingLink, process.platform === "win32" ? "junction" : "dir");
+	await assert.rejects(
+		() => verifyUnpackedApp(fixture.unpackedDir, fixture.version),
+		/resources\/ui-plugins/i,
+	);
+	await rm(danglingLink, { recursive: true, force: true });
+
+	// 2. Extra locale .pak file must be rejected
+	const extraPak = join(fixture.unpackedDir, "locales", "fr.pak");
+	await writeFileEnsuringDir(extraPak, Buffer.from("PAK-FR"));
+	await assert.rejects(
+		() => verifyUnpackedApp(fixture.unpackedDir, fixture.version),
+		/fr\.pak/i,
+	);
+	await rm(extraPak);
+
+	// 3. Missing required zh-CN.pak or en-US.pak must be rejected
+	const zhPak = join(fixture.unpackedDir, "locales", "zh-CN.pak");
+	await rm(zhPak);
+	await assert.rejects(
+		() => verifyUnpackedApp(fixture.unpackedDir, fixture.version),
+		/zh-CN\.pak/i,
+	);
+	await writeFileEnsuringDir(zhPak, Buffer.from("PAK-ZH"));
+
+	const enPak = join(fixture.unpackedDir, "locales", "en-US.pak");
+	await rm(enPak);
+	await assert.rejects(
+		() => verifyUnpackedApp(fixture.unpackedDir, fixture.version),
+		/en-US\.pak/i,
+	);
+	await writeFileEnsuringDir(enPak, Buffer.from("PAK-EN"));
+
+	// 4. verifyUnpackedLocales: returns { present: false } strictly on ENOENT, rethrows other fs errors
+	const noLocalesDir = join(baseDir, "no-locales-app");
+	await mkdir(noLocalesDir, { recursive: true });
+	assert.deepEqual(await verifyUnpackedLocales(noLocalesDir), { present: false, checkedPaks: [] });
+
+	const eaccesError = Object.assign(new Error("permission denied"), { code: "EACCES" });
+	await assert.rejects(
+		() => verifyUnpackedLocales(noLocalesDir, { statFn: async () => { throw eaccesError; } }),
+		(err) => err === eaccesError,
+	);
+
+	// 5. Non-directory file at locales path throws explicit error
+	await writeFile(join(noLocalesDir, "locales"), "not-a-dir", "utf8");
+	await assert.rejects(
+		() => verifyUnpackedLocales(noLocalesDir),
+		/Expected locales to be a directory/i,
 	);
 });
 

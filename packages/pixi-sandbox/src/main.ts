@@ -18,8 +18,6 @@ import { initGarrisonLayer } from './garrison-layer';
 import { exportRawCache } from './theater-cache';
 import { downloadText } from './map-serializer';
 import { initBattlePanel } from './battle-panel';
-import { initBattleReview } from './battle-review';
-import { applyBattleEdits, getBattleWorkspace } from './battle-actions';
 import { setFieldBattlePaintDeps } from './field-battle-paint';
 import { buildFieldTerrainSnapshot } from './field-battle-terrain';
 import { copyBattleUnitsIntoField } from './field-battle-units';
@@ -237,14 +235,6 @@ async function bootstrap() {
   await restoreInitialTheater(ignoreCache);
   initGarrisonLayer(app.canvas, rootEl);
   initBattlePanel(rootEl, app.canvas, worldViewport);
-  const battleReview = initBattleReview(rootEl, {
-    getWorkspace: getBattleWorkspace,
-    applyBatch: applyBattleEdits,
-    onFocusSource: payload => appStore.emit('source:focus', payload),
-  });
-  appStore.on('battle:changed', battleReview.refresh);
-  appStore.on('map:loaded', battleReview.refresh);
-  appStore.on('map:cleared', battleReview.refresh);
   initTheaterSwitcher(rootEl);
   window.removeEventListener('message', captureEarlyBridgeMessage);
   initMapBridge({ earlyMessages: earlyBridgeMessages });

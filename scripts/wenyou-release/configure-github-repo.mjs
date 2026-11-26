@@ -605,41 +605,6 @@ export function analyzeWorkflowYaml(content, relPath = "") {
 	};
 }
 
-function checkElectronBuilderContent(content) {
-	const lines = extractStructuralYamlLines(content);
-	let disableAutoUpdate = null;
-	let publishRaw = null;
-	let publishHasNestedBlock = false;
-
-	const extraMeta = getSectionSlice(lines, "extraMetadata");
-	if (extraMeta && extraMeta.children.length > 0) {
-		const childIndent = extraMeta.children[0].indent;
-		for (const child of extraMeta.children) {
-			if (child.indent !== childIndent) continue;
-			const kv = parseKeyValueLine(child.text);
-			if (kv && kv.key === "disableAutoUpdate") {
-				const val = unquoteYamlScalar(kv.value);
-				disableAutoUpdate = val === "true" ? true : val === "false" ? false : val;
-			}
-		}
-	}
-
-	const publishSection = getSectionSlice(lines, "publish");
-	if (publishSection) {
-		publishRaw = publishSection.inlineValue ? unquoteYamlScalar(publishSection.inlineValue) : null;
-		publishHasNestedBlock = publishSection.children.length > 0;
-	}
-
-	const publishIsNull =
-		publishSection !== null && !publishHasNestedBlock && publishRaw === "null";
-
-	return {
-		disableAutoUpdate,
-		publish: publishIsNull ? null : (publishRaw ?? (publishHasNestedBlock ? "<nested>" : undefined)),
-		publishIsNull,
-	};
-}
-
 async function readTextIfExists(absPath) {
 	try {
 		return await readFile(absPath, "utf8");
@@ -845,43 +810,6 @@ export async function verifyRepository(options = {}) {
 		});
 	}
 
-	// 4. Verify packages/desktop/electron-builder.wenyou.yml
-	const builderRel = "packages/desktop/electron-builder.wenyou.yml";
-	const builderText = await readTextIfExists(resolve(rootDir, builderRel));
-	let electronBuilderOk = true;
-	let builderStatus = {
-		disableAutoUpdate: null,
-		publish: undefined,
-		publishIsNull: false,
-	};
-
-	if (builderText === null) {
-		electronBuilderOk = false;
-		violations.push({
-			check: "electronBuilder",
-			file: builderRel,
-			message: `Missing ${builderRel} file.`,
-		});
-	} else {
-		builderStatus = checkElectronBuilderContent(builderText);
-		if (builderStatus.disableAutoUpdate !== true) {
-			electronBuilderOk = false;
-			violations.push({
-				check: "electronBuilder",
-				file: builderRel,
-				message: `${builderRel} must keep extraMetadata.disableAutoUpdate: true.`,
-			});
-		}
-		if (!builderStatus.publishIsNull) {
-			electronBuilderOk = false;
-			violations.push({
-				check: "electronBuilder",
-				file: builderRel,
-				message: `${builderRel} must keep top-level "publish: null".`,
-			});
-		}
-	}
-
 	return {
 		ok: violations.length === 0,
 		mode: "verify",
@@ -913,12 +841,6 @@ export async function verifyRepository(options = {}) {
 				pushTags: releaseWorkflow?.on.pushTags ?? [],
 				hasPushTagTrigger: releaseWorkflow?.on.hasPushTagTrigger ?? false,
 				hasPushVTagTrigger: releaseWorkflow?.on.hasPushVTagTrigger ?? false,
-			},
-			electronBuilder: {
-				ok: electronBuilderOk,
-				file: builderRel,
-				disableAutoUpdate: builderStatus.disableAutoUpdate,
-				publish: builderStatus.publishIsNull ? null : builderStatus.publish,
 			},
 		},
 		violations,

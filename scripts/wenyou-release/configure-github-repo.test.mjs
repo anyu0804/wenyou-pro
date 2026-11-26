@@ -150,8 +150,7 @@ describe("configure-github-repo --verify static anti-lockout gate", () => {
 		assert.ok(report.checks.workflows.reusableCallerJobs >= 2);
 		assert.equal(report.checks.ciConcurrency.cancelInProgress, true);
 		assert.equal(report.checks.releaseTrigger.hasPushVTagTrigger, false);
-		assert.equal(report.checks.electronBuilder.disableAutoUpdate, true);
-		assert.equal(report.checks.electronBuilder.publish, null);
+		assert.equal("electronBuilder" in report.checks, false);
 
 		const { stdout } = await execFileAsync(process.execPath, [CONFIGURE_SCRIPT_PATH, "--verify"], {
 			cwd: REPO_ROOT,
@@ -286,7 +285,7 @@ describe("configure-github-repo --verify static anti-lockout gate", () => {
 		assert.ok(commentReport.violations.some((v) => /@Jaxton07/.test(v.message)));
 	});
 
-	test("blocks ci.yml without cancel-in-progress: true, release.yml with push v* tags, and auto-update enabled in electron-builder", async (t) => {
+	test("blocks ci.yml without cancel-in-progress: true and release.yml with push v* tags", async (t) => {
 		const tempRoot = await createTempDir(t);
 		await writeRepoFixture(tempRoot, {
 			".github/workflows/ci.yml": [
@@ -315,6 +314,19 @@ describe("configure-github-repo --verify static anti-lockout gate", () => {
 				"    steps:",
 				"      - run: echo ok",
 			].join("\n"),
+		});
+
+		const report = await verifyRepository({ rootDir: tempRoot });
+		assert.equal(report.ok, false);
+		assert.equal(report.checks.ciConcurrency.ok, false);
+		assert.equal(report.checks.releaseTrigger.ok, false);
+		assert.ok(report.violations.some((v) => v.check === "ciConcurrency"));
+		assert.ok(report.violations.some((v) => v.check === "releaseTrigger"));
+	});
+
+	test("allows electron-builder.wenyou.yml to enable auto-update or publish config without blocking repo:guard", async (t) => {
+		const tempRoot = await createTempDir(t);
+		await writeRepoFixture(tempRoot, {
 			"packages/desktop/electron-builder.wenyou.yml": [
 				"appId: io.github.anyu.wenyou-pro",
 				"extraMetadata:",
@@ -325,15 +337,8 @@ describe("configure-github-repo --verify static anti-lockout gate", () => {
 		});
 
 		const report = await verifyRepository({ rootDir: tempRoot });
-		assert.equal(report.ok, false);
-		assert.equal(report.checks.ciConcurrency.ok, false);
-		assert.equal(report.checks.releaseTrigger.ok, false);
-		assert.equal(report.checks.electronBuilder.ok, false);
-		assert.ok(report.violations.some((v) => v.check === "ciConcurrency"));
-		assert.ok(report.violations.some((v) => v.check === "releaseTrigger"));
-		assert.ok(
-			report.violations.filter((v) => v.check === "electronBuilder").length === 2,
-		);
+		assert.equal(report.ok, true, `Unexpected violations: ${JSON.stringify(report.violations)}`);
+		assert.equal("electronBuilder" in report.checks, false);
 	});
 
 	test("also catches block-sequence push tags (- \"v*\"), zero-indent sequences, and any push.tags pattern in release.yml", async (t) => {

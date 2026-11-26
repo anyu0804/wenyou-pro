@@ -23,7 +23,7 @@
 
 - **三样式兵牌与高清缩放**：提供标准（`96×30`）、紧凑（`76×28`）和纯军标（`34×34`）三种兵牌样式，兵牌整体缩放支持 `35%–240%` 并显示实时百分比，渲染时按比例提高文字超采样分辨率。
 - **编制与自定义兵牌设计器**：支持 8 个人数区间对应的 7 档军标（连至方面军），支持自定义部队名、字体颜色（含 6 色高对比预设）、外框颜色、中心字与本地图片上传；支持将已有部队按份数拆分为真实下属单位，保持总兵力不变。
-- **团级战役展开（BATTLE-1）**：内置编制树（ORBAT）与兵力汇总面板，支持局部战场地形障碍与通行口编辑、沿防线或部署区自动求解占地面、多单位成组拖动与朝向旋转、AI 提案 JSON 导入审阅（字段级来源与证据记录）以及高分辨率 PNG 战役简报导出。
+- **团级战役展开（BATTLE-1）**：内置编制树（ORBAT）与兵力汇总面板，支持局部战场地形障碍与通行口编辑、沿防线或部署区自动求解占地面、多单位成组拖动与朝向旋转以及高分辨率 PNG 战役简报导出。
 
 ### 战术标绘与独立战场快照
 
@@ -101,7 +101,7 @@ wenyou-pixi-app/
 ├── serve-dist.mjs              # 源码目录日常秒开服务（固定 5173，托管 dist/）
 ├── world-data.mjs              # 可选世界资料 API 数据读取器
 ├── 启动静态沙盘.cmd             # Windows 日常静态秒开脚本（纯 ASCII）
-├── src/                        # 48 个 TypeScript 源码模块
+├── src/                        # 50 个 TypeScript 源码模块
 │   ├── main.ts                 # 唯一组装根：Pixi Application、图层 Z 序与按序初始化
 │   ├── store.ts                # 全局状态与事件总线（appStore）
 │   ├── map-loader.ts           # FMG .map 解析与 Voronoi 网格重建
@@ -113,11 +113,11 @@ wenyou-pixi-app/
 │   ├── label-lod.ts            # 城市/政权/省份标签避让与动态 LOD
 │   ├── brush-panel.ts          # 左侧视图、画笔与城市名显示控制面板
 │   ├── garrison-*.ts           # 兵牌层、兵牌设计器弹窗与军标渲染（military-symbols.ts）
-│   ├── battle-*.ts             # 团级战役契约、几何求解、ORBAT 编辑器、AI 审阅与 PNG 导出
+│   ├── battle-*.ts             # 团级战役契约、几何求解、ORBAT 编辑器、候选 JSON 导入与 PNG 导出
 │   └── field-battle-*.ts       # 独立局部战场涂选、地形裁剪、窗口与场景
-├── tests/                      # 21 个测试文件及固定回归 fixture
-├── public/                     # 静态附属文件（AI 提案模板与第三方声明）
-├── ARCHITECTURE.md             # 48 个源文件的完整职责地图与开发红线
+├── tests/                      # 测试文件及固定回归 fixture
+├── public/                     # 静态附属文件（第三方声明）
+├── ARCHITECTURE.md             # 50 个源文件的完整职责地图与开发红线
 ├── 沙盘功能添加与AI协作开发者指南.md # 图层树、事件约定与新增功能步骤
 ├── 使用说明.md                  # 面向玩家的中文操作手册
 └── walkthrough.md              # 按版本追加的交付与排障日志
@@ -163,7 +163,7 @@ TMP=.tmp-build/tmp TEMP=.tmp-build/tmp npm run check
 发布目录位于上级目录（当前为 `../Wenyou-Pixi-v0.9.1-Release/` 及同名 `.zip`，历史发布包统一归档在 `../_archive/releases/`）。单个发布包包含：
 
 - `runtime/node.exe`：独立 Node 运行时（当前为 `v24.22.1`）
-- `www/`：由 `npm run build` 完整产出的 `dist/`（含 `index.html`、`assets/*`、`battle-ai-template.json`、`THIRD-PARTY-NOTICES.txt`）
+- `www/`：由 `npm run build` 完整产出的 `dist/`（含 `index.html`、`assets/*`、`THIRD-PARTY-NOTICES.txt`）
 - `server.mjs` 与 `world-data.mjs`：离线静态服务与可选世界资料读取器
 - `启动沙盘.bat`：纯 ASCII + CRLF 编码的 Windows 启动脚本
 - `VERSION.txt`、`使用说明.md`、`walkthrough.md`：版本标记与说明文档（UTF-8）
@@ -182,6 +182,6 @@ npm run test:package
 - **v0.9.1**：修复新版 FMG `.map` 中 `nameBases` 含裸换行导致的解析错位；新增同 `mapId` 重导入覆盖确认与「删除战区」回空沙盘功能；主地图与野战窗口同步新增城市名手动大小（`50%–240%`）与动态双开关；扩大兵牌缩放至 `35%–240%` 并新增字体颜色自定义、移除战术图腾；放大标准/紧凑兵牌修复重叠溢出，修复野战按钮重复「战场」后缀及编制编辑器排版挤压。
 - **v0.9.0**：合并自 `v0.6.0-hotfix4` 起的全部迭代，涵盖城市密集度分级 LOD 避让优化、移除战史编年史模块、本地静态服务路径边界加固，并将内置运行时升级至 Node `v24.22.1`。
 - **v0.6.0 系列**：新增独立局部战场快照与窗口、真实部队拆分、空沙盘启动与 FMG `v1.154` 头部布局兼容。
-- **v0.5.0 – v0.5.1**：引入 BATTLE-1 团级战役展开（ORBAT、部署求解、AI 提案审阅、PNG 简报）、8 档兵力军标、自定义图片兵牌与 32 倍短战线绘制。
+- **v0.5.0 – v0.5.1**：引入 BATTLE-1 团级战役展开（ORBAT、部署求解、战役候选 JSON 导入、PNG 简报）、8 档兵力军标、自定义图片兵牌与 32 倍短战线绘制。
 
 各版本的详细改动背景、测试证据与环境边界记录在 [walkthrough.md](./walkthrough.md)。
