@@ -1,0 +1,4 @@
+{
+  "extends": "../../../../tsconfig.json",
+  "include": ["river-valley.ts", "../../../../src/battle-contract.ts"]
+}

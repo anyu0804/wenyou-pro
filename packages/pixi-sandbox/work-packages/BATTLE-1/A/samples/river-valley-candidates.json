@@ -1,0 +1,151 @@
+{
+  "format": "wenyou-battle-candidates",
+  "version": 1,
+  "mapId": "synthetic-battle-valley",
+  "sources": [
+    {
+      "id": "ai-draft",
+      "kind": "ai",
+      "title": "合成 AI 候选",
+      "locator": null,
+      "text": "建议把第三团预备位置移至 [220, 320]；第九团人数及确切位置仍未知。"
+    },
+    {
+      "id": "plan",
+      "kind": "manual",
+      "title": "合成部署方案",
+      "text": "第一梯队面向北，后置第二梯队及预备队。",
+      "locator": null
+    }
+  ],
+  "items": [
+    {
+      "id": "candidate-r13",
+      "state": "ready",
+      "instruction": "修改第三团的预备位置",
+      "evidence": [
+        {
+          "sourceId": "ai-draft",
+          "basis": "inference",
+          "excerpt": "建议把第三团预备位置移至 [220, 320]",
+          "note": "AI 方案，待人审阅"
+        }
+      ],
+      "edits": [
+        {
+          "kind": "set-deployment",
+          "deployment": {
+            "assertion": "plan",
+            "battlefieldId": {
+              "state": "known",
+              "evidence": [
+                {
+                  "sourceId": "plan",
+                  "basis": "assumption",
+                  "excerpt": "第一梯队面向北，后置第二梯队及预备队",
+                  "note": "演示假设，尚未执行"
+                }
+              ],
+              "value": "valley"
+            },
+            "facingDegrees": {
+              "state": "known",
+              "evidence": [
+                {
+                  "sourceId": "plan",
+                  "basis": "assumption",
+                  "excerpt": "第一梯队面向北，后置第二梯队及预备队",
+                  "note": "演示假设，尚未执行"
+                }
+              ],
+              "value": 0
+            },
+            "depthMapUnits": {
+              "state": "known",
+              "evidence": [
+                {
+                  "sourceId": "plan",
+                  "basis": "assumption",
+                  "excerpt": "第一梯队面向北，后置第二梯队及预备队",
+                  "note": "演示假设，尚未执行"
+                }
+              ],
+              "value": 40
+            },
+            "formationLine": {
+              "state": "known",
+              "evidence": [
+                {
+                  "sourceId": "plan",
+                  "basis": "assumption",
+                  "excerpt": "第一梯队面向北，后置第二梯队及预备队",
+                  "note": "演示假设，尚未执行"
+                }
+              ],
+              "value": 2
+            },
+            "role": {
+              "state": "known",
+              "evidence": [
+                {
+                  "sourceId": "plan",
+                  "basis": "assumption",
+                  "excerpt": "第一梯队面向北，后置第二梯队及预备队",
+                  "note": "演示假设，尚未执行"
+                }
+              ],
+              "value": "reserve"
+            },
+            "reserveForUnitId": {
+              "state": "known",
+              "evidence": [
+                {
+                  "sourceId": "plan",
+                  "basis": "assumption",
+                  "excerpt": "第一梯队面向北，后置第二梯队及预备队",
+                  "note": "演示假设，尚未执行"
+                }
+              ],
+              "value": "d1"
+            },
+            "unitId": "r13",
+            "placement": {
+              "state": "known",
+              "evidence": [
+                {
+                  "sourceId": "ai-draft",
+                  "basis": "inference",
+                  "excerpt": "建议把第三团预备位置移至 [220, 320]",
+                  "note": "AI 方案，待人审阅"
+                }
+              ],
+              "value": {
+                "anchor": [
+                  220,
+                  320
+                ],
+                "shape": {
+                  "kind": "point"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "candidate-r33",
+      "state": "unresolved",
+      "instruction": "定位第九团",
+      "evidence": [
+        {
+          "sourceId": "ai-draft",
+          "basis": "inference",
+          "excerpt": "建议把第三团预备位置移至 [220, 320]",
+          "note": "AI 方案，待人审阅"
+        }
+      ],
+      "reason": "原文只有“河谷一带”，不能生成精确坐标；人数也未给出"
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "extends": "../../../../tsconfig.json",
+  "include": [
+    "deployment-cases.ts",
+    "../../P0/samples/river-valley.ts",
+    "../../../../src/battle-contract.ts",
+    "../../../../src/battle-geometry.ts",
+    "../../../../src/battle-deployment.ts"
+  ]
+}

@@ -21,7 +21,13 @@ packages/desktop/resources/pixi-sandbox/
 packages/desktop/resources/ntqq-vfs/python/
 packages/desktop/resources/ntqq-vfs/__pycache__/
 packages/pixi-sandbox/dist/
-packages/pixi-sandbox/work-packages/
+packages/pixi-sandbox/work-packages/*
+!packages/pixi-sandbox/work-packages/BATTLE-1/
+packages/pixi-sandbox/work-packages/BATTLE-1/*
+!packages/pixi-sandbox/work-packages/BATTLE-1/*/
+packages/pixi-sandbox/work-packages/BATTLE-1/*/*
+!packages/pixi-sandbox/work-packages/BATTLE-1/*/samples/
+!packages/pixi-sandbox/work-packages/BATTLE-1/*/samples/**
 *.tsbuildinfo
 
 # 日志
