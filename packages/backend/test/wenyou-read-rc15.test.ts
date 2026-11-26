@@ -474,4 +474,160 @@ print(json.dumps({
 		expect(counts.pagedDesc).toBe(1);
 		expect(counts.peekFb).toBe(1);
 	});
+
+	it("高号段旧本机消息 + 低号段新接收消息下 limit=2 反向降级查询不提早截断丢最新消息", () => {
+		const dir = makeTempDir("wenyou-rc15-reverse-dual-");
+		const dbPath = join(dir, "reverse_dual.db");
+
+		const res = runPythonJson<{
+			fastDesc: Array<[string, number, number]>;
+			pagedDesc: Array<[string, number, number]>;
+			peekFb: Array<[string, number, number]>;
+			tailFb: Array<[string, number, number]>;
+		}>(
+			`
+import contextlib, json, sqlite3, sys
+from unittest.mock import patch
+sys.path.insert(0, sys.argv[1])
+import wenyou_read as reader
+${SEED_MODERN_DB_PY}
+
+db = sys.argv[2]
+with contextlib.closing(sqlite3.connect(db)) as conn:
+    conn.executescript('''
+        CREATE TABLE group_msg_table (
+            "40001" INTEGER PRIMARY KEY,
+            "40002" INTEGER,
+            "40003" INTEGER,
+            "40027" INTEGER,
+            "40030" INTEGER,
+            "40033" INTEGER,
+            "40050" INTEGER,
+            "40058" INTEGER,
+            "40800" BLOB
+        );
+    ''')
+    rows = [
+        # High-prefix older PC self-sent messages (ts=100..120)
+        (7786000000000000001, 1, 1, 10001, 0, 100000001, 100, 0, text_blob("旧本机1")),
+        (7786000000000000002, 2, 2, 10001, 0, 100000001, 110, 0, text_blob("旧本机2")),
+        (7786000000000000003, 3, 3, 10001, 0, 100000001, 120, 0, text_blob("旧本机3")),
+        # High-prefix newer graytip & cross-group dirty rows -> must still be excluded
+        (7786000000000000004, 0, 4, 10001, 0, 0, 250, 0, graytip_blob()),
+        (7786000000000000005, 4, 5, 10001, 999999, 20001, 260, 0, text_blob("跨群脏行")),
+        # Low-prefix newer received messages (ts=200..220)
+        (7712000000000000001, 5, 6, 10001, 10001, 20001, 200, 0, text_blob("新接收1")),
+        (7712000000000000002, 6, 7, 10001, 10001, 20001, 210, 0, text_blob("新接收2")),
+        (7712000000000000003, 7, 8, 10001, 10001, 20001, 220, 0, text_blob("新接收3")),
+    ]
+    conn.executemany(
+        'INSERT INTO group_msg_table ("40001","40002","40003","40027","40030","40033","40050","40058","40800") '
+        'VALUES (?,?,?,?,?,?,?,?,?)',
+        rows,
+    )
+    conn.commit()
+
+class FailPrimaryTailConn:
+    def __init__(self, inner):
+        self._inner = inner
+
+    def execute(self, sql, params=()):
+        if 'ORDER BY "40050" DESC' in sql:
+            raise sqlite3.DatabaseError("simulated corrupt time index")
+        return self._inner.execute(sql, params)
+
+    def rollback(self):
+        return self._inner.rollback()
+
+with contextlib.closing(reader.open_readonly(db)) as conn:
+    fast_desc = reader.fast_query_desc(conn, "group_msg_table", 10001, limit=2)
+    paged_desc = reader.paged_query_desc(conn, "group_msg_table", 10001, limit=2)
+    with patch.object(reader, "tail_query", side_effect=sqlite3.DatabaseError("simulated corrupt index")):
+        peek_fb, _ = reader.peek_query(conn, 10001, 2)
+    tail_fb = reader.tail_query(FailPrimaryTailConn(conn), 10001, 2)
+
+print(json.dumps({
+    "fastDesc": [[str(r[0]), int(r[1]), int(r[2])] for r in fast_desc],
+    "pagedDesc": [[str(r[0]), int(r[1]), int(r[2])] for r in paged_desc],
+    "peekFb": [[str(r[0]), int(r[1]), int(r[2])] for r in peek_fb],
+    "tailFb": [[str(r[0]), int(r[1]), int(r[2])] for r in tail_fb],
+}))
+`,
+			[dbPath],
+		);
+
+		const expectedDesc: Array<[string, number, number]> = [
+			["7712000000000000003", 220, 10001],
+			["7712000000000000002", 210, 10001],
+		];
+		const expectedAsc: Array<[string, number, number]> = [
+			["7712000000000000002", 210, 10001],
+			["7712000000000000003", 220, 10001],
+		];
+
+		expect(res.fastDesc).toEqual(expectedDesc);
+		expect(res.pagedDesc).toEqual(expectedDesc);
+		expect(res.peekFb).toEqual(expectedAsc);
+		expect(res.tailFb).toEqual(expectedAsc);
+	});
+
+	it("paged_query 在 since_ts > 0 且 since_rowid = 0 边界严格过滤同秒消息（与 fast_query 完全一致）", () => {
+		const dir = makeTempDir("wenyou-rc15-since-boundary-");
+		const dbPath = join(dir, "since_boundary.db");
+
+		const res = runPythonJson<{
+			fastNoRowid: string[];
+			pagedNoRowid: string[];
+			fastSameSecTie: string[];
+			pagedSameSecTie: string[];
+		}>(
+			`
+import contextlib, json, sqlite3, sys
+sys.path.insert(0, sys.argv[1])
+import wenyou_read as reader
+${SEED_MODERN_DB_PY}
+
+db = sys.argv[2]
+seed_modern_db(db)
+# Add a low-prefix received message in the exact same second (1795670020) as self-sent 7786...002
+with contextlib.closing(sqlite3.connect(db)) as conn:
+    conn.execute(
+        'INSERT INTO group_msg_table ("40001","40002","40003","40027","40030","40033","40050","40058","40800") '
+        'VALUES (?,?,?,?,?,?,?,?,?)',
+        (7712000000000000002, 2, 20, 10001, 10001, 20001, 1795670020, 1795651200, text_blob("同秒低号段消息")),
+    )
+    conn.commit()
+
+with contextlib.closing(reader.open_readonly(db)) as conn:
+    fast_no_rid = reader.fast_query(conn, "group_msg_table", 10001, 1795670020, 0, 50)
+    paged_no_rid = reader.paged_query(conn, "group_msg_table", 10001, 1795670020, 0, 50)
+    fast_tie = reader.fast_query(conn, "group_msg_table", 10001, 1795670020, 7712000000000000002, 50)
+    paged_tie = reader.paged_query(conn, "group_msg_table", 10001, 1795670020, 7712000000000000002, 50)
+
+print(json.dumps({
+    "fastNoRowid": [str(r[0]) for r in fast_no_rid],
+    "pagedNoRowid": [str(r[0]) for r in paged_no_rid],
+    "fastSameSecTie": [str(r[0]) for r in fast_tie],
+    "pagedSameSecTie": [str(r[0]) for r in paged_tie],
+}))
+`,
+			[dbPath],
+		);
+
+		// since_ts = 1795670020, since_rowid = 0 must strictly exclude ALL rows at ts == 1795670020
+		expect(res.fastNoRowid).toEqual(["7786000000000000008", "7712000000000000010"]);
+		expect(res.pagedNoRowid).toEqual(["7786000000000000008", "7712000000000000010"]);
+
+		// since_ts = 1795670020, since_rowid = 7712...002 must include same-second row with larger rowid (7786...002)
+		expect(res.fastSameSecTie).toEqual([
+			"7786000000000000002",
+			"7786000000000000008",
+			"7712000000000000010",
+		]);
+		expect(res.pagedSameSecTie).toEqual([
+			"7786000000000000002",
+			"7786000000000000008",
+			"7712000000000000010",
+		]);
+	});
 });

@@ -375,7 +375,13 @@ def paged_query(conn, table, group, since_ts, since_rowid, max_rows, until_ts=0)
             rid = row[0]
             if until_ts and ts > until_ts:
                 continue
-            if ts > since_ts or (ts == since_ts and rid > since_rowid):
+            if since_rowid:
+                matched = ts > since_ts or (ts == since_ts and rid > since_rowid)
+            elif since_ts:
+                matched = ts > since_ts
+            else:
+                matched = True
+            if matched:
                 seq += 1
                 item = (-ts, -rid, seq, (rid, ts, group, row[3], row[4]))
                 if len(heap) < max_rows:
@@ -389,8 +395,16 @@ def paged_query(conn, table, group, since_ts, since_rowid, max_rows, until_ts=0)
 
 
 def paged_query_desc(conn, table, group, until_ts=0, until_rowid=0, since_ts=0, limit=PEEK_ROWS_LIMIT):
-    """反向 rowid 分页 + 自动跳过损坏页；返回按 (ts, rowid) 降序排列的至多 limit 条匹配行。"""
-    out = []
+    """反向 rowid 分页 + 自动跳过损坏页；返回按 (ts, rowid) 降序排列的至多 limit 条匹配行。
+
+    本机发出消息的 rowid 与接收消息可能分处不同高位号段，始终扫描全表并用固定容量最小堆
+    维护 (ts, rowid) 最大的 limit 条，避免高号段旧消息提前占满配额而截断低号段新消息。
+    """
+    if limit <= 0:
+        return []
+    since_ts = int(since_ts) if since_ts else 0
+    until_ts = int(until_ts) if until_ts else 0
+    until_rowid = int(until_rowid) if until_rowid else 0
     columns = _table_columns(conn, table)
     has_indexed_gcol = INDEXED_GCOL in columns
     select_cols = (
@@ -398,7 +412,6 @@ def paged_query_desc(conn, table, group, until_ts=0, until_rowid=0, since_ts=0, 
         if has_indexed_gcol
         else f'rowid, "{TCOL}", "{GCOL}", "{SCOL}", "{BCOL}"'
     )
-    until_rowid = int(until_rowid) if until_rowid else 0
     last = None
     try:
         cur = conn.execute(f"SELECT MAX(rowid) FROM {table}")
@@ -409,11 +422,14 @@ def paged_query_desc(conn, table, group, until_ts=0, until_rowid=0, since_ts=0, 
         safe_rollback(conn)
         raise sqlite3.DatabaseError(f"无法读取 MAX(rowid)：{exc}") from exc
     if last is None:
-        return out
+        return []
     batch = 2048
     guard = 0
     fail_streak = 0
-    while len(out) < limit and last >= 1:
+    seq = 0
+    # 最小堆（存 (ts, rowid, seq, row5)）保留全表满足条件的最大 limit 条，内存恒定 O(limit)
+    heap = []
+    while last >= 1:
         guard += 1
         if guard > 4_000_000:
             log("反向分页扫描超过保护上限，停止")
@@ -428,10 +444,10 @@ def paged_query_desc(conn, table, group, until_ts=0, until_rowid=0, since_ts=0, 
             safe_rollback(conn)
             fail_streak += 1
             if fail_streak >= 5000:
-                if not out:
+                if not heap:
                     raise sqlite3.DatabaseError(
                         f"明文库不可读：连续 {fail_streak} 次反向读页失败且无任何产出，已中止扫描")
-                log(f"反向分页连续 {fail_streak} 次读页失败，保留已收集 {len(out)} 条结果并中止")
+                log(f"反向分页连续 {fail_streak} 次读页失败，保留已收集 {len(heap)} 条结果并中止")
                 break
             last -= batch
             batch = max(8, batch // 2)
@@ -454,10 +470,14 @@ def paged_query_desc(conn, table, group, until_ts=0, until_rowid=0, since_ts=0, 
             elif until_ts:
                 if ts > until_ts:
                     continue
-            out.append((row[0], row[1], group, row[3], row[4]))
-            if len(out) >= limit:
-                break
+            seq += 1
+            item = (ts, rid, seq, (rid, ts, group, row[3], row[4]))
+            if len(heap) < limit:
+                heapq.heappush(heap, item)
+            elif item > heap[0]:
+                heapq.heapreplace(heap, item)
         batch = min(2048, batch * 2)
+    out = [entry[3] for entry in heap]
     out.sort(key=lambda r: (r[1], r[0]), reverse=True)
     return out
 
@@ -863,6 +883,8 @@ def cmd_check(args):
 
 def tail_query(conn, group, n):
     """返回某群按 (ts, rowid) 升序的最近 n 条消息（用于初次建立游标/回看尾巴）。"""
+    if n <= 0:
+        return []
     columns = _table_columns(conn, "group_msg_table")
     group_sql, group_params = group_predicate(conn, "group_msg_table", group, columns=columns)
     g_expr = _group_select_expr(columns)
@@ -873,11 +895,7 @@ def tail_query(conn, group, n):
             f'ORDER BY "{TCOL}" DESC, rowid DESC LIMIT ?', (*group_params, n)).fetchall()
     except Exception:
         safe_rollback(conn)
-        # 倒退：用 rowid 倒序扫后再按 (ts, rowid) 升序重排
-        rows = conn.execute(
-            f'SELECT rowid, "{TCOL}", {g_expr}, "{SCOL}", "{BCOL}" '
-            f'FROM group_msg_table WHERE {group_sql} AND "{TCOL}" IS NOT NULL '
-            f'ORDER BY rowid DESC LIMIT ?', (*group_params, n)).fetchall()
+        rows = paged_query_desc(conn, "group_msg_table", group, limit=n)
     rows = list(rows)
     rows.sort(key=lambda r: (r[1], r[0]))
     return rows
@@ -1200,14 +1218,15 @@ def cmd_verify(args):
 
 
 def peek_query(conn, group, n):
-    """临时阅读：取某群最近 n 条。优先走索引查询路径，异常时退回反向扫描。"""
+    """临时阅读：取某群最近 n 条。优先走索引查询路径，异常时退回反向扫描（最小堆防双号段截断）。"""
+    if n <= 0:
+        return [], 0
     try:
         rows = tail_query(conn, group, n)
         return rows, 0
     except Exception:
         safe_rollback(conn)
 
-    out = []
     columns = _table_columns(conn, "group_msg_table")
     has_indexed_gcol = INDEXED_GCOL in columns
     select_cols = (
@@ -1220,6 +1239,9 @@ def peek_query(conn, group, n):
     guard = 0
     skipped = 0
     fail_streak = 0
+    seq = 0
+    # 最小堆（存 (ts, rowid, seq, row5)）保留全表满足条件的最大 n 条，兼容双号段 rowid
+    heap = []
     try:
         cur = conn.execute("SELECT MAX(rowid) FROM group_msg_table")
         row = cur.fetchone()
@@ -1229,8 +1251,8 @@ def peek_query(conn, group, n):
         safe_rollback(conn)
         raise sqlite3.DatabaseError(f"无法读取 MAX(rowid)：{exc}") from exc
     if last is None:
-        return out, 0
-    while len(out) < n and last >= 1:
+        return [], 0
+    while last >= 1:
         guard += 1
         if guard > 200000:
             log("peek 扫描超过保护上限，停止")
@@ -1245,10 +1267,10 @@ def peek_query(conn, group, n):
             skipped += 1
             fail_streak += 1
             if fail_streak >= 5000:
-                if not out:
+                if not heap:
                     raise sqlite3.DatabaseError(
                         f"明文库不可读：连续 {fail_streak} 次反向读页失败且无任何产出，已中止扫描")
-                log(f"peek 扫描连续 {fail_streak} 次读页失败，保留已收集 {len(out)} 条结果并中止")
+                log(f"peek 扫描连续 {fail_streak} 次读页失败，保留已收集 {len(heap)} 条结果并中止")
                 break
             # 这一批不可读：整体跳过它，前推 last 并减半批次（不逐行磨）
             last -= batch
@@ -1262,10 +1284,16 @@ def peek_query(conn, group, n):
         for row in rows:
             mirror_val = row[5] if has_indexed_gcol else None
             if row[1] is not None and _row_matches_group(row[2], mirror_val, row[3], group, has_indexed_gcol):
-                out.append((row[0], row[1], group, row[3], row[4]))
-                if len(out) >= n:
-                    break
+                ts = row[1]
+                rid = row[0]
+                seq += 1
+                item = (ts, rid, seq, (rid, ts, group, row[3], row[4]))
+                if len(heap) < n:
+                    heapq.heappush(heap, item)
+                elif item > heap[0]:
+                    heapq.heapreplace(heap, item)
         batch = min(2048, batch * 2)
+    out = [entry[3] for entry in heap]
     out.sort(key=lambda r: (r[1], r[0]))
     return out, skipped
 
