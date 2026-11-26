@@ -1,6 +1,6 @@
 import type { MetaItem, SlashCommandInfo, UIToolCall } from "@percho/shared";
 import * as React from "react";
-import { type ComponentType, createElement } from "react";
+import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -18,15 +18,6 @@ vi.mock("./index", async (importOriginal) => {
 	};
 });
 vi.mock("thinking-orbs", () => ({ ThinkingOrb: () => null }));
-vi.mock("../plugins/Slot", () => ({
-	Slot: ({
-		fallback,
-		props,
-	}: {
-		fallback: ComponentType<{ tool: UIToolCall }>;
-		props: { tool: UIToolCall };
-	}) => createElement(fallback, props),
-}));
 
 import { MetaGroup } from "../components/chat/MetaGroup";
 import { summaryLabel } from "../components/chat/meta-summary-label";

@@ -6,6 +6,10 @@ extraMetadata:
   releaseChannel: stable
   productName: Wenyou Pro
   disableAutoUpdate: true
+afterPack: scripts/after-pack.cjs
+electronLanguages:
+  - zh_CN
+  - en
 directories:
   output: ../../dist/wenyou-pro-0.2.5-win-x64/raw
 files:
@@ -14,8 +18,6 @@ files:
   - "!node_modules/@percho"
 asarUnpack:
   - "**/*.node"
-  - "**/node_modules/esbuild/**"
-  - "**/node_modules/@esbuild/**"
 extraResources:
   - from: "../../node_modules/@earendil-works/pi-coding-agent/docs"
     to: "pi-package/docs"
@@ -33,8 +35,6 @@ extraResources:
     to: "pi-package/dist/modes/interactive/theme"
   - from: "../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/assets"
     to: "pi-package/dist/modes/interactive/assets"
-  - from: "resources/ui-plugins"
-    to: "ui-plugins"
   - from: "resources/wenyou-skills"
     to: "wenyou-skills"
   # Wenyou Pro 内置 Pixi 动态推演沙盘（wenyou-sandbox:// 特权协议离线直载）

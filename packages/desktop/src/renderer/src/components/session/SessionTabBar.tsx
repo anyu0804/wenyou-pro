@@ -32,10 +32,9 @@ import {
 } from "../../stores/session-workspace";
 import { useSessionsStore } from "../../stores/sessions";
 import { useTranscriptStore } from "../../stores/transcript";
-import { useUiStore } from "../../stores/ui";
 import { useUiPreferencesStore } from "../../stores/ui-preferences";
 import { useWenyouCanvasStore } from "../../stores/wenyou-canvas";
-import { CloseIcon, DiffIcon, PanelLeftIcon, PinIcon, PlusIcon } from "../icons";
+import { CloseIcon, PanelLeftIcon, PinIcon, PlusIcon } from "../icons";
 import { ContextMenu, type ContextMenuItem } from "../ui/ContextMenu";
 import type { MenuAnchor } from "../ui/place-menu";
 import { RenamePopover } from "./RenamePopover";
@@ -240,8 +239,6 @@ export function SessionTabBar() {
 	const activateNewSessionDraft = useSessionsStore((s) => s.activateNewSessionDraft);
 
 	const cwd = useSessionsStore(selectActiveCwd);
-	const diffSidebarOpen = useUiStore((s) => s.diffSidebarOpen);
-	const toggleDiffSidebar = useUiStore((s) => s.toggleDiffSidebar);
 	const wenyouOpen = useWenyouCanvasStore((s) => s.open);
 	const toggleWenyouOpen = useWenyouCanvasStore((s) => s.toggleOpen);
 	const wenyouBadgeCount = useWenyouCanvasStore((s) => s.unreadCount);
@@ -453,7 +450,7 @@ export function SessionTabBar() {
 			>
 				<PlusIcon size={18} />
 			</button>
-			{/* 文游工作台分屏开关：Diff 按钮左侧，带未读角标 */}
+			{/* 文游工作台分屏开关：带未读角标 */}
 			<button
 				type="button"
 				className={`no-drag relative inline-flex shrink-0 items-center gap-1.5 rounded-lg px-2 py-1.5 text-ui-12 font-medium transition-colors ${
@@ -484,18 +481,6 @@ export function SessionTabBar() {
 						{wenyouBadgeCount > 99 ? "99+" : wenyouBadgeCount}
 					</span>
 				)}
-			</button>
-			{/* diff 侧栏开关：新会话按钮之后，active 态底色区分 */}
-			<button
-				type="button"
-				className={`no-drag relative shrink-0 rounded-lg p-1.5 transition-colors ${
-					diffSidebarOpen ? "bg-hover text-ink" : "text-ink-dim hover:bg-hover hover:text-ink"
-				}`}
-				onClick={toggleDiffSidebar}
-				data-diff-toggle=""
-				aria-label={t("diff.toggle")}
-			>
-				<DiffIcon size={16} />
 			</button>
 			{menu !== null && (
 				<ContextMenu anchor={menu.anchor} items={contextMenuItems(menu.sessionId)} onClose={closeMenu} />

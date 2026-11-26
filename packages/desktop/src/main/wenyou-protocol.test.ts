@@ -12,9 +12,9 @@ vi.mock("electron", () => ({
 }));
 
 import {
-	createWorkspaceAllowlistChecker,
 	handleWenyouAssetRequest,
 	handleWenyouSandboxRequest,
+	isAllowedCorsOrigin,
 } from "./wenyou-protocol";
 
 const tempDirs: string[] = [];
@@ -206,11 +206,10 @@ describe("wenyou-protocol (wenyou-asset://)", () => {
 		}
 	});
 
-	it("校验协议与主机名、拦截以 private/.wenyou 为 cwd 的绕过、校验工作区白名单并精确回显 CORS Origin", async () => {
+	it("校验协议与主机名、放行任意普通工作区目录、仍拦截 private/.wenyou 为 cwd 并支持 http(s)/file/app/sandbox CORS Origin", async () => {
 		const cwd = await makeTempWorkspace();
-		const worldsParent = await mkdtemp(join(tmpdir(), "wenyou-worlds-parent-"));
-		tempDirs.push(worldsParent);
-		const worldCampaign = join(worldsParent, "shuntang");
+		const worldCampaign = await mkdtemp(join(tmpdir(), "wenyou-world-any-"));
+		tempDirs.push(worldCampaign);
 		await mkdir(join(worldCampaign, "05-沙盘与图集"), { recursive: true });
 		await mkdir(join(worldCampaign, "private", "nested"), { recursive: true });
 		await mkdir(join(worldCampaign, ".wenyou"), { recursive: true });
@@ -220,6 +219,16 @@ describe("wenyou-protocol (wenyou-asset://)", () => {
 		await writeFile(join(worldCampaign, "private", "nested", "deep.png"), Buffer.from("deep"));
 		await writeFile(join(worldCampaign, ".wenyou", "internal.png"), Buffer.from("internal"));
 		await writeFile(join(cwd, "05-沙盘与图集", "ok.png"), Buffer.from("ok-png"));
+
+		// 任意普通目录均可读取非受限图片，不再受工作区白名单 403 拦截
+		expect(
+			(
+				await handleWenyouAssetRequest(
+					{ url: buildWenyouAssetUrl(worldCampaign, "05-沙盘与图集/map.png"), method: "GET" },
+					localFileFetcher,
+				)
+			).status,
+		).toBe(200);
 
 		// 非法协议与非法 host 拦截
 		expect(
@@ -259,62 +268,18 @@ describe("wenyou-protocol (wenyou-asset://)", () => {
 			expect(await res.text()).toContain("forbidden asset workspace");
 		}
 
-		// 工作区白名单：放行 exactRoots 与 parentRoots 子战役目录，拒绝未登记外部目录及 parentRoots 本身
-		const unrelated = await mkdtemp(join(tmpdir(), "wenyou-unrelated-"));
-		tempDirs.push(unrelated);
-		await writeFile(join(unrelated, "leak.png"), Buffer.from("leak"));
-		await writeFile(join(worldsParent, "parent-root.png"), Buffer.from("root"));
-
-		const isAllowedWorkspace = createWorkspaceAllowlistChecker(() => ({
-			exactRoots: [cwd],
-			parentRoots: [worldsParent],
-		}));
-
-		expect(
-			(
-				await handleWenyouAssetRequest(
-					{ url: buildWenyouAssetUrl(cwd, "05-沙盘与图集/ok.png"), method: "GET" },
-					localFileFetcher,
-					{ isAllowedWorkspace },
-				)
-			).status,
-		).toBe(200);
-		expect(
-			(
-				await handleWenyouAssetRequest(
-					{ url: buildWenyouAssetUrl(worldCampaign, "05-沙盘与图集/map.png"), method: "GET" },
-					localFileFetcher,
-					{ isAllowedWorkspace },
-				)
-			).status,
-		).toBe(200);
-		expect(
-			(
-				await handleWenyouAssetRequest(
-					{ url: buildWenyouAssetUrl(unrelated, "leak.png"), method: "GET" },
-					localFileFetcher,
-					{ isAllowedWorkspace },
-				)
-			).status,
-		).toBe(403);
-		expect(
-			(
-				await handleWenyouAssetRequest(
-					{ url: buildWenyouAssetUrl(worldsParent, "parent-root.png"), method: "GET" },
-					localFileFetcher,
-					{ isAllowedWorkspace },
-				)
-			).status,
-		).toBe(403);
-
-		// CORS Origin 精确回显校验
+		// CORS Origin 校验：放行 wenyou-sandbox://app、app://、file://、以及任意 http:// / https://（含局域网）
 		for (const allowedOrigin of [
 			"wenyou-sandbox://app",
 			"app://wenyou",
+			"file://",
 			"http://127.0.0.1:5173",
 			"http://localhost:5174",
 			"http://[::1]:5173",
+			"http://192.168.1.50:5173",
+			"https://sandbox.example.local:8443",
 		]) {
+			expect(isAllowedCorsOrigin(allowedOrigin)).toBe(true);
 			const res = await handleWenyouAssetRequest(
 				{
 					url: buildWenyouAssetUrl(cwd, "05-沙盘与图集/ok.png"),
@@ -328,18 +293,21 @@ describe("wenyou-protocol (wenyou-asset://)", () => {
 			expect(res.headers.get("vary")).toBe("Origin");
 		}
 
-		// 非法外部 Origin 不回显 ACAO（防任意网页读取本地图集）
-		const evilRes = await handleWenyouAssetRequest(
-			{
-				url: buildWenyouAssetUrl(cwd, "05-沙盘与图集/ok.png"),
-				method: "HEAD",
-				headers: new Headers({ Origin: "https://evil.example" }),
-			},
-			localFileFetcher,
-		);
-		expect(evilRes.status).toBe(200);
-		expect(evilRes.headers.get("access-control-allow-origin")).toBeNull();
-		expect(evilRes.headers.get("vary")).toBe("Origin");
+		// 非法 Origin 协议或非 app 的 sandbox host 不回显 ACAO
+		for (const disallowedOrigin of ["wenyou-sandbox://evil", "ftp://192.168.1.50", "javascript:alert(1)"]) {
+			expect(isAllowedCorsOrigin(disallowedOrigin)).toBe(false);
+			const badRes = await handleWenyouAssetRequest(
+				{
+					url: buildWenyouAssetUrl(cwd, "05-沙盘与图集/ok.png"),
+					method: "HEAD",
+					headers: new Headers({ Origin: disallowedOrigin }),
+				},
+				localFileFetcher,
+			);
+			expect(badRes.status).toBe(200);
+			expect(badRes.headers.get("access-control-allow-origin")).toBeNull();
+			expect(badRes.headers.get("vary")).toBe("Origin");
+		}
 	});
 });
 

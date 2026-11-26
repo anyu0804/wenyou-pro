@@ -1,108 +1,34 @@
 import type { PiBackend } from "@percho/backend";
-import { IpcChannels, LOCAL_ENVIRONMENT, REMOTE_CHANNELS, UI_WORKBENCH_TRUST_COPY } from "@percho/shared";
-import { app, dialog } from "electron";
+import { IpcChannels, LOCAL_ENVIRONMENT } from "@percho/shared";
 import { setEnvironmentUiAuthorization } from "../environment-ui-state";
-import type { LanObserverHandle } from "../lan";
 import { initializeNativeNotifications, nativeNotifications } from "../native-notifications";
-import { remoteConnectionManager } from "../remote-connection";
-import { discoverSshAliases } from "../ssh-config";
 import { initializeTaskNotifications, observeTaskNotification } from "../task-notifications";
-import { loadUiPluginsConfig } from "../ui-plugins/config";
-import type { UiPluginManager } from "../ui-plugins/manager";
-import { UiWorkbenchTrust } from "../ui-plugins/workbench-trust";
 import { loadUiState } from "../ui-state";
 import { onUpdateState } from "../updater";
 import { registerAppIpc } from "./app";
 import { registerExtensionDialogIpc } from "./extension-dialogs";
-import { registerInvokeHandlers } from "./invoke";
-import { registerLanIpc } from "./lan";
 import { registerPackagesIpc } from "./packages";
 import { forward, sendToRenderer } from "./send";
 import { registerSessionsIpc } from "./sessions";
 import { registerSettingsIpc } from "./settings";
-import { registerUiPluginsIpc } from "./ui-plugins";
 import { registerWenyouIpc } from "./wenyou";
 
 /**
- * IPC 注册组合入口：按域拆在 ./sessions ./settings ./packages ./app ./ui-plugins 五个文件，
+ * IPC 注册组合入口：按域拆在 ./sessions ./settings ./packages ./app ./extension-dialogs ./wenyou，
  * 这里只做拼装 + backend/updater 事件转发到 renderer。
  */
-export function registerIpc(
-	backend: PiBackend,
-	uiPluginsManager: UiPluginManager,
-	lan: LanObserverHandle,
-): void {
+export function registerIpc(backend: PiBackend): void {
 	initializeNativeNotifications();
 	initializeTaskNotifications();
 	nativeNotifications.restoreEnabled(async () => (await loadUiState())?.taskNotificationsEnabled ?? true);
-	const trust = new UiWorkbenchTrust(
-		loadUiPluginsConfig,
-		(names) => uiPluginsManager.updateConfig({ kind: "trust-workbench", names }),
-		async (names) => {
-			const copy = UI_WORKBENCH_TRUST_COPY[app.getLocale().startsWith("zh") ? "zh" : "en"];
-			const result = await dialog.showMessageBox({
-				type: "question",
-				title: copy.title,
-				message: copy.title,
-				detail: `${copy.detail}\n\n${names.join("\n")}`,
-				buttons: [copy.cancel, copy.allow],
-				defaultId: 0,
-				cancelId: 0,
-				noLink: true,
-			});
-			return result.response === 1;
-		},
-	);
-	const authorizeRemote = () => trust.authorizeRemote();
-	setEnvironmentUiAuthorization(authorizeRemote);
-	remoteConnectionManager.startAutoConnect(authorizeRemote);
-	registerInvokeHandlers(REMOTE_CHANNELS, {
-		remoteListSshAliases: () => discoverSshAliases(),
-		remoteAuthGuide: ({ environment }) => remoteConnectionManager.authGuide(environment),
-		remoteGetCatalog: () => remoteConnectionManager.getCatalog(),
-		remoteAdd: (command) => remoteConnectionManager.add(command),
-		remoteResetCatalog: (command) => remoteConnectionManager.resetCatalog(command),
-		remoteStopService: (command) => remoteConnectionManager.stopService(command),
-		remotePreflight: (command) => {
-			trust.resetDecline();
-			return remoteConnectionManager.preflight(command);
-		},
-		remoteForget: (command) => remoteConnectionManager.forget(command),
-		remoteCheckOperation: ({ operationId }) => remoteConnectionManager.checkOperation(operationId),
-		remoteDismissOperation: ({ operationId }) => remoteConnectionManager.dismissOperation(operationId),
-		remoteGetStatus: () => remoteConnectionManager.getStatus(),
-		remoteDisconnect: (command) => remoteConnectionManager.disconnect(command),
-		remoteInstall: (command) => remoteConnectionManager.installAndConnect(command),
-		remoteConfirmTarget: (command) => remoteConnectionManager.confirmTarget(command),
-		remotePrepareInstall: (command) => {
-			trust.resetDecline();
-			return remoteConnectionManager.prepareInstall(command);
-		},
-		remoteConnect: (command) => {
-			trust.resetDecline();
-			return remoteConnectionManager.connect(command);
-		},
-		remoteReconnect: (command) => {
-			trust.resetDecline();
-			return remoteConnectionManager.reconnect(command);
-		},
-		remoteSwitch: (command) => {
-			trust.resetDecline();
-			return remoteConnectionManager.switchConnection(command);
-		},
-	});
+	setEnvironmentUiAuthorization(async () => {});
+
 	registerSessionsIpc(backend);
 	registerSettingsIpc(backend);
 	registerPackagesIpc(backend);
 	registerAppIpc(backend);
 	registerExtensionDialogIpc(backend);
-	registerUiPluginsIpc(uiPluginsManager, trust);
-	registerLanIpc(lan);
 	registerWenyouIpc(backend);
-	// 热重载 watcher：插件源码变更 → 重建 → 推 changed 事件（renderer 经 loader reloadPlugin 热替换）
-	uiPluginsManager.startWatcher((name) => {
-		sendToRenderer(IpcChannels.UiPluginsEvent, { kind: "changed", name });
-	});
 
 	// onEvent 载荷是 (sessionId, event) → 信封封装，不透明传，单行保留
 	backend.onEvent((sessionId, event, sequence) => {
@@ -118,7 +44,6 @@ export function registerIpc(
 		});
 	});
 	forward(backend.onPermissionRequest.bind(backend), IpcChannels.PermissionRequest);
-	// 权限裁决也回投渲染端：LAN 远程应答 / 其他来源应答时桌面卡片要同步撤掉
 	forward(backend.onPermissionResolved.bind(backend), IpcChannels.PermissionResolved);
 	forward(backend.onTrustRequest.bind(backend), IpcChannels.TrustRequest);
 	forward(backend.onTrustResolved.bind(backend), IpcChannels.TrustResolved);

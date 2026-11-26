@@ -32,10 +32,10 @@ const WENYOU_QUICK_CARDS: QuickPromptCard[] = [
 		id: "policy",
 		tag: "国策 .docx",
 		title: "按实册与局势写本轮国策",
-		desc: "严格核对国力底账，过零表格/零套话静态门禁并输出宋体 Word (.docx)",
+		desc: "严格核对国力底账，输出自然段宋体 Word (.docx) 文书",
 		tab: "policy-desk",
 		prompt:
-			"请调用 wenyou_read_memory 读取最新局势书与 01-设定与国力实册/ 的真实国力底账，为我起草本轮国策并通过 wenyou_write_policy_docx 过门禁生成规范宋体 Word (.docx) 文书。全文采用编号自然段叙事，严禁 Markdown 表格、多层嵌套清单和空泛 AI 套话。",
+			"请调用 wenyou_read_memory 读取最新局势书与 01-设定与国力实册/ 的真实国力底账，为我起草本轮国策并通过 wenyou_write_policy_docx 生成宋体排版 Word (.docx) 文书。全文采用自然段叙事，聚焦核心军政与外交举措。",
 	},
 	{
 		id: "intel",

@@ -92,8 +92,6 @@ vi.mock("./CompactionPauseNote", () => ({ CompactionPauseNote: () => null }));
 vi.mock("./RetryNote", () => ({ RetryNote: () => null }));
 vi.mock("./MetaGroup", () => ({ MetaGroup: () => null }));
 vi.mock("./SubagentRunCard", () => ({ SubagentRunCard: () => null }));
-vi.mock("./TurnDiffChip", () => ({ TurnDiffChip: () => null }));
-vi.mock("../../plugins/Slot", () => ({ Slot: () => null }));
 
 import { MessageList } from "./MessageList";
 import { RowPositions } from "./row-positions";

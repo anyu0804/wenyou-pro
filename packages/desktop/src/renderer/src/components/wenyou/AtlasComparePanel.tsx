@@ -2,7 +2,6 @@ import {
 	BUILTIN_PIXI_SANDBOX_URL,
 	buildBuiltinSandboxUrl,
 	buildWenyouAssetUrl,
-	formatViewerScope,
 	type MapAssetItem,
 	type MapSnapshotDiffResult,
 	type MapSnapshotSummary,
@@ -57,13 +56,10 @@ function isBuiltinSandboxUrl(rawUrl: string): boolean {
 	}
 }
 
-function isLoopbackHttpUrl(rawUrl: string): boolean {
+function isHttpSandboxUrl(rawUrl: string): boolean {
 	try {
 		const u = new URL(rawUrl);
-		return (
-			u.protocol === "http:" &&
-			(u.hostname === "127.0.0.1" || u.hostname === "localhost" || u.hostname === "::1" || u.hostname === "[::1]")
-		);
+		return (u.protocol === "http:" || u.protocol === "https:") && Boolean(u.hostname);
 	} catch {
 		return false;
 	}
@@ -429,7 +425,6 @@ function SliderCompareStage({
 export function AtlasComparePanel() {
 	const cwd = useWenyouCanvasStore((s) => s.cwd);
 	const overview = useWenyouCanvasStore((s) => s.overview);
-	const viewerScope = useWenyouCanvasStore((s) => s.viewerScope);
 	const mapMode = useWenyouCanvasStore((s) => s.mapMode);
 	const setMapMode = useWenyouCanvasStore((s) => s.setMapMode);
 	const leftMapPath = useWenyouCanvasStore((s) => s.leftMapPath);
@@ -687,10 +682,10 @@ export function AtlasComparePanel() {
 	const probeSandboxTargets = useCallback(
 		async (overrideUrl?: string | null) => {
 			const targets = new Set<string>(
-				PIXI_SANDBOX_PRESET_URLS.filter((u) => isLoopbackHttpUrl(u)).map((u) => new URL(u).toString()),
+				PIXI_SANDBOX_PRESET_URLS.filter((u) => isHttpSandboxUrl(u)).map((u) => new URL(u).toString()),
 			);
 			const active = overrideUrl ?? sanitizedPixiUrl;
-			if (active && isLoopbackHttpUrl(active)) {
+			if (active && isHttpSandboxUrl(active)) {
 				targets.add(new URL(active).toString());
 			}
 			if (targets.size === 0) return;
@@ -724,8 +719,8 @@ export function AtlasComparePanel() {
 	}, [mapMode, sanitizedPixiUrl, isBuiltinSandbox, probeSandboxTargets]);
 
 	const activeProbe = sanitizedPixiUrl ? probeMap[sanitizedPixiUrl] : undefined;
-	const isLocalTarget = sanitizedPixiUrl ? isLoopbackHttpUrl(sanitizedPixiUrl) : false;
-	const canMountIframe = Boolean(sanitizedPixiUrl) && (isBuiltinSandbox || !isLocalTarget || activeProbe?.reachable === true);
+	const isHttpTarget = sanitizedPixiUrl ? isHttpSandboxUrl(sanitizedPixiUrl) : false;
+	const canMountIframe = Boolean(sanitizedPixiUrl) && (isBuiltinSandbox || !isHttpTarget || activeProbe?.reachable === true);
 
 	const sendHostMessage = useCallback(
 		(msg: WenyouBridgeHostMessage): boolean => {
@@ -866,7 +861,6 @@ export function AtlasComparePanel() {
 					worldId: overview?.worldId ?? "",
 					worldTitle: overview?.worldTitle ?? "",
 					currentEra: overview?.currentEra ?? "",
-					viewer: formatViewerScope(viewerScope),
 					...(rawCwd ? { workspaceKey: rawCwd } : {}),
 				},
 			});
@@ -874,14 +868,14 @@ export function AtlasComparePanel() {
 				setBridgeStatus(`已发送上下文（${overview?.currentEra ?? "当前"}）`);
 			}
 		},
-		[sendHostMessage, overview?.worldId, overview?.worldTitle, overview?.currentEra, viewerScope, rawCwd],
+		[sendHostMessage, overview?.worldId, overview?.worldTitle, overview?.currentEra, rawCwd],
 	);
 
-	// 已握手状态下，世界 ID / 纪年 / 视角变化时自动重新同步上下文
+	// 已握手状态下，世界 ID / 纪年变化时自动重新同步上下文
 	useEffect(() => {
 		if (mapMode !== "pixi-sandbox" || !bridgeReady) return;
 		postBridgeContext(true);
-	}, [mapMode, bridgeReady, overview?.worldId, overview?.currentEra, viewerScope, postBridgeContext]);
+	}, [mapMode, bridgeReady, overview?.worldId, overview?.currentEra, postBridgeContext]);
 
 	const handleIframeLoad = useCallback(() => {
 		if (!bridgeReadyRef.current) {
@@ -1145,7 +1139,7 @@ export function AtlasComparePanel() {
 			imageRelPath: leftMap.relPath,
 			gridPreset: "standard",
 		};
-		if (!sanitizedPixiUrl || (!isBuiltinSandbox && isLocalTarget && activeProbe?.reachable !== true)) {
+		if (!sanitizedPixiUrl || (!isBuiltinSandbox && isHttpTarget && activeProbe?.reachable !== true)) {
 			setPixiUrl(BUILTIN_PIXI_SANDBOX_URL);
 			setPixiDraftUrl(BUILTIN_PIXI_SANDBOX_URL);
 		}
@@ -1298,7 +1292,7 @@ export function AtlasComparePanel() {
 								setPixiUrl(next);
 								if (valid) {
 									setPixiNonce((n) => n + 1);
-									if (isLoopbackHttpUrl(valid)) void probeSandboxTargets(valid);
+									if (isHttpSandboxUrl(valid)) void probeSandboxTargets(valid);
 								}
 							}
 						}}
@@ -1314,7 +1308,7 @@ export function AtlasComparePanel() {
 							setPixiUrl(next);
 							if (valid) {
 								setPixiNonce((n) => n + 1);
-								if (isLoopbackHttpUrl(valid)) void probeSandboxTargets(valid);
+								if (isHttpSandboxUrl(valid)) void probeSandboxTargets(valid);
 							}
 						}}
 						className="rounded-lg bg-ink px-2.5 py-1 text-ui-12 font-medium text-on-ink transition-opacity hover:opacity-90 disabled:opacity-50"
@@ -1518,7 +1512,7 @@ export function AtlasComparePanel() {
 
 						{!sanitizedPixiUrl || !effectiveIframeSrc ? (
 							<div className="flex flex-1 items-center justify-center rounded-xl border border-border bg-surface p-6 text-center text-ui-12 text-ink-dim">
-								仅支持内置沙盘（{BUILTIN_PIXI_SANDBOX_URL}）或本机回环 http://127.0.0.1 / localhost 调试地址。
+								仅支持内置沙盘（{BUILTIN_PIXI_SANDBOX_URL}）或有效的 http:// / https:// 沙盘服务地址。
 							</div>
 						) : !canMountIframe ? (
 							<div className="flex flex-1 flex-col items-center justify-center gap-3 rounded-xl border border-border bg-surface p-6 text-center">

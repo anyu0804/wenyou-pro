@@ -1,4 +1,4 @@
-import { formatViewerScope, type WenyouCanvasTab } from "@percho/shared";
+import type { WenyouCanvasTab } from "@percho/shared";
 import {
 	type CSSProperties,
 	type PointerEvent as ReactPointerEvent,
@@ -20,14 +20,14 @@ import { BriefingPanel } from "./BriefingPanel";
 import { PolicyDeskPanel } from "./PolicyDeskPanel";
 import { ProposalsExportPanel } from "./ProposalsExportPanel";
 import { SourceContextDrawer } from "./SourceContextDrawer";
-import { extractAvailableFactions, isRemoteCwd, unwrapCwdPath } from "./wenyou-helpers";
+import { isRemoteCwd, unwrapCwdPath } from "./wenyou-helpers";
 import { bootstrapCampaignWorld } from "./world-bootstrap";
 
 const TABS: Array<{ id: WenyouCanvasTab; label: string }> = [
 	{ id: "briefing", label: "局势书与台账" },
 	{ id: "policy-desk", label: "国策书案" },
 	{ id: "atlas-compare", label: "地图与沙盘" },
-	{ id: "archive-export", label: "档案与发包" },
+	{ id: "archive-export", label: "设定与编年史" },
 ];
 
 /** 左缘 8px 隐形拖拽把手（镜像 SidebarResizeHandle，具备多路径松手兜底防粘滞） */
@@ -276,7 +276,6 @@ export function WenyouCanvas() {
 	const width = useWenyouCanvasStore((s) => s.width);
 	const activeTab = useWenyouCanvasStore((s) => s.activeTab);
 	const cwd = useWenyouCanvasStore((s) => s.cwd);
-	const viewerScope = useWenyouCanvasStore((s) => s.viewerScope);
 	const overview = useWenyouCanvasStore((s) => s.overview);
 	const loading = useWenyouCanvasStore((s) => s.loading);
 	const error = useWenyouCanvasStore((s) => s.error);
@@ -285,7 +284,6 @@ export function WenyouCanvas() {
 	const setCreateWorldDialogOpen = useWenyouCanvasStore((s) => s.setCreateWorldDialogOpen);
 	const toggleMaximized = useWenyouCanvasStore((s) => s.toggleMaximized);
 	const setActiveTab = useWenyouCanvasStore((s) => s.setActiveTab);
-	const setViewerScope = useWenyouCanvasStore((s) => s.setViewerScope);
 	const refreshOverview = useWenyouCanvasStore((s) => s.refreshOverview);
 	const initCampaign = useWenyouCanvasStore((s) => s.initCampaign);
 
@@ -310,9 +308,6 @@ export function WenyouCanvas() {
 		return Math.min(maxAllowed, Math.max(WENYOU_CANVAS_MIN_WIDTH, width));
 	}, [containerWidth, maximized, width]);
 
-	const factions = useMemo(() => extractAvailableFactions(overview), [overview]);
-	const currentScopeValue = formatViewerScope(viewerScope);
-
 	if (!open) return null;
 
 	return (
@@ -327,7 +322,7 @@ export function WenyouCanvas() {
 		>
 			{!maximized && <WenyouCanvasResizeHandle value={renderWidth} onResizingChange={setResizing} />}
 
-			{/* 顶栏：世界标题 + ViewerScope 选择器 + 刷新/宽屏/收起 */}
+			{/* 顶栏：世界标题 + 刷新/宽屏/收起 */}
 			<div className="flex shrink-0 items-center justify-between gap-2 border-b border-border px-3.5 py-2">
 				<div className="flex min-w-0 items-center gap-2">
 					<span className="truncate text-ui-13 font-semibold text-ink">
@@ -341,22 +336,6 @@ export function WenyouCanvas() {
 				</div>
 
 				<div className="flex shrink-0 items-center gap-1.5">
-					<select
-						aria-label="切换视角 ViewerScope"
-						value={currentScopeValue}
-						onChange={(e) => void setViewerScope(e.target.value)}
-						className="max-w-36 rounded-lg border border-border bg-surface px-2 py-1 text-ui-11 text-ink-2 outline-none focus:border-accent"
-						title="切换当前画布与核查的视角权限"
-					>
-						<option value="gm">GM 全局</option>
-						<option value="public">公开视角</option>
-						{factions.map((f) => (
-							<option key={f} value={`faction:${f}`}>
-								阵营 · {f}
-							</option>
-						))}
-					</select>
-
 					<button
 						type="button"
 						disabled={loading || !cwd}

@@ -4,7 +4,6 @@ import type {
 	NtqqGroupSummary,
 	NtqqStatusSnapshot,
 	NtqqSyncCampaignResult,
-	ViewerScope,
 	WenyouWorkspaceOverview,
 } from "@percho/shared";
 import { act } from "react";
@@ -23,10 +22,7 @@ const piMocks = vi.hoisted(() => ({
 
 const execMocks = vi.hoisted(() => ({
 	wenyouInitCampaign: vi.fn<(args: { cwd: string; worldTitle?: string; currentEra?: string }) => Promise<WenyouWorkspaceOverview>>(),
-	wenyouGetOverview: vi.fn<(args: { cwd: string; viewer?: string }) => Promise<WenyouWorkspaceOverview>>(),
-	wenyouSetViewerScope: vi.fn<
-		(args: { cwd: string; viewer: string; maxViewer?: string }) => Promise<{ viewer: ViewerScope; maxViewer: ViewerScope }>
-	>(),
+	wenyouGetOverview: vi.fn<(args: { cwd: string }) => Promise<WenyouWorkspaceOverview>>(),
 	ensureProjectTrust: vi.fn<() => Promise<void>>(),
 	prompt: vi.fn<(args: { sessionId: string; text: string }) => Promise<void>>(),
 }));
@@ -138,7 +134,6 @@ function makeOverview(cwd: string, worldTitle: string): WenyouWorkspaceOverview 
 		worldId: "world-1",
 		worldTitle,
 		currentEra: "起始建档",
-		viewer: { kind: "gm" },
 		cursors: [],
 		totalEvidenceCount: 0,
 		unreportedCount: 0,
@@ -147,7 +142,7 @@ function makeOverview(cwd: string, worldTitle: string): WenyouWorkspaceOverview 
 		policies: [],
 		maps: [],
 		canonDocs: [],
-	};
+	} as WenyouWorkspaceOverview;
 }
 
 function setInputValue(input: HTMLInputElement, value: string): void {
@@ -207,7 +202,6 @@ beforeEach(() => {
 		makeOverview(cwd, worldTitle ?? "新建文游世界"),
 	);
 	execMocks.wenyouGetOverview.mockImplementation(async ({ cwd }) => makeOverview(cwd, "顺唐文游主群"));
-	execMocks.wenyouSetViewerScope.mockResolvedValue({ viewer: { kind: "gm" }, maxViewer: { kind: "gm" } });
 	execMocks.prompt.mockResolvedValue(undefined);
 
 	useWenyouCanvasStore.setState({
@@ -468,5 +462,38 @@ describe("CreateWorldDialog", () => {
 		expect(useWenyouCanvasStore.getState().createWorldDialogOpen).toBe(false);
 		expect(useUiPreferencesStore.getState().onboardingForceOpen).toBe(true);
 		expect(useUiPreferencesStore.getState().onboardingInitialStep).toBe(2);
+	});
+
+	it("切换绑定群角色为内阁密群时不附加废弃的 visibility 字段", async () => {
+		await act(async () => {
+			root.render(<CreateWorldDialog />);
+		});
+
+		const dialog = document.body.querySelector('[role="dialog"]');
+		const checkbox = dialog?.querySelector<HTMLInputElement>('input[type="checkbox"]');
+		await act(async () => {
+			checkbox?.click();
+		});
+
+		const roleSelect = dialog?.querySelector<HTMLSelectElement>('select[aria-label*="群角色"]');
+		expect(roleSelect).not.toBeNull();
+		await act(async () => {
+			roleSelect!.value = "cabinet";
+			roleSelect!.dispatchEvent(new Event("change", { bubbles: true }));
+		});
+
+		const emptyWorldBtn = [...(dialog?.querySelectorAll("button") ?? [])].find(
+			(b) => b.textContent === "仅建空世界",
+		);
+		await act(async () => {
+			emptyWorldBtn?.click();
+		});
+
+		expect(piMocks.wenyouNtqqSaveCampaignBindings).toHaveBeenCalledWith({
+			cwd: expect.any(String),
+			bindings: [{ groupId: "951594174", groupName: "顺唐文游主群", role: "cabinet" }],
+		});
+		const savedBinding = piMocks.wenyouNtqqSaveCampaignBindings.mock.calls[0]?.[0]?.bindings[0];
+		expect(savedBinding).not.toHaveProperty("visibility");
 	});
 });

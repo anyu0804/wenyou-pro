@@ -179,7 +179,7 @@ export function BriefingPanel() {
 	const handleDraftPolicyFromBriefing = () => {
 		const refTitle = currentBriefing ? `《${currentBriefing.title}》（${currentBriefing.turnLabel}）` : "最新局势书";
 		fillWenyouPrompt(
-			`请依据${refTitle}的战略判断以及 01-设定与国力实册/ 的真实国力数据，为我起草本轮国策并通过 wenyou_write_policy_docx 生成规范 Word (.docx) 文书。要求全自然段编号叙事，严禁 Markdown 表格、多层嵌套清单和空泛套话。`,
+			`请依据${refTitle}的战略判断以及 01-设定与国力实册/ 的真实国力数据，为我起草本轮国策并通过 wenyou_write_policy_docx 生成规范 Word (.docx) 文书。建议聚焦核心大事，采用自然段编号叙事、务实落子。`,
 			"policy-desk",
 		);
 	};

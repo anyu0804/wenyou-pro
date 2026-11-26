@@ -1,23 +1,16 @@
 import { environmentEntityRef } from "@percho/shared";
 import MarkdownRender, { type SmoothMarkdownStreamOptions } from "markstream-react";
 import "markstream-react/index.css";
-// KaTeX 只在公式出现时才会被 markstream 动态 import（mermaid 的依赖里也有 katex）；
-// 它的 CSS 必须显式引入：缺了它 katex-mathml 层不会被隐藏，公式会重影地多一份 MathML 文本。
-import "katex/dist/katex.min.css";
 import { type ComponentProps, type MouseEvent, useEffect, useMemo, useRef, useState } from "react";
 import { getPi } from "../../api";
 import { errText } from "../../lib/error-text";
-import { monacoFontSizeFor, monacoLineHeightFor } from "../../lib/typography";
 import { useThemeStore } from "../../stores/theme";
 import { pushToast } from "../../stores/toasts";
-import { useUiPreferencesStore } from "../../stores/ui-preferences";
 import { FilePathMenu } from "../ui/FilePathMenu";
 import { anchorOfElement, type MenuAnchor } from "../ui/place-menu";
 import { classifyMarkdownLink } from "./markdown-link";
 import { markdownParseOptions } from "./markdown-parse-options";
 import { plainParagraphNodes } from "./plain-paragraph";
-// 副作用 import：MermaidBlock 在模块加载时向 markstream 注册 mermaid 节点的自定义组件（见该文件末尾）
-import "./MermaidBlock";
 
 /**
  * 平滑输出速率参数（markstream 内置 smooth streaming controller，grapheme 级 pacing）：
@@ -28,7 +21,6 @@ import "./MermaidBlock";
  */
 const SMOOTH_OPTIONS: SmoothMarkdownStreamOptions = {
 	minCharsPerSecond: 80,
-	// 其余（targetLatencyMs 900 / catchUpLatencyMs 350 / catchUpThreshold 600 / max 1000cps）用默认
 };
 
 const CODE_BLOCK_PROPS_BASE = {
@@ -38,36 +30,13 @@ const CODE_BLOCK_PROPS_BASE = {
 	showExpandButton: false,
 	showPreviewButton: false,
 	showCollapseButton: false,
-	// 首行灰底修复：库的 monaco 默认值（renderLineHighlight:"none" 等）只对 diff 块生效
-	//（En() 首行 if(!e) return o），普通块裸奔 —— 只读编辑器光标恒停第一行，当前行高亮
-	// 让首行比其他行多一层灰底。显式关掉。同理关掉右侧概览标尺（overview ruler）——
-	// 光标行在右缘留一枚黑色短杠标记，只读块无导航价值。编辑器式 decoration 也关闭：
-	// 全角标点/不可见字符、同词和括号的描边在只读展示里像残留选区，且没有修复动作。
-	monacoOptions: {
-		renderLineHighlight: "none",
-		selectionHighlight: false,
-		occurrencesHighlight: "off",
-		matchBrackets: "never",
-		bracketPairColorization: { enabled: false },
-		unicodeHighlight: {
-			ambiguousCharacters: false,
-			invisibleCharacters: false,
-			nonBasicASCII: false,
-		},
-		overviewRulerLanes: 0,
-		renderOverviewRuler: false,
-		overviewRulerBorder: false,
-		hideCursorInOverviewRuler: true,
-	},
 } as const;
 
 /** 减速动效偏好：关闭 pacing，直接输出 */
 const REDUCED_MOTION =
 	typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-/** 首次直出已有正文，让库先 reset 到当前内容；挂载后只对新增 delta 启用 pacing。
- * 放在字号 key 之内，切会话、虚拟列表补挂及字号重建均不会重播已有内容。
- */
+/** 首次直出已有正文，让库先 reset 到当前内容；挂载后只对新增 delta 启用 pacing。 */
 function MarkdownContent({ smoothStreaming, ...props }: ComponentProps<typeof MarkdownRender>) {
 	const [mounted, setMounted] = useState(false);
 	useEffect(() => setMounted(true), []);
@@ -76,20 +45,7 @@ function MarkdownContent({ smoothStreaming, ...props }: ComponentProps<typeof Ma
 
 /**
  * Markdown 渲染：markstream-react（增量解析，为流式 token 设计，避免 react-markdown 每帧全量 re-parse）。
- * final=false 时未闭合的构造（代码块/表格/链接）按 pending 渲染；提交后必须 true。
- *
- * 流式丝滑性（两层）：
- * 1. smoothStreaming：内容经自适应速率控制器逐字放出（大 trunk 平滑滑出）。只对「挂载时就在流式」
- *    的消息启用；首次挂载的已有正文先直出，只平滑追赶之后新增的文字。
- *    历史/固化后打开的消息永不启用（mount 初值锁定）。
- *    流式 → turn_end 固化依赖 MessageList 的 key 稳定（StreamingState.id）保持组件不 remount，
- *    controller 才能存活并平滑追平。
- * 2. fade 必须关闭：开启后 smooth controller 每次 commit 都会创建带 opacity/will-change 的临时
- *    span；高频合成层切换会让整个文本排版区域看起来闪烁。fade=false 走库内稳定文本 span 分支，
- *    不依赖 animationend 沉淀。样式覆写集中在 globals.css 的 .markdown-body 下。
- * isDark 驱动代码块 shiki 主题（vitesse-light/dark）与容器深浅。注意必须显式传
- * codeBlockLightTheme/codeBlockDarkTheme：不传时 stream-monaco 回退到 themes[0]（默认 vitesse-dark），
- * 浅色模式下代码块也会是深色。
+ * 代码块走 markstream-react 轻量纯文本回退渲染，不引入 Monaco / Shiki / Mermaid / KaTeX。
  */
 export function Markdown({
 	text,
@@ -128,22 +84,6 @@ export function Markdown({
 	};
 	// 挂载初值锁定：流式中挂载 → 本次生命周期始终启用平滑（含固化后追平）；历史消息挂载 → 永不启用
 	const smoothableRef = useRef<boolean>(Boolean(streaming) && !REDUCED_MOTION);
-	// 代码块字号（spec D4.4）：monaco 的字号/行高是它自己以 inline style 写在 .view-lines 上的，
-	// 不经过我们的 CSS 变量，所以只能在这里按档位算好传进去（darwin 基准 12px / 行高比 1.5）。
-	// **必须 useMemo**：markstream 的 renderCtx memo 依赖 codeBlockProps 的对象身份，
-	// 每次 render 新建对象会让流式期间大量子树重渲染。
-	const codeFontSize = useUiPreferencesStore((s) => s.codeFontSize);
-	const codeBlockProps = useMemo(() => {
-		const fontSize = monacoFontSizeFor(codeFontSize, getPi().platform);
-		return {
-			...CODE_BLOCK_PROPS_BASE,
-			monacoOptions: {
-				...CODE_BLOCK_PROPS_BASE.monacoOptions,
-				fontSize,
-				lineHeight: monacoLineHeightFor(fontSize, getPi().platform),
-			},
-		};
-	}, [codeFontSize]);
 	const plainNodes = useMemo(
 		() => plainParagraphNodes(text, { streaming, smoothStreaming: smoothableRef.current }),
 		[text, streaming],
@@ -153,15 +93,8 @@ export function Markdown({
 			{/* biome-ignore lint/a11y/noStaticElementInteractions: delegates native anchor clicks */}
 			{/* biome-ignore lint/a11y/useKeyWithClickEvents: native anchors dispatch keyboard clicks */}
 			<div className="markdown-body text-ui-15 leading-[1.75] text-ink select-text" onClick={onLinkClick}>
-				{/* key 里带 codeFontSize：monaco 的字号/行高**只在编辑器创建时**应用（库内没有 updateOptions
-			    调用，`monacoOptions` 换了也不会生效），所以换代码字号时必须让代码块重新挂载。
-			    改档位会重建这一条消息的 markdown 子树，MarkdownContent 重新以已有正文为基线，
-			    不重播打字机动画。key 只随 codeFontSize 变，流式期间稳定。 */}
-				{/* deferNodesUntilVisible=false：markstream 0.0.55 的延迟节点 bug——块数 > initialRenderBatchSize(40)
-			    的节点先渲染为 node-placeholder 占位条，等 IntersectionObserver 标记可见后只写 ref 不触发
-			    re-render（非虚拟化路径）；流式期间靠内容更新顺带刷新，流一停占位条就永久残留。 */}
+				{/* deferNodesUntilVisible=false：避免 markstream 0.0.55 大消息停流后残留占位条 */}
 				<MarkdownContent
-					key={`code-font-${codeFontSize}`}
 					content={text}
 					nodes={plainNodes}
 					final={!streaming}
@@ -170,9 +103,7 @@ export function Markdown({
 					smoothStreaming={smoothableRef.current}
 					smoothStreamingOptions={SMOOTH_OPTIONS}
 					isDark={isDark}
-					codeBlockLightTheme="vitesse-light"
-					codeBlockDarkTheme="vitesse-dark"
-					codeBlockProps={codeBlockProps}
+					codeBlockProps={CODE_BLOCK_PROPS_BASE}
 					deferNodesUntilVisible={false}
 				/>
 			</div>

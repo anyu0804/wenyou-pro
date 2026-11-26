@@ -26,7 +26,6 @@ vi.mock("../../hooks/use-session-state", () => ({
 	useActiveModelInfo: () => undefined,
 	useSessionReadOnly: () => false,
 }));
-vi.mock("../../plugins/RegionHost", () => ({ RegionHost: () => null }));
 vi.mock("./ModelPicker", () => ({ ModelPicker: () => null }));
 vi.mock("./PermissionPicker", () => ({ PermissionPicker: () => null }));
 vi.mock("./ContextRing", () => ({ ContextRing: () => null }));

@@ -110,9 +110,7 @@ export function NtqqGroupBindDialog({ onClose }: { onClose: () => void }) {
 
 	const updateRole = (groupId: string, role: GroupRole) => {
 		setBindings((prev) =>
-			prev.map((b) =>
-				b.groupId === groupId ? { ...b, role, visibility: role === "cabinet" ? "gm" : "public" } : b,
-			),
+			prev.map((b) => (b.groupId === groupId ? { ...b, role } : b)),
 		);
 	};
 
@@ -182,7 +180,7 @@ export function NtqqGroupBindDialog({ onClose }: { onClose: () => void }) {
 					<div>
 						<h3 className="text-ui-15 font-semibold text-ink">绑定本机 QQ 群（NTQQ 只读直采）</h3>
 						<p className="mt-0.5 text-ui-11 text-ink-dim">
-							绑定记录仅存于战役私有目录 .wenyou/ntqq-groups.json，不会进入对外发包
+							绑定记录仅存于本战役 .wenyou/ntqq-groups.json
 						</p>
 					</div>
 					<button

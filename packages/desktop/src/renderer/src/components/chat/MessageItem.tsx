@@ -1,7 +1,5 @@
 import { memo, useState } from "react";
 import { useT } from "../../i18n";
-import { Slot } from "../../plugins/Slot";
-import { UI_SLOTS } from "../../plugins/slots";
 import { useSessionsStore } from "../../stores/sessions";
 import type { UIMessage } from "../../stores/transcript";
 import { AssistantMessage } from "./AssistantMessage";
@@ -75,7 +73,7 @@ export const MessageItem = memo(function MessageItem({
 	}
 
 	if (message.kind === "subagent") {
-		return <Slot name={UI_SLOTS.SubagentCard} props={{ runs: message.runs }} fallback={SubagentRunCard} />;
+		return <SubagentRunCard runs={message.runs} />;
 	}
 
 	if (message.kind === "error") {

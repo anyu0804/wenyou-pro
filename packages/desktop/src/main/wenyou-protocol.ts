@@ -60,26 +60,9 @@ export function wenyouSandboxDir(): string {
 
 export type WenyouFileFetcher = (fileUrl: string) => Promise<Response>;
 
-export interface WenyouAssetRequestOptions {
-	isAllowedWorkspace?: (realRoot: string) => boolean | Promise<boolean>;
-}
-
 export type WenyouAssetRequest = Pick<Request, "url" | "method"> & {
 	headers?: Pick<Headers, "get">;
 };
-
-function normalizePathForCompare(target: string): string {
-	const resolved = resolve(target).replace(/[\\/]+$/, "");
-	return process.platform === "win32" ? resolved.toLowerCase() : resolved;
-}
-
-function isSubPathStrict(parentReal: string, childReal: string): boolean {
-	const parentNorm = normalizePathForCompare(parentReal);
-	const childNorm = normalizePathForCompare(childReal);
-	if (parentNorm === childNorm) return false;
-	const rel = relative(parentNorm, childNorm);
-	return Boolean(rel) && !rel.startsWith("..") && !isAbsolute(rel);
-}
 
 /**
  * 拦截把战役内部私有目录（`<campaign>/private`、`<campaign>/.wenyou` 及其子目录）直接作为 `cwd` 传入的绕过尝试。
@@ -101,18 +84,20 @@ export function isPrivateWorkspaceRoot(realRoot: string): boolean {
 	return false;
 }
 
-function isAllowedAssetOrigin(origin: string): boolean {
+export function isAllowedCorsOrigin(origin: string): boolean {
+	if (origin === "file://" || origin.startsWith("file://")) {
+		return true;
+	}
 	try {
 		const parsed = new URL(origin);
 		if (parsed.protocol === `${WENYOU_SANDBOX_PROTOCOL}:`) {
 			return parsed.hostname.toLowerCase() === "app";
 		}
-		if (parsed.protocol === "app:") {
+		if (parsed.protocol === "app:" || parsed.protocol === "file:") {
 			return true;
 		}
-		if (parsed.protocol === "http:") {
-			const host = parsed.hostname.toLowerCase();
-			return host === "127.0.0.1" || host === "localhost" || host === "::1" || host === "[::1]";
+		if ((parsed.protocol === "http:" || parsed.protocol === "https:") && Boolean(parsed.hostname)) {
+			return true;
 		}
 		return false;
 	} catch {
@@ -126,51 +111,20 @@ function resolveCorsOriginHeader(request: WenyouAssetRequest): string | null {
 		return `${WENYOU_SANDBOX_PROTOCOL}://app`;
 	}
 	const trimmed = rawOrigin.trim();
-	return isAllowedAssetOrigin(trimmed) ? trimmed : null;
-}
-
-/**
- * 基于活跃会话根、workspaces.json 登记根与默认世界目录构造工作区白名单校验函数。
- */
-export function createWorkspaceAllowlistChecker(
-	getRoots: () => { exactRoots?: Iterable<string>; parentRoots?: Iterable<string> },
-): (realRoot: string) => Promise<boolean> {
-	return async (realRoot: string): Promise<boolean> => {
-		const normalizedTarget = normalizePathForCompare(realRoot);
-		const { exactRoots = [], parentRoots = [] } = getRoots();
-
-		for (const candidate of exactRoots) {
-			if (!candidate) continue;
-			const candidateReal = await realpath(resolve(candidate)).catch(() => resolve(candidate));
-			if (normalizePathForCompare(candidateReal) === normalizedTarget) {
-				return true;
-			}
-		}
-
-		for (const parent of parentRoots) {
-			if (!parent) continue;
-			const parentReal = await realpath(resolve(parent)).catch(() => resolve(parent));
-			if (isSubPathStrict(parentReal, realRoot)) {
-				return true;
-			}
-		}
-
-		return false;
-	};
+	return isAllowedCorsOrigin(trimmed) ? trimmed : null;
 }
 
 /**
  * 处理单次 `wenyou-asset://vault?cwd=<encoded>&path=<encoded>` 请求（纯逻辑可单测）：
  * 1. 仅放行 GET / HEAD，严格校验 `wenyou-asset:` 协议与 `vault` 主机；
  * 2. 路径归一与 pre-check 拒绝 `..` 及 `private/` / `.wenyou/`；
- * 3. 拦截 `cwd` 指向私有目录/内部目录或不在工作区白名单内的越权访问；
+ * 3. 拦截 `cwd` 直接指向私有目录/内部目录的绕过尝试；
  * 4. `realpath` 解析后复检目标落在工作区内、真实相对路径不命中 `private/` / `.wenyou/`、扩展名合法且为常规文件；
  * 5. 透传文件流并显式覆写 MIME、精确 CORS Origin + `Vary: Origin`、`X-Content-Type-Options: nosniff`、`Cache-Control: no-cache`。
  */
 export async function handleWenyouAssetRequest(
 	request: WenyouAssetRequest,
 	fetchFile: WenyouFileFetcher = (fileUrl) => net.fetch(fileUrl),
-	options?: WenyouAssetRequestOptions,
 ): Promise<Response> {
 	const method = (request.method || "GET").toUpperCase();
 	if (method !== "GET" && method !== "HEAD") {
@@ -202,12 +156,6 @@ export async function handleWenyouAssetRequest(
 		const realRoot = await realpath(resolve(cwd));
 		if (isPrivateWorkspaceRoot(realRoot)) {
 			return new Response("forbidden asset workspace", { status: 403 });
-		}
-		if (options?.isAllowedWorkspace) {
-			const allowed = await options.isAllowedWorkspace(realRoot);
-			if (!allowed) {
-				return new Response("forbidden asset workspace", { status: 403 });
-			}
 		}
 
 		const realTarget = await resolveRealPathInsideWorkspace(cwd, normalized);
@@ -356,19 +304,9 @@ export async function handleWenyouSandboxRequest(
 	}
 }
 
-/** 注册受工作区 realpath 白名单保护的 `wenyou-asset://` 协议 */
-export function registerWenyouAssetProtocolHandler(
-	isAllowedWorkspaceOrOptions?:
-		| ((realRoot: string) => boolean | Promise<boolean>)
-		| WenyouAssetRequestOptions,
-): void {
-	const options: WenyouAssetRequestOptions | undefined =
-		typeof isAllowedWorkspaceOrOptions === "function"
-			? { isAllowedWorkspace: isAllowedWorkspaceOrOptions }
-			: isAllowedWorkspaceOrOptions;
-	protocol.handle(WENYOU_ASSET_PROTOCOL, (request) =>
-		handleWenyouAssetRequest(request, undefined, options),
-	);
+/** 注册受工作区 realpath 与私有目录隔离保护的 `wenyou-asset://` 协议 */
+export function registerWenyouAssetProtocolHandler(): void {
+	protocol.handle(WENYOU_ASSET_PROTOCOL, (request) => handleWenyouAssetRequest(request));
 }
 
 /** 注册内置 Pixi 沙盘静态资源 `wenyou-sandbox://` 协议 */

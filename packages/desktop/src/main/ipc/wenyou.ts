@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { copyFile, mkdir, realpath, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, realpath } from "node:fs/promises";
 import { basename, extname, join, relative, resolve } from "node:path";
 import {
 	assertPathInsideWorkspace,
@@ -72,25 +72,6 @@ export function registerWenyouIpc(backend: PiBackend): void {
 				: await dialog.showSaveDialog(options);
 			if (result.canceled || !result.filePath) return null;
 			await copyFile(sourceReal, result.filePath);
-			return result.filePath;
-		},
-
-		wenyouExportBundleDialog: async ({ defaultName, content, format }) => {
-			const window = BrowserWindow.getAllWindows()[0];
-			const ext = format === "html" ? "html" : "json";
-			const options: Electron.SaveDialogOptions = {
-				defaultPath: defaultName.endsWith(`.${ext}`) ? defaultName : `${defaultName}.${ext}`,
-				filters: [
-					format === "html"
-						? { name: "Offline Chronicle HTML", extensions: ["html"] }
-						: { name: "Wenyou Archive Bundle JSON", extensions: ["json"] },
-				],
-			};
-			const result = window
-				? await dialog.showSaveDialog(window, options)
-				: await dialog.showSaveDialog(options);
-			if (result.canceled || !result.filePath) return null;
-			await writeFile(result.filePath, content, "utf8");
 			return result.filePath;
 		},
 
