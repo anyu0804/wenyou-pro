@@ -478,6 +478,7 @@ export function formatReleaseNotes(version) {
 	const lines = [
 		`司命 · 文游 Pro（Wenyou Pro v${validVersion} Windows x64）使用说明`,
 		"制作与整理：安钰（基于 Jaxton07/percho MIT 开源底座深度定制）",
+		"项目仓库：https://github.com/anyu0804/wenyou-pro",
 		"================================================================",
 		"",
 		"一、安装包选择",
@@ -562,6 +563,7 @@ export function formatMacReleaseNotes(version, archs = ["arm64", "x64"]) {
 	const lines = [
 		`司命 · 文游 Pro（Wenyou Pro v${validVersion} macOS）使用说明`,
 		"制作与整理：安钰（基于 Jaxton07/percho MIT 开源底座深度定制）",
+		"项目仓库：https://github.com/anyu0804/wenyou-pro",
 		"================================================================",
 		"",
 		"一、安装包选择与安装",
@@ -627,6 +629,7 @@ export function formatLinuxReleaseNotes(version, archs = ["x64"]) {
 	const lines = [
 		`司命 · 文游 Pro（Wenyou Pro v${validVersion} Linux）使用说明`,
 		"制作与整理：安钰（基于 Jaxton07/percho MIT 开源底座深度定制）",
+		"项目仓库：https://github.com/anyu0804/wenyou-pro",
 		"================================================================",
 		"",
 		"一、安装包与运行方式",

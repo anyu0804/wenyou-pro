@@ -435,8 +435,8 @@ describe("sanitizeTextForLog and resolveNpmCommand", () => {
 });
 
 describe("formatReleaseNotes, formatMacReleaseNotes, formatLinuxReleaseNotes, and formatSha256Sums", () => {
-	test("generates UTF-8 BOM + CRLF Windows notes with v0.2.4 brand and sanitized paths", () => {
-		const notes = formatReleaseNotes("0.2.4");
+	test("generates UTF-8 BOM + CRLF Windows notes with v0.2.5 brand, repo URL, MIT attribution, and sanitized paths", () => {
+		const notes = formatReleaseNotes("0.2.5");
 		const buf = Buffer.from(notes, "utf8");
 
 		assert.deepEqual([...buf.subarray(0, 3)], [0xef, 0xbb, 0xbf]);
@@ -448,10 +448,12 @@ describe("formatReleaseNotes, formatMacReleaseNotes, formatLinuxReleaseNotes, an
 		assert.ok(body.endsWith("\r\n"), "notes must end with CRLF");
 
 		assert.ok(body.includes("司命 · 文游 Pro"));
-		assert.ok(body.includes("Wenyou Pro v0.2.4"));
-		assert.ok(body.includes("Wenyou-Pro-Setup-0.2.4-x64.exe"));
-		assert.ok(body.includes("Wenyou-Pro-Portable-0.2.4-x64.zip"));
+		assert.ok(body.includes("Wenyou Pro v0.2.5"));
+		assert.ok(body.includes("Wenyou-Pro-Setup-0.2.5-x64.exe"));
+		assert.ok(body.includes("Wenyou-Pro-Portable-0.2.5-x64.zip"));
 		assert.ok(body.includes("制作与整理：安钰"));
+		assert.ok(body.includes("https://github.com/anyu0804/wenyou-pro"));
+		assert.ok(body.includes("https://github.com/Jaxton07/percho"));
 		assert.ok(body.includes("7 层"));
 		assert.ok(body.includes("256x256"));
 		assert.ok(body.includes("跨世界动态沙盘物理隔离"));
@@ -475,19 +477,21 @@ describe("formatReleaseNotes, formatMacReleaseNotes, formatLinuxReleaseNotes, an
 		}
 	});
 
-	test("generates UTF-8 BOM macOS and Linux notes with sanitized paths and AppImage x86_64 naming", () => {
-		const notes = formatMacReleaseNotes("0.2.4", ["arm64", "x64"]);
+	test("generates UTF-8 BOM macOS and Linux notes with repo URL, MIT attribution, sanitized paths, and AppImage x86_64 naming", () => {
+		const notes = formatMacReleaseNotes("0.2.5", ["arm64", "x64"]);
 		const buf = Buffer.from(notes, "utf8");
 		assert.deepEqual([...buf.subarray(0, 3)], [0xef, 0xbb, 0xbf]);
 
 		const body = notes.slice(1);
 		assert.ok(body.includes("司命 · 文游 Pro"));
-		assert.ok(body.includes("Wenyou Pro v0.2.4 macOS"));
+		assert.ok(body.includes("Wenyou Pro v0.2.5 macOS"));
 		assert.ok(body.includes("制作与整理：安钰"));
-		assert.ok(body.includes("Wenyou-Pro-0.2.4-mac-arm64.dmg"));
-		assert.ok(body.includes("Wenyou-Pro-0.2.4-mac-arm64.zip"));
-		assert.ok(body.includes("Wenyou-Pro-0.2.4-mac-x64.dmg"));
-		assert.ok(body.includes("Wenyou-Pro-0.2.4-mac-x64.zip"));
+		assert.ok(body.includes("https://github.com/anyu0804/wenyou-pro"));
+		assert.ok(body.includes("https://github.com/Jaxton07/percho"));
+		assert.ok(body.includes("Wenyou-Pro-0.2.5-mac-arm64.dmg"));
+		assert.ok(body.includes("Wenyou-Pro-0.2.5-mac-arm64.zip"));
+		assert.ok(body.includes("Wenyou-Pro-0.2.5-mac-x64.dmg"));
+		assert.ok(body.includes("Wenyou-Pro-0.2.5-mac-x64.zip"));
 		assert.ok(body.includes('xattr -cr "/Applications/Wenyou Pro.app"'));
 		assert.ok(body.includes("隐私与安全性"));
 		assert.ok(body.includes("00-群聊收集/"));
@@ -507,9 +511,11 @@ describe("formatReleaseNotes, formatMacReleaseNotes, formatLinuxReleaseNotes, an
 		assert.ok(armOnly.includes("Wenyou-Pro-1.5.0-mac-arm64.dmg"));
 		assert.equal(armOnly.includes("Wenyou-Pro-1.5.0-mac-x64.dmg"), false);
 
-		const linuxNotes = formatLinuxReleaseNotes("0.2.4", ["x64"]);
-		assert.ok(linuxNotes.includes("Wenyou-Pro-0.2.4-linux-x86_64.AppImage"));
-		assert.equal(linuxNotes.includes("Wenyou-Pro-0.2.4-linux-x64.AppImage"), false);
+		const linuxNotes = formatLinuxReleaseNotes("0.2.5", ["x64"]);
+		assert.ok(linuxNotes.includes("https://github.com/anyu0804/wenyou-pro"));
+		assert.ok(linuxNotes.includes("https://github.com/Jaxton07/percho"));
+		assert.ok(linuxNotes.includes("Wenyou-Pro-0.2.5-linux-x86_64.AppImage"));
+		assert.equal(linuxNotes.includes("Wenyou-Pro-0.2.5-linux-x64.AppImage"), false);
 	});
 
 	test("substitutes arbitrary version cleanly without stale version strings", () => {
@@ -521,6 +527,7 @@ describe("formatReleaseNotes, formatMacReleaseNotes, formatLinuxReleaseNotes, an
 		assert.equal(notes.includes("0.2.2"), false);
 		assert.equal(notes.includes("0.2.3"), false);
 		assert.equal(notes.includes("0.2.4"), false);
+		assert.equal(notes.includes("0.2.5"), false);
 	});
 
 	test("formats SHA256SUMS.txt with two-space separator and validates inputs", () => {
@@ -898,6 +905,7 @@ describe("buildWenyouInstaller orchestration and repository alignment", () => {
 		assert.equal(defaultVersion, expectedVersion);
 
 		const rootPkg = JSON.parse(await readFile(join(REPO_ROOT, "package.json"), "utf8"));
+		const lockfile = JSON.parse(await readFile(join(REPO_ROOT, "package-lock.json"), "utf8"));
 		const backendPkg = JSON.parse(await readFile(join(REPO_ROOT, "packages/backend/package.json"), "utf8"));
 		const sharedPkg = JSON.parse(await readFile(join(REPO_ROOT, "packages/shared/package.json"), "utf8"));
 		const builderYml = await readFile(
@@ -905,9 +913,19 @@ describe("buildWenyouInstaller orchestration and repository alignment", () => {
 			"utf8",
 		);
 
+		assert.equal(rootPkg.name, "percho");
 		assert.equal(rootPkg.version, expectedVersion);
 		assert.equal(backendPkg.version, expectedVersion);
 		assert.equal(sharedPkg.version, expectedVersion);
+		assert.equal(lockfile.version, expectedVersion);
+		assert.equal(lockfile.packages[""].version, expectedVersion);
+		assert.equal(lockfile.packages["packages/shared"].version, expectedVersion);
+		assert.equal(lockfile.packages["packages/backend"].version, expectedVersion);
+		assert.equal(lockfile.packages["packages/desktop"].version, expectedVersion);
+		assert.equal(rootPkg.repository?.url, "git+https://github.com/anyu0804/wenyou-pro.git");
+		assert.equal(rootPkg.bugs, "https://github.com/anyu0804/wenyou-pro/issues");
+		assert.equal(rootPkg.author, "安钰 (Based on Percho by Jaxton07)");
+		assert.equal(desktopPkg.author, "安钰 (Based on Percho MIT)");
 		assert.deepEqual(rootPkg.workspaces, ["packages/shared", "packages/backend", "packages/desktop"]);
 
 		assert.equal(rootPkg.scripts["icons:wenyou"], "node scripts/wenyou-release/generate-wenyou-icons.mjs");
@@ -922,6 +940,10 @@ describe("buildWenyouInstaller orchestration and repository alignment", () => {
 			"node scripts/wenyou-release/verify-package.mjs --platform mac",
 		);
 		assert.equal(rootPkg.scripts["check:paths"], "node scripts/wenyou-release/scan-repo-paths.mjs");
+		assert.equal(
+			rootPkg.scripts["repo:guard"],
+			"node scripts/wenyou-release/configure-github-repo.mjs --verify",
+		);
 		assert.equal(rootPkg.scripts["shortcut:sync"], "node scripts/wenyou-release/sync-shortcut.mjs");
 
 		assert.equal(desktopPkg.scripts["build:sandbox"], "npm --prefix ../pixi-sandbox run build:desktop");
