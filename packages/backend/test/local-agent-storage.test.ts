@@ -390,7 +390,7 @@ describe("copy, publish, retry", () => {
 			}),
 		).rejects.toThrow("Source changed");
 		await expect(stat(selection.target)).rejects.toHaveProperty("code", "ENOENT");
-		expect((await readdir(join(home, ".percho"))).some((p) => p.startsWith(".agent-import-"))).toBe(true);
+		expect((await readdir(join(home, ".wenyou-pro"))).some((p) => p.startsWith(".agent-import-"))).toBe(true);
 	});
 	it("reports the retained staging path as structured recovery data", async () => {
 		await seed();
@@ -418,10 +418,10 @@ describe("copy, publish, retry", () => {
 				},
 			}),
 		).rejects.toThrow("Recovery copy retained");
-		const staged = (await readdir(join(home, ".percho"))).filter((p) => p.startsWith(".agent-import-"));
+		const staged = (await readdir(join(home, ".wenyou-pro"))).filter((p) => p.startsWith(".agent-import-"));
 		expect(staged).toHaveLength(1);
 		await initializeLocalStorage(await inspectLocalStorage(selection), "copy");
-		expect(await lstat(join(home, ".percho", staged[0] as string))).toBeTruthy();
+		expect(await lstat(join(home, ".wenyou-pro", staged[0] as string))).toBeTruthy();
 	});
 	it("another migrator cannot publish or replace the chosen target", async () => {
 		await seed();

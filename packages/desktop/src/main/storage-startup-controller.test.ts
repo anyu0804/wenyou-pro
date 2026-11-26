@@ -70,7 +70,7 @@ describe("pre-backend startup preparation", () => {
 		first.controller.start();
 		await waitFor(() => first.controller.state.phase === "choice");
 		expect(first.ready).toBe(0);
-		expect(await readdir(root)).not.toContain(".percho");
+		expect(await readdir(root)).not.toContain(".wenyou-pro");
 		expect(() => first.controller.act("copy")).toThrow();
 		first.controller.act("scan");
 		await waitFor(() => first.controller.state.phase === "review");
@@ -248,7 +248,7 @@ it.each(["source", "other-reserved-root"])(
 		expect(run.controller.state.canReturn).toBe(false);
 		expect(() => run.controller.act("empty")).toThrow();
 		expect(run.ready).toBe(0);
-		expect(await readdir(root)).not.toContain(".percho");
+		expect(await readdir(root)).not.toContain(".wenyou-pro");
 	},
 );
 
@@ -265,7 +265,7 @@ it("does not silently start fresh when the old source disappears before returnin
 	await waitFor(() => run.controller.state.phase === "choice" || run.ready === 1);
 	expect(run.controller.state.phase).toBe("choice");
 	expect(run.ready).toBe(0);
-	expect(await readdir(root)).not.toContain(".percho");
+	expect(await readdir(root)).not.toContain(".wenyou-pro");
 });
 
 it("requires a new explicit confirmation after a failed copy is rescanned", async () => {
@@ -323,10 +323,10 @@ it.each(["before", "after"])(
 			await waitFor(() => exits === 1);
 			expect(ready).toBe(0);
 			if (boundary === "before") {
-				expect(await readdir(join(root, ".percho"))).not.toContain("agent");
-				expect((await readdir(join(root, ".percho"))).some((name) => name.startsWith(".agent-import-"))).toBe(
-					true,
-				);
+				expect(await readdir(join(root, ".wenyou-pro"))).not.toContain("agent");
+				expect(
+					(await readdir(join(root, ".wenyou-pro"))).some((name) => name.startsWith(".agent-import-")),
+				).toBe(true);
 			} else {
 				const saved = await readFile(join(selection.target, ".percho-local-storage.json"), "utf8");
 				const restarted = make();
