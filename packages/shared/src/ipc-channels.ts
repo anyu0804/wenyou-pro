@@ -100,13 +100,10 @@ import type {
 	NtqqStatusSnapshot,
 	NtqqSyncCampaignResult,
 	PolicyArtifact,
-	PolicyLintReport,
 	SandboxProbeResult,
 	SituationBriefing,
 	SourceContextWindow,
-	ViewerScope,
 	WenyouCanvasEvent,
-	WenyouExportPreflightResult,
 	WenyouPullQqResult,
 	WenyouWorkspaceOverview,
 	WenyouWritePolicyResult,
@@ -1120,21 +1117,8 @@ export const WENYOU_CHANNELS = {
 		"wenyou:getOverview",
 		"environment",
 		"read",
-	)<{ cwd: string; viewer?: string }, WenyouWorkspaceOverview>({
+	)<{ cwd: string }, WenyouWorkspaceOverview>({
 		cwd: input.id,
-		viewer: input.optional(input.text),
-	}),
-	wenyouSetViewerScope: ch(
-		"wenyou:setViewerScope",
-		"environment",
-		"mutation",
-	)<
-		{ cwd: string; viewer: string; maxViewer?: string },
-		{ viewer: ViewerScope; maxViewer: ViewerScope }
-	>({
-		cwd: input.id,
-		viewer: input.id,
-		maxViewer: input.optional(input.text),
 	}),
 	wenyouPullQq: ch(
 		"wenyou:pullQq",
@@ -1148,49 +1132,24 @@ export const WENYOU_CHANNELS = {
 		"wenyou:lookupSource",
 		"environment",
 		"read",
-	)<{ cwd: string; sourceId: string; window?: number; viewer?: string }, SourceContextWindow | null>({
+	)<{ cwd: string; sourceId: string; window?: number }, SourceContextWindow | null>({
 		cwd: input.id,
 		sourceId: input.id,
 		window: input.optional(input.nonNegativeInt),
-		viewer: input.optional(input.text),
 	}),
 	wenyouListBriefings: ch(
 		"wenyou:listBriefings",
 		"environment",
 		"read",
-	)<{ cwd: string; viewer?: string }, SituationBriefing[]>({
+	)<{ cwd: string }, SituationBriefing[]>({
 		cwd: input.id,
-		viewer: input.optional(input.text),
 	}),
 	wenyouListPolicies: ch(
 		"wenyou:listPolicies",
 		"environment",
 		"read",
-	)<{ cwd: string; viewer?: string }, PolicyArtifact[]>({
+	)<{ cwd: string }, PolicyArtifact[]>({
 		cwd: input.id,
-		viewer: input.optional(input.text),
-	}),
-	wenyouLintPolicy: ch(
-		"wenyou:lintPolicy",
-		"environment",
-		"read",
-	)<
-		{
-			cwd: string;
-			text: string;
-			viewer?: string;
-			actorEntityId?: string;
-			branchId?: string;
-			currentOrder?: number;
-		},
-		PolicyLintReport
-	>({
-		cwd: input.id,
-		text: input.text,
-		viewer: input.optional(input.text),
-		actorEntityId: input.optional(input.text),
-		branchId: input.optional(input.text),
-		currentOrder: input.optional(input.number),
 	}),
 	wenyouWritePolicyDocx: ch(
 		"wenyou:writePolicyDocx",
@@ -1204,11 +1163,7 @@ export const WENYOU_CHANNELS = {
 			actor?: string;
 			turnLabel?: string;
 			serialNo?: string;
-			viewer?: string;
-			actorEntityId?: string;
-			branchId?: string;
-			currentOrder?: number;
-			force?: boolean;
+			author?: string;
 		},
 		WenyouWritePolicyResult
 	>({
@@ -1218,11 +1173,7 @@ export const WENYOU_CHANNELS = {
 		actor: input.optional(input.text),
 		turnLabel: input.optional(input.text),
 		serialNo: input.optional(input.text),
-		viewer: input.optional(input.text),
-		actorEntityId: input.optional(input.text),
-		branchId: input.optional(input.text),
-		currentOrder: input.optional(input.number),
-		force: input.optional(input.boolean),
+		author: input.optional(input.text),
 	}),
 	wenyouListMaps: ch(
 		"wenyou:listMaps",
@@ -1288,25 +1239,13 @@ export const WENYOU_CHANNELS = {
 		fileName: input.id,
 		content: input.text,
 	}),
-	wenyouExportPreflight: ch(
-		"wenyou:exportPreflight",
-		"environment",
-		"read",
-	)<{ cwd: string; targetViewer: string }, WenyouExportPreflightResult>({
-		cwd: input.id,
-		targetViewer: input.id,
-	}),
 	wenyouReadCanonDoc: ch(
 		"wenyou:readCanonDoc",
 		"environment",
 		"read",
-	)<
-		{ cwd: string; relPath: string; viewer?: string },
-		{ relPath: string; content: string; strippedSecretBlocks: number }
-	>({
+	)<{ cwd: string; relPath: string }, { relPath: string; content: string }>({
 		cwd: input.id,
 		relPath: input.id,
-		viewer: input.optional(input.text),
 	}),
 } as const;
 
@@ -1314,10 +1253,6 @@ export const WENYOU_CHANNELS = {
 export const WENYOU_DESKTOP_CHANNELS = {
 	wenyouExportDocxDialog: ch("wenyou:exportDocxDialog", "desktop", "mutation")<
 		{ cwd: string; relPath: string; defaultName?: string },
-		string | null
-	>(),
-	wenyouExportBundleDialog: ch("wenyou:exportBundleDialog", "desktop", "mutation")<
-		{ defaultName: string; content: string; format: "html" | "json" },
 		string | null
 	>(),
 	wenyouRevealFile: ch("wenyou:revealFile", "desktop", "mutation")<{ cwd: string; relPath: string }, void>(),

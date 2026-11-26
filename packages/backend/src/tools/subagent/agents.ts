@@ -29,77 +29,6 @@ export interface DiscoverAgentsOptions {
 	agentDir?: string;
 }
 
-export const DEFAULT_AGENT = "worker";
-
-const BUILTIN_WORKER: SubagentDefinition = {
-	name: DEFAULT_AGENT,
-	description: "实现开发任务并自主验证，返回结论与改动。",
-	tools: ["read", "write", "edit", "bash", "grep", "find", "ls", "webfetch"],
-	systemPrompt: "You are worker, a development subagent responsible for implementing the assigned task.",
-	source: "builtin",
-};
-
-const BUILTIN_WENYOU_AGENTS: readonly SubagentDefinition[] = [
-	{
-		name: "qq-intel-analyst",
-		description: "群聊增量情报分析员：洗水群、长程传话溯源、核实敌方宣传 vs GM 裁定事实并产出三段式局势简报。",
-		tools: [
-			"wenyou_pull_qq",
-			"wenyou_lookup_source",
-			"wenyou_read_memory",
-			"wenyou_publish_briefing",
-			"read",
-			"ls",
-		],
-		thinking: "medium",
-		systemPrompt:
-			"你是 Wenyou Pro 的群聊情报分析员（qq-intel-analyst）。职责：优先调用 wenyou_pull_qq（支持增量拉取与最高 20,000 条/群 backfill 回溯）、wenyou_read_memory 与 wenyou_lookup_source（追查最初原话用 order='earliest'，核对后续转述用 order='latest' 及前后上下文窗口），严格区分 GM 正式裁定（gm_fact）、阵营外交宣传（propaganda）、内阁未定案草案（unconfirmed_draft）与玩家吹水（player_ooc）；每条关键论断必须给出精确 [sourceId] 证据锚点，禁止脑补未落锤事实。",
-		source: "builtin",
-	},
-	{
-		name: "policy-drafter",
-		description: "纯手写抓大放小国策参谋：联动实册与沙盘里程核账，严守国策门禁起草并生成规范 .docx 施政方略。",
-		tools: [
-			"wenyou_read_memory",
-			"wenyou_lookup_source",
-			"wenyou_inspect_map",
-			"wenyou_write_policy_docx",
-			"read",
-			"ls",
-		],
-		thinking: "high",
-		systemPrompt:
-			"你是 Wenyou Pro 的国策参谋（policy-drafter）。职责：动笔前先调 wenyou_read_memory 核实国力实册与 L1 台账，涉及边防行军、海港或邻国博弈时先调 wenyou_inspect_map 核对真实六角接壤邻国与城际公里里程；起草单居中标题 + 平实自然段或一级序号条陈的中文手写体国策（不设章节小标题），写完调用 wenyou_write_policy_docx 闭环过门禁并落盘 .docx。硬红线：严禁 Markdown 表格、严禁多层嵌套清单、严禁「顶层设计/组合拳/赋能/抓手/把规矩立住/攒下班底/抓在自己人手里/大铺摊子/既……又……」等模板套话，严禁超游引用当前视角不可见情报。",
-		source: "builtin",
-	},
-	{
-		name: "chronicle-historian",
-		description: "正史编纂与旧账审计史官：交叉核对编年史、群聊铁证与沙盘疆域变化，直接整理维护设定与编年史档案。",
-		tools: [
-			"wenyou_read_memory",
-			"wenyou_lookup_source",
-			"wenyou_inspect_map",
-			"read",
-			"write",
-			"edit",
-			"ls",
-		],
-		thinking: "high",
-		systemPrompt:
-			"你是 Wenyou Pro 的史官与旧账审计员（chronicle-historian）。职责：调用 wenyou_read_memory、wenyou_lookup_source 与 wenyou_inspect_map 交叉核查时间线穿帮、城邦易手与兵力账目矛盾，直接整理并更新 01-设定与国力实册/ 与 04-编年史与条约/ 档案，关键事实与变动附完整 [sourceId] 证据溯源，禁止编造群聊与沙盘中不存在的设定。",
-		source: "builtin",
-	},
-	{
-		name: "sandbox-cartographer",
-		description: "图史沙盘与疆域里程判读员：解析 FMG/图片底图快照、六角接壤邻国、真实公里测距与跨回合领土差分。",
-		tools: ["wenyou_inspect_map", "wenyou_open_maps", "wenyou_read_memory", "read", "ls"],
-		thinking: "medium",
-		systemPrompt:
-			"你是 Wenyou Pro 的舆图判读与沙盘助理（sandbox-cartographer）。职责：调用 wenyou_inspect_map（list / inspect / diff）精确读取 FMG 矢量或静态图片底图战区的政权地块、六角网格接壤邻国、城邦八方位与海港/首都标识、去重后的编制兵力及真实公里比例尺里程，并可按需调用 wenyou_open_maps 在右侧动态画布打开双屏比对或内置沙盘，严禁脱离地图快照凭空臆造地理方位与行军距离。",
-		source: "builtin",
-	},
-];
-
 function stripInlineComment(value: string): string {
 	let quote: string | undefined;
 	for (let i = 0; i < value.length; i++) {
@@ -215,17 +144,14 @@ async function readAgentDirectory(dir: string, source: AgentSource): Promise<Sub
 }
 
 /**
- * 发现 agent：builtin worker → user ~/.percho/agent/agents → trusted project .pi/agents。
+ * 发现 agent：user ~/.percho/agent/agents → trusted project .pi/agents。
  * 后加载的同名定义覆盖前者；projectTrusted=false 时完全不读取 project agents。
  */
 export async function discoverAgents(
 	cwd: string,
 	options: DiscoverAgentsOptions,
 ): Promise<SubagentDefinition[]> {
-	const byName = new Map<string, SubagentDefinition>([
-		[BUILTIN_WORKER.name, BUILTIN_WORKER],
-		...BUILTIN_WENYOU_AGENTS.map((agent) => [agent.name, agent] as const),
-	]);
+	const byName = new Map<string, SubagentDefinition>();
 	const userAgents = await readAgentDirectory(join(options.agentDir ?? getAgentDir(), "agents"), "user");
 	for (const agent of userAgents) byName.set(agent.name, agent);
 	if (options.projectTrusted) {
@@ -237,9 +163,15 @@ export async function discoverAgents(
 
 export function findAgent(agents: SubagentDefinition[], name: string): SubagentDefinition {
 	const agent = agents.find((candidate) => candidate.name === name);
-	if (!agent)
+	if (!agent) {
+		if (agents.length === 0) {
+			throw new Error(
+				`Unknown subagent agent "${name}". No subagents are configured; add markdown definitions under ~/.percho/agent/agents or .pi/agents.`,
+			);
+		}
 		throw new Error(
 			`Unknown subagent agent "${name}". Available agents: ${agents.map((a) => a.name).join(", ")}`,
 		);
+	}
 	return agent;
 }

@@ -1263,7 +1263,7 @@ describe("SDK 1.5.1 real offline tools", () => {
 		"Code Mode 独占模式通过生产扩展改变模型工具表，内部调用仍可用：only=%s",
 		async (only) => {
 			const f = await fixture(({ agentDir, cwd }) => {
-				writeFileSync(join(agentDir, "codemode.json"), JSON.stringify({ only }));
+				writeFileSync(join(agentDir, "codemode.json"), JSON.stringify({ enabled: true, only }));
 				return [
 					makePermissionGateExtension(agentDir, { projectRoot: cwd, confirm: async () => false }),
 					...builtinExtensions({ agentDir }).filter(

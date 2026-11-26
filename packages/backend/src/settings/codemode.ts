@@ -21,7 +21,7 @@ export function readCodemodeEnabled(agentDir: string): boolean {
 
 export function readCodemodeConfig(agentDir: string): { enabled: boolean; only: boolean } {
 	const config = configStore(agentDir).readSync();
-	return { enabled: config.enabled !== false, only: config.only === true };
+	return { enabled: config.enabled === true, only: config.only === true };
 }
 
 export async function writeCodemodeOnly(agentDir: string, only: boolean): Promise<void> {

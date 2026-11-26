@@ -84,7 +84,11 @@ beforeEach(async () => {
 	cwd = join(root, "project");
 	agentDir = join(root, "agent");
 	mkdirSync(cwd);
-	mkdirSync(agentDir);
+	mkdirSync(join(agentDir, "agents"), { recursive: true });
+	writeFileSync(
+		join(agentDir, "agents", "worker.md"),
+		"---\nname: worker\ndescription: Test worker\ntools: read, write, edit, bash, grep, find, ls, webfetch\n---\nYou are worker.",
+	);
 	writeFileSync(join(cwd, "AGENTS.md"), "Project rule: keep changes simple.");
 	writeFileSync(
 		join(agentDir, "settings.json"),

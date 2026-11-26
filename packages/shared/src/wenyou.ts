@@ -15,56 +15,6 @@ export const WENYOU_STANDARD_DIRS = [
 
 export const WENYOU_ASSET_PROTOCOL = "wenyou-asset";
 
-export const VISIBILITY_LEVELS = ["gm", "public", "faction"] as const;
-export type VisibilityLevel = (typeof VISIBILITY_LEVELS)[number];
-
-export type ViewerScope =
-	| { readonly kind: "gm" }
-	| { readonly kind: "public" }
-	| { readonly kind: "faction"; readonly factionId: string };
-
-export function parseViewerScope(raw?: string | ViewerScope | null): ViewerScope {
-	if (!raw) return { kind: "gm" };
-	if (typeof raw === "object") {
-		if (raw.kind === "gm" || raw.kind === "public") return { kind: raw.kind };
-		if (raw.kind === "faction" && typeof raw.factionId === "string" && raw.factionId.trim().length > 0) {
-			return { kind: "faction", factionId: raw.factionId.trim() };
-		}
-		throw new Error("无效的 ViewerScope 对象");
-	}
-	const trimmed = raw.trim();
-	if (trimmed === "gm") return { kind: "gm" };
-	if (trimmed === "public") return { kind: "public" };
-	if (trimmed.startsWith("faction:")) {
-		const factionId = trimmed.slice("faction:".length).trim();
-		if (factionId.length > 0) return { kind: "faction", factionId };
-	}
-	throw new Error(`无效视角格式：${raw}（应为 gm | public | faction:<id>）`);
-}
-
-export function formatViewerScope(scope: ViewerScope): string {
-	return scope.kind === "faction" ? `faction:${scope.factionId}` : scope.kind;
-}
-
-/**
- * 按服务端 `maxViewer` 硬上限钳制请求视角：
- * - `maxViewer` 未指定或为 `gm` 时保留 `requested`；
- * - `maxViewer = public` 时一律钳制为 `public`；
- * - `maxViewer = faction:<id>` 时仅放行 `public` 或同阵营 `faction:<id>`，其余（含 `gm`）一律钳制回 `faction:<id>`。
- */
-export function clampViewerScope(
-	requested: ViewerScope,
-	maxViewer?: ViewerScope | null,
-): ViewerScope {
-	if (!maxViewer || maxViewer.kind === "gm") return requested;
-	if (maxViewer.kind === "public") return { kind: "public" };
-	if (requested.kind === "public") return { kind: "public" };
-	if (requested.kind === "faction" && requested.factionId === maxViewer.factionId) {
-		return requested;
-	}
-	return { kind: "faction", factionId: maxViewer.factionId };
-}
-
 export function buildWenyouAssetUrl(
 	cwd: string,
 	relPath: string,
@@ -113,8 +63,6 @@ export interface GroupCursorRecord {
 	sourceFiles: string[];
 }
 
-export type EvidenceMessageKind = "chat" | "gm_ruling" | "dice_roll" | "diplomacy" | "ooc";
-
 export interface EvidenceMessageRecord {
 	sourceId: string;
 	groupId: string;
@@ -123,9 +71,6 @@ export interface EvidenceMessageRecord {
 	senderId?: string;
 	timestamp: string;
 	text: string;
-	kind: EvidenceMessageKind;
-	visibility: VisibilityLevel;
-	visibleToFactions?: string[];
 	fingerprint: string;
 	lineIndex: number;
 }
@@ -138,7 +83,7 @@ export interface SourceContextWindow {
 	messages: EvidenceMessageRecord[];
 	/** 本次实际生效的单侧上下文窗口条数（前后各 windowSize 条） */
 	windowSize?: number;
-	/** 该群当前视角下已入库的可见消息总数 */
+	/** 该群已入库的消息总数 */
 	totalGroupMessages?: number;
 	/** 当前切片之前尚未展示的同群消息条数 */
 	beforeRemaining?: number;
@@ -173,7 +118,7 @@ export interface SituationBriefing {
 	title: string;
 	turnLabel: string;
 	createdAt: string;
-	/** <=120字核心结论 */
+	/** 核心结论 */
 	headline: string;
 	/** 【进度】 */
 	progressItems: BriefingProgressItem[];
@@ -201,34 +146,6 @@ export interface RollingLedgerEntry {
 	sourceRefs: string[];
 }
 
-export const POLICY_LINT_CODES = [
-	"CROSS_FACTION_LEAK",
-	"TIMELINE_ANACHRONISM",
-	"FORBIDDEN_MARKDOWN_TABLE",
-	"NESTED_LIST_VIOLATION",
-	"CLICHE_PHRASE",
-] as const;
-export type PolicyLintCode = (typeof POLICY_LINT_CODES)[number];
-
-export type PolicyLintSeverity = "error" | "warning" | "info";
-
-export interface PolicyLintIssue {
-	code: PolicyLintCode;
-	severity: PolicyLintSeverity;
-	message: string;
-	excerpt: string;
-	relatedEntityId?: string;
-}
-
-export interface PolicyLintReport {
-	actorEntityId?: string;
-	branchId?: string;
-	currentOrder?: number;
-	passed: boolean;
-	issues: PolicyLintIssue[];
-	rewriteInstructions?: string;
-}
-
 export interface PolicyArtifact {
 	id: string;
 	serialNo: string;
@@ -240,7 +157,6 @@ export interface PolicyArtifact {
 	docxPath?: string;
 	excerpt: string;
 	content: string;
-	lintReport: PolicyLintReport;
 }
 
 export interface MapAssetItem {
@@ -266,7 +182,7 @@ export type CardinalSector =
 	| "正西"
 	| "西北";
 
-export type MapSnapshotFormat = "wenyou-project" | "wenyou-map-delta" | "fmg-map";
+export type MapSnapshotFormat = "wenyou-project" | "fmg-map";
 
 export interface MapTheaterBrief {
 	mapId: string;
@@ -420,7 +336,7 @@ export type WenyouBridgeHostMessage =
 				worldId: string;
 				worldTitle: string;
 				currentEra: string;
-				viewer: string;
+				viewer?: string;
 				workspaceKey?: string;
 			};
 	  }
@@ -557,21 +473,9 @@ export type WenyouBridgeSandboxMessage =
 export interface WenyouCanonDocSummary {
 	relPath: string;
 	title: string;
-	kind: "setting" | "chronicle" | "wiki";
-	visibility: VisibilityLevel;
-	visibleToFactions?: string[];
+	kind: "setting" | "chronicle";
 	turn?: number;
 	era?: string;
-}
-
-export interface WenyouExportPreflightResult {
-	targetViewer: ViewerScope;
-	allowedFiles: string[];
-	blockedPrivateFiles: string[];
-	blockedVisibilityFiles: string[];
-	strippedSecretBlockCount: number;
-	warnings: string[];
-	bundleJson: string;
 }
 
 export interface WenyouPullQqResult {
@@ -631,7 +535,6 @@ export interface CampaignNtqqGroupBinding {
 	groupId: string;
 	groupName?: string;
 	role: GroupRole;
-	visibility?: VisibilityLevel;
 }
 
 export interface NtqqSyncGroupDetail {
@@ -661,7 +564,6 @@ export interface NtqqSyncCampaignResult {
 
 export interface WenyouWritePolicyResult {
 	ok: boolean;
-	lintReport: PolicyLintReport;
 	artifact?: PolicyArtifact;
 	error?: string;
 }
@@ -672,8 +574,6 @@ export interface WenyouWorkspaceOverview {
 	worldTitle: string;
 	worldId: string;
 	currentEra?: string;
-	viewer: ViewerScope;
-	maxViewer?: ViewerScope;
 	cursors: GroupCursorRecord[];
 	totalEvidenceCount: number;
 	unreportedCount: number;

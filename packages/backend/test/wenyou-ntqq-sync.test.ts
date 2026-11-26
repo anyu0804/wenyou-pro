@@ -162,7 +162,7 @@ CREATE TABLE nt_uid_mapping_table ("48902" TEXT PRIMARY KEY, "1002" TEXT);
 ''')
 c.execute('INSERT INTO nt_uid_mapping_table ("48902", "1002") VALUES (?, ?)', ("u_gm", "司历GM"))
 c.execute('INSERT INTO nt_uid_mapping_table ("48902", "1002") VALUES (?, ?)', ("u_player", "北周参谋"))
-c.execute('INSERT INTO nt_uid_mapping_table ("48902", "1002") VALUES (?, ?)', ("u_self", "安钰"))
+c.execute('INSERT INTO nt_uid_mapping_table ("48902", "1002") VALUES (?, ?)', ("u_self", "测试玩家"))
 for r in rows:
     c40030 = r["col40030"] if "col40030" in r else r["gid"]
     c40003 = r["col40003"] if "col40003" in r else r["rowid"]
@@ -282,12 +282,15 @@ describe("Wenyou NTQQ 只读解库与配置隔离", () => {
 			{ groupId: "900002", groupName: "河朔内阁密群" },
 		]);
 
-		// 3. 绑定两个群（主群 public + 内阁密群 gm）并首次全量增量同步
+		// 3. 绑定两个群并首次全量增量同步
 		const savedBindings = await service.ntqq.saveCampaignBindings(campaignDir, [
 			{ groupId: "900001", groupName: "河朔测试主群", role: "main" },
 			{ groupId: "900002", groupName: "河朔内阁密群", role: "cabinet" },
 		]);
-		expect(savedBindings[1]?.visibility).toBe("gm");
+		expect(savedBindings).toEqual([
+			{ groupId: "900001", groupName: "河朔测试主群", role: "main" },
+			{ groupId: "900002", groupName: "河朔内阁密群", role: "cabinet" },
+		]);
 
 		const firstSync = await service.syncNtqqCampaign(campaignDir);
 		expect(firstSync.newlyIngested).toBe(4);
@@ -295,23 +298,21 @@ describe("Wenyou NTQQ 只读解库与配置隔离", () => {
 		expect(firstSync.totalEvidenceCount).toBe(4);
 
 		// 验证本人发出消息（40030=0）与上下文完整保留
-		const selfHits = await service.searchSources(campaignDir, { keyword: "西凉使节路线", viewer: "public" });
+		const selfHits = await service.searchSources(campaignDir, { keyword: "西凉使节路线" });
 		expect(selfHits.length).toBe(1);
-		expect(selfHits[0]?.sender).toBe("安钰");
+		expect(selfHits[0]?.sender).toBe("测试玩家");
 		expect(selfHits[0]?.sourceId).toBe("qq-900001-103");
-		const ctxWin = await service.lookupSource(campaignDir, "qq-900001-103", 5, "public");
+		expect("kind" in selfHits[0]!).toBe(false);
+		expect("visibility" in selfHits[0]!).toBe(false);
+		const ctxWin = await service.lookupSource(campaignDir, "qq-900001-103", 5);
 		expect(ctxWin?.messages.map((m) => m.sourceId)).toEqual(["qq-900001-101", "qq-900001-102", "qq-900001-103"]);
 
-		// 验证 GM 与 public 视角隔离：public 看不到内阁密群消息
-		const gmHits = await service.searchSources(campaignDir, { keyword: "精铁", viewer: "gm" });
-		const pubHits = await service.searchSources(campaignDir, { keyword: "精铁", viewer: "public" });
-		expect(gmHits.length).toBe(1);
-		expect(pubHits.length).toBe(0);
+		const cabinetHits = await service.searchSources(campaignDir, { keyword: "精铁" });
+		expect(cabinetHits.length).toBe(1);
 
-		const mainHits = await service.searchSources(campaignDir, { keyword: "秋粮", viewer: "public" });
+		const mainHits = await service.searchSources(campaignDir, { keyword: "秋粮" });
 		expect(mainHits.length).toBe(1);
 		expect(mainHits[0]?.sender).toBe("司历GM");
-		expect(mainHits[0]?.kind).toBe("gm_ruling");
 
 		// 4. 二次触发 pullQq（联动 NTQQ + 00-群聊收集/）：严格幂等 0 新增
 		const secondPull = await service.pullQq(campaignDir);
@@ -386,7 +387,7 @@ describe("Wenyou NTQQ 只读解库与配置隔离", () => {
 		expect(sync2.totalEvidenceCount).toBe(2);
 		const found = await service.searchSources(campaignDir, { keyword: "本人增量回复" });
 		expect(found).toHaveLength(1);
-		expect(found[0]?.sender).toBe("安钰");
+		expect(found[0]?.sender).toBe("测试玩家");
 	});
 
 	it("非法群号绑定被严格拒绝", async () => {
@@ -485,7 +486,7 @@ describe("Wenyou NTQQ 只读解库与配置隔离", () => {
 		expect(s2.newlyIngested).toBe(1);
 		const selfMsg = await service.searchSources(campaignDir, { keyword: "已部署河阳防线" });
 		expect(selfMsg).toHaveLength(1);
-		expect(selfMsg[0]?.sender).toBe("安钰");
+		expect(selfMsg[0]?.sender).toBe("测试玩家");
 		expect((await service.searchSources(campaignDir, { keyword: "系统灰条" })).length).toBe(0);
 
 		// 直接验证 wenyou_read.py 的 paged_query 在双号段 rowid（since_rowid=100000, since_ts=1764002000）下绝不跳漏 rowid=50 且过滤系统灰条

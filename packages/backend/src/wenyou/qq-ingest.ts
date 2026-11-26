@@ -3,21 +3,20 @@ import { existsSync } from "node:fs";
 import { mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, join } from "node:path";
 import type {
-	EvidenceMessageKind,
 	EvidenceMessageRecord,
 	GroupCursorRecord,
 	GroupRole,
 	SourceContextWindow,
-	ViewerScope,
-	VisibilityLevel,
 	WenyouPullQqResult,
 } from "@percho/shared";
-import { canViewerSee } from "./secret-blocks";
 
 const QQ_DATE_TIME_RE =
 	/^(.+?)\s+(\d{4})[-/](\d{1,2})[-/](\d{1,2})\s+([01]?\d|2[0-3]):([0-5]\d)(?::([0-5]\d))?$/;
 const QQ_TIME_WITH_SEC_RE = /^(.+?)\s+([01]?\d|2[0-3]):([0-5]\d):([0-5]\d)$/;
 const QQ_TIME_NO_SEC_RE = /^(.+?)\s+([01]?\d|2[0-3]):([0-5]\d)$/;
+const FULL_DATE_TS_RE = /^\d{4}-\d{2}-\d{2}/;
+const DATE_ONLY_TS_RE = /^\d{4}-\d{2}-\d{2}$/;
+const TIME_ONLY_TS_RE = /^\d{2}:\d{2}(?::\d{2})?$/;
 
 function isPlausibleShortTimeSender(rawSender: string): boolean {
 	const trimmed = rawSender.trim();
@@ -37,6 +36,35 @@ async function atomicWriteUtf8(filePath: string, content: string): Promise<void>
 
 function pad2(val: string): string {
 	return val.padStart(2, "0");
+}
+
+function normalizeEvidenceTimestamp(raw: string): string {
+	const trimmed = raw.trim();
+	if (!trimmed) return "";
+
+	const isoOrDateTime = trimmed.match(
+		/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})[T\s]+([01]?\d|2[0-3]):([0-5]\d)(?::([0-5]\d))?(?:\.\d+)?(?:Z)?$/i,
+	);
+	if (isoOrDateTime && isoOrDateTime[1] && isoOrDateTime[2] && isoOrDateTime[3] && isoOrDateTime[4] && isoOrDateTime[5]) {
+		return `${isoOrDateTime[1]}-${pad2(isoOrDateTime[2])}-${pad2(isoOrDateTime[3])} ${pad2(isoOrDateTime[4])}:${isoOrDateTime[5]}:${pad2(isoOrDateTime[6] ?? "00")}`;
+	}
+
+	const dateOnly = trimmed.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/);
+	if (dateOnly && dateOnly[1] && dateOnly[2] && dateOnly[3]) {
+		return `${dateOnly[1]}-${pad2(dateOnly[2])}-${pad2(dateOnly[3])}`;
+	}
+
+	const timeWithSec = trimmed.match(/^([01]?\d|2[0-3]):([0-5]\d):([0-5]\d)$/);
+	if (timeWithSec && timeWithSec[1] && timeWithSec[2] && timeWithSec[3]) {
+		return `${pad2(timeWithSec[1])}:${timeWithSec[2]}:${timeWithSec[3]}`;
+	}
+
+	const timeNoSec = trimmed.match(/^([01]?\d|2[0-3]):([0-5]\d)$/);
+	if (timeNoSec && timeNoSec[1] && timeNoSec[2]) {
+		return `${pad2(timeNoSec[1])}:${timeNoSec[2]}`;
+	}
+
+	return trimmed;
 }
 
 function cleanSender(rawSender: string): { sender: string; senderId?: string } {
@@ -72,50 +100,36 @@ export function inferGroupMeta(fileName: string): {
 	groupId: string;
 	groupName: string;
 	role: GroupRole;
-	defaultVisibility: VisibilityLevel;
 } {
 	const stem = basename(fileName, extname(fileName));
 	const idMatch = stem.match(/(group-[a-z0-9-]+|\d{6,12})/i);
 	const groupId = idMatch?.[1]?.toLowerCase() ?? stem.toLowerCase().replace(/[^a-z0-9\u4e00-\u9fa5-]+/g, "-");
 	const lower = stem.toLowerCase();
 	let role: GroupRole = "other";
-	let defaultVisibility: VisibilityLevel = "public";
 	if (lower.includes("主群") || lower.includes("main")) {
 		role = "main";
 	} else if (lower.includes("骰") || lower.includes("dice")) {
 		role = "dice";
 	} else if (lower.includes("内阁") || lower.includes("密") || lower.includes("cabinet") || lower.includes("private")) {
 		role = "cabinet";
-		defaultVisibility = "gm";
 	} else if (lower.includes("外交") || lower.includes("diplomacy")) {
 		role = "diplomacy";
 	}
 	const groupName = stem.replace(/[_-]group-[a-z0-9-]+$/i, "").trim() || stem;
-	return { groupId, groupName, role, defaultVisibility };
+	return { groupId, groupName, role };
 }
 
-function classifyMessageKind(sender: string, text: string, role: GroupRole): EvidenceMessageKind {
-	if (role === "dice" || /骰娘|掷骰|\.r\b|1d100|检定|大成功|大失败/i.test(`${sender} ${text}`)) {
-		return "dice_roll";
-	}
-	if (/裁判|司历|GM|主持|公告|裁定/i.test(sender) || /^【(?:裁判|裁定|正式结算|公告)】/.test(text)) {
-		return "gm_ruling";
-	}
-	if (/照会|通牒|盟约|停战|宣战|使节|国书/.test(text)) {
-		return "diplomacy";
-	}
-	if (/^(?:ooc|水群|哈哈|草|笑死|晚安|冒泡)/i.test(text.trim())) {
-		return "ooc";
-	}
-	return "chat";
+interface ParsedEvidenceCandidate {
+	record: Omit<EvidenceMessageRecord, "lineIndex">;
+	hasExplicitSourceId: boolean;
 }
 
 function parsePlainTextMessages(
 	rawText: string,
-	meta: { groupId: string; groupName: string; role: GroupRole; defaultVisibility: VisibilityLevel },
-): Omit<EvidenceMessageRecord, "lineIndex">[] {
+	meta: { groupId: string; groupName: string; role: GroupRole },
+): ParsedEvidenceCandidate[] {
 	const lines = rawText.replace(/^\uFEFF/, "").replace(/\r\n/g, "\n").split("\n");
-	const records: Omit<EvidenceMessageRecord, "lineIndex">[] = [];
+	const records: ParsedEvidenceCandidate[] = [];
 	let current: { sender: string; senderId?: string; timestamp: string; body: string[] } | null = null;
 	let lastSeenDate: string | undefined;
 
@@ -133,16 +147,17 @@ function parsePlainTextMessages(
 			text,
 		});
 		records.push({
-			sourceId: `${meta.groupId}-${fp.slice(0, 8)}`,
-			groupId: meta.groupId,
-			groupName: meta.groupName,
-			sender: current.sender,
-			...(current.senderId ? { senderId: current.senderId } : {}),
-			timestamp: current.timestamp,
-			text,
-			kind: classifyMessageKind(current.sender, text, meta.role),
-			visibility: meta.defaultVisibility,
-			fingerprint: fp,
+			hasExplicitSourceId: false,
+			record: {
+				sourceId: `${meta.groupId}-${fp.slice(0, 8)}`,
+				groupId: meta.groupId,
+				groupName: meta.groupName,
+				sender: current.sender,
+				...(current.senderId ? { senderId: current.senderId } : {}),
+				timestamp: current.timestamp,
+				text,
+				fingerprint: fp,
+			},
 		});
 		current = null;
 	};
@@ -167,10 +182,11 @@ function parsePlainTextMessages(
 		if (secMatch && secMatch[1] && secMatch[2] && secMatch[3] && secMatch[4]) {
 			flush();
 			const cleaned = cleanSender(secMatch[1]);
+			const timePart = `${pad2(secMatch[2])}:${secMatch[3]}:${secMatch[4]}`;
 			current = {
 				sender: cleaned.sender,
 				senderId: cleaned.senderId,
-				timestamp: `${lastSeenDate ?? "2026-01-01"} ${pad2(secMatch[2])}:${secMatch[3]}:${secMatch[4]}`,
+				timestamp: lastSeenDate ? `${lastSeenDate} ${timePart}` : timePart,
 				body: [],
 			};
 			continue;
@@ -208,17 +224,15 @@ interface RawJsonMessage {
 	time?: unknown;
 	text?: unknown;
 	content?: unknown;
-	visibility?: unknown;
-	visibleToFactions?: unknown;
 	groupId?: unknown;
 	groupName?: unknown;
 }
 
 function normalizeRawJsonItems(
 	items: RawJsonMessage[],
-	fallbackMeta: { groupId: string; groupName: string; role: GroupRole; defaultVisibility: VisibilityLevel },
-): Omit<EvidenceMessageRecord, "lineIndex">[] {
-	const out: Omit<EvidenceMessageRecord, "lineIndex">[] = [];
+	fallbackMeta: { groupId: string; groupName: string; role: GroupRole },
+): ParsedEvidenceCandidate[] {
+	const out: ParsedEvidenceCandidate[] = [];
 	for (const raw of items) {
 		const rawText = typeof raw.text === "string" ? raw.text : typeof raw.content === "string" ? raw.content : "";
 		const text = rawText.trim();
@@ -236,35 +250,29 @@ function normalizeRawJsonItems(
 			(typeof raw.senderId === "string" && raw.senderId.trim()) ||
 			(typeof raw.uin === "string" && raw.uin.trim()) ||
 			cleaned.senderId;
-		const timestamp =
+		const rawTimestamp =
 			(typeof raw.timestamp === "string" && raw.timestamp.trim()) ||
 			(typeof raw.time === "string" && raw.time.trim()) ||
-			"2026-01-01 00:00:00";
+			"";
+		const timestamp = normalizeEvidenceTimestamp(rawTimestamp);
 		const fp = computeEvidenceFingerprint({ groupId, sender: cleaned.sender, timestamp, text });
 		const explicitId =
 			(typeof raw.sourceId === "string" && raw.sourceId.trim()) ||
 			(typeof raw.id === "string" && raw.id.trim()) ||
 			(typeof raw.messageId === "string" && raw.messageId.trim()) ||
-			`${groupId}-${fp.slice(0, 8)}`;
-		const visibility: VisibilityLevel =
-			raw.visibility === "gm" || raw.visibility === "public" || raw.visibility === "faction"
-				? raw.visibility
-				: fallbackMeta.defaultVisibility;
-		const visibleToFactions = Array.isArray(raw.visibleToFactions)
-			? raw.visibleToFactions.filter((v): v is string => typeof v === "string" && v.trim().length > 0)
-			: undefined;
+			"";
 		out.push({
-			sourceId: explicitId,
-			groupId,
-			groupName,
-			sender: cleaned.sender,
-			...(senderId ? { senderId } : {}),
-			timestamp,
-			text,
-			kind: classifyMessageKind(cleaned.sender, text, fallbackMeta.role),
-			visibility,
-			...(visibleToFactions && visibleToFactions.length > 0 ? { visibleToFactions } : {}),
-			fingerprint: fp,
+			hasExplicitSourceId: explicitId.length > 0,
+			record: {
+				sourceId: explicitId || `${groupId}-${fp.slice(0, 8)}`,
+				groupId,
+				groupName,
+				sender: cleaned.sender,
+				...(senderId ? { senderId } : {}),
+				timestamp,
+				text,
+				fingerprint: fp,
+			},
 		});
 	}
 	return out;
@@ -287,9 +295,19 @@ export async function loadEvidenceRecords(cwd: string): Promise<EvidenceMessageR
 		const trimmed = line.trim();
 		if (!trimmed) continue;
 		try {
-			const parsed = JSON.parse(trimmed) as EvidenceMessageRecord;
+			const parsed = JSON.parse(trimmed) as Partial<EvidenceMessageRecord>;
 			if (parsed && typeof parsed.sourceId === "string" && typeof parsed.text === "string") {
-				records.push({ ...parsed, lineIndex: records.length });
+				records.push({
+					sourceId: parsed.sourceId,
+					groupId: typeof parsed.groupId === "string" ? parsed.groupId : "",
+					groupName: typeof parsed.groupName === "string" ? parsed.groupName : "",
+					sender: typeof parsed.sender === "string" ? parsed.sender : "未知发言人",
+					...(typeof parsed.senderId === "string" && parsed.senderId ? { senderId: parsed.senderId } : {}),
+					timestamp: typeof parsed.timestamp === "string" ? normalizeEvidenceTimestamp(parsed.timestamp) : "",
+					text: parsed.text,
+					fingerprint: typeof parsed.fingerprint === "string" ? parsed.fingerprint : "",
+					lineIndex: records.length,
+				});
 			}
 		} catch {
 			// skip corrupted jsonl line
@@ -307,7 +325,9 @@ export async function loadCursors(cwd: string): Promise<Record<string, GroupCurs
 	const file = cursorsJsonPath(cwd);
 	if (!existsSync(file)) return {};
 	try {
-		const raw = JSON.parse(await readFile(file, "utf8")) as { groups?: Record<string, GroupCursorRecord> } | Record<string, GroupCursorRecord>;
+		const raw = JSON.parse(await readFile(file, "utf8")) as
+			| { groups?: Record<string, GroupCursorRecord> }
+			| Record<string, GroupCursorRecord>;
 		if (raw && typeof raw === "object" && "groups" in raw && raw.groups && typeof raw.groups === "object") {
 			return raw.groups as Record<string, GroupCursorRecord>;
 		}
@@ -381,7 +401,7 @@ export function refreshCursorStats(
 			role: prev?.role || inferred.role,
 			totalIngested: list.length,
 			lastIngestedSourceId: last?.sourceId ?? null,
-			lastIngestedTimestamp: last?.timestamp ?? null,
+			lastIngestedTimestamp: last?.timestamp ? last.timestamp : null,
 			lastReportedSourceId: reportedId,
 			lastReportedAt: prev?.lastReportedAt ?? null,
 			unreportedCount,
@@ -422,11 +442,42 @@ function extractNtqqRowid(sourceId: string): number | null {
 	return Number.isFinite(num) ? num : null;
 }
 
+/**
+ * 时间桶顺序（严格弱序）：
+ * - 0: 无时间戳 `""` / 无法解析文本（保持原始写入顺序）
+ * - 1: 纯时分秒 `HH:MM[:SS]`
+ * - 2: 完整日期 `YYYY-MM-DD[ HH:MM:SS]`
+ * 无日期记录排在完整日期记录之前，确保新到来的带日期消息永远落在队列尾部，
+ * 绝不会被停留在无日期尾记录上的 `lastReportedSourceId` 吞掉。
+ */
+function timestampBucket(ts: string): number {
+	if (FULL_DATE_TS_RE.test(ts)) return 2;
+	if (TIME_ONLY_TS_RE.test(ts)) return 1;
+	return 0;
+}
+
+function sortableTimestampKey(ts: string): string {
+	if (DATE_ONLY_TS_RE.test(ts)) return `${ts} 00:00:00`;
+	if (/^\d{2}:\d{2}$/.test(ts)) return `${ts}:00`;
+	return ts;
+}
+
+function compareEvidenceTimestamps(a: string, b: string): number {
+	const bucketA = timestampBucket(a);
+	const bucketB = timestampBucket(b);
+	if (bucketA !== bucketB) return bucketA - bucketB;
+	if (bucketA === 0) return 0;
+	const keyA = sortableTimestampKey(a);
+	const keyB = sortableTimestampKey(b);
+	if (keyA === keyB) return 0;
+	return keyA < keyB ? -1 : 1;
+}
+
 function sortEvidenceChronologically(records: EvidenceMessageRecord[]): EvidenceMessageRecord[] {
 	return records
 		.map((rec, orderIdx) => ({ rec, orderIdx }))
 		.sort((a, b) => {
-			const tsCmp = a.rec.timestamp.localeCompare(b.rec.timestamp);
+			const tsCmp = compareEvidenceTimestamps(a.rec.timestamp, b.rec.timestamp);
 			if (tsCmp !== 0) return tsCmp;
 			if (a.rec.groupId === b.rec.groupId) {
 				const rowA = extractNtqqRowid(a.rec.sourceId);
@@ -441,10 +492,67 @@ function sortEvidenceChronologically(records: EvidenceMessageRecord[]): Evidence
 function normalizeDateBound(raw: string | undefined, bound: "since" | "until"): string | undefined {
 	const trimmed = raw?.trim();
 	if (!trimmed) return undefined;
-	if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
-		return bound === "since" ? `${trimmed} 00:00:00` : `${trimmed} 23:59:59`;
+
+	const dateOnly = trimmed.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/);
+	if (dateOnly && dateOnly[1] && dateOnly[2] && dateOnly[3]) {
+		const base = `${dateOnly[1]}-${pad2(dateOnly[2])}-${pad2(dateOnly[3])}`;
+		return bound === "since" ? `${base} 00:00:00` : `${base} 23:59:59`;
 	}
+
+	const dateTimeNoSec = trimmed.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})[T\s]+([01]?\d|2[0-3]):([0-5]\d)$/);
+	if (dateTimeNoSec && dateTimeNoSec[1] && dateTimeNoSec[2] && dateTimeNoSec[3] && dateTimeNoSec[4] && dateTimeNoSec[5]) {
+		const base = `${dateTimeNoSec[1]}-${pad2(dateTimeNoSec[2])}-${pad2(dateTimeNoSec[3])} ${pad2(dateTimeNoSec[4])}:${dateTimeNoSec[5]}`;
+		return bound === "since" ? `${base}:00` : `${base}:59`;
+	}
+
+	const dateTimeWithSec = trimmed.match(
+		/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})[T\s]+([01]?\d|2[0-3]):([0-5]\d):([0-5]\d)(?:\.\d+)?(?:Z)?$/i,
+	);
+	if (
+		dateTimeWithSec &&
+		dateTimeWithSec[1] &&
+		dateTimeWithSec[2] &&
+		dateTimeWithSec[3] &&
+		dateTimeWithSec[4] &&
+		dateTimeWithSec[5] &&
+		dateTimeWithSec[6]
+	) {
+		return `${dateTimeWithSec[1]}-${pad2(dateTimeWithSec[2])}-${pad2(dateTimeWithSec[3])} ${pad2(dateTimeWithSec[4])}:${dateTimeWithSec[5]}:${dateTimeWithSec[6]}`;
+	}
+
+	const timeNoSec = trimmed.match(/^([01]?\d|2[0-3]):([0-5]\d)$/);
+	if (timeNoSec && timeNoSec[1] && timeNoSec[2]) {
+		const base = `${pad2(timeNoSec[1])}:${timeNoSec[2]}`;
+		return bound === "since" ? `${base}:00` : `${base}:59`;
+	}
+
+	const timeWithSec = trimmed.match(/^([01]?\d|2[0-3]):([0-5]\d):([0-5]\d)$/);
+	if (timeWithSec && timeWithSec[1] && timeWithSec[2] && timeWithSec[3]) {
+		return `${pad2(timeWithSec[1])}:${timeWithSec[2]}:${timeWithSec[3]}`;
+	}
+
 	return trimmed.replace("T", " ");
+}
+
+function matchesDateBound(timestamp: string, boundValue: string, kind: "since" | "until"): boolean {
+	const normalized = normalizeEvidenceTimestamp(timestamp);
+	if (!normalized) return false;
+	if (FULL_DATE_TS_RE.test(boundValue)) {
+		if (!FULL_DATE_TS_RE.test(normalized)) return false;
+		const comparable = DATE_ONLY_TS_RE.test(normalized) ? `${normalized} 00:00:00` : normalized;
+		return kind === "since" ? comparable >= boundValue : comparable <= boundValue;
+	}
+	if (TIME_ONLY_TS_RE.test(boundValue)) {
+		let comparable = "";
+		if (TIME_ONLY_TS_RE.test(normalized)) {
+			comparable = normalized.length === 5 ? `${normalized}:00` : normalized;
+		} else if (FULL_DATE_TS_RE.test(normalized) && !DATE_ONLY_TS_RE.test(normalized)) {
+			comparable = normalized.slice(11);
+		}
+		if (!comparable) return false;
+		return kind === "since" ? comparable >= boundValue : comparable <= boundValue;
+	}
+	return kind === "since" ? normalized >= boundValue : normalized <= boundValue;
 }
 
 /**
@@ -456,7 +564,6 @@ export interface ExternalEvidenceMessageInput {
 	groupId: string;
 	groupName: string;
 	role?: GroupRole;
-	visibility?: VisibilityLevel;
 	sender: string;
 	senderId?: string;
 	timestamp: string;
@@ -479,10 +586,23 @@ export async function ingestExternalMessages(
 	const seenFp = new Set(existing.map((r) => r.fingerprint));
 	const usedIds = new Set(existing.map((r) => r.sourceId));
 	const lastExistingTsByGroup = new Map<string, string>();
+	const lastExistingRowidByGroup = new Map<string, number>();
+	let lastGlobalFullTs = "";
 	for (const rec of existing) {
+		if (!FULL_DATE_TS_RE.test(rec.timestamp)) continue;
+		const key = sortableTimestampKey(rec.timestamp);
+		if (!lastGlobalFullTs || key > lastGlobalFullTs) lastGlobalFullTs = key;
 		const prevTs = lastExistingTsByGroup.get(rec.groupId);
-		if (!prevTs || rec.timestamp > prevTs) {
-			lastExistingTsByGroup.set(rec.groupId, rec.timestamp);
+		const rowid = extractNtqqRowid(rec.sourceId);
+		if (!prevTs || key > prevTs) {
+			lastExistingTsByGroup.set(rec.groupId, key);
+			if (rowid !== null) lastExistingRowidByGroup.set(rec.groupId, rowid);
+			else lastExistingRowidByGroup.delete(rec.groupId);
+		} else if (key === prevTs && rowid !== null) {
+			const prevRow = lastExistingRowidByGroup.get(rec.groupId);
+			if (prevRow === undefined || rowid > prevRow) {
+				lastExistingRowidByGroup.set(rec.groupId, rowid);
+			}
 		}
 	}
 	let merged: EvidenceMessageRecord[] = [...existing];
@@ -499,10 +619,8 @@ export async function ingestExternalMessages(
 		const groupId = raw.groupId.trim();
 		if (!groupId) continue;
 		const groupName = raw.groupName.trim() || groupId;
-		const role: GroupRole = raw.role ?? inferGroupMeta(groupName).role;
-		const visibility: VisibilityLevel = raw.visibility ?? (role === "cabinet" ? "gm" : "public");
 		const sender = raw.sender.trim() || "未知成员";
-		const timestamp = raw.timestamp.trim() || "2026-01-01 00:00:00";
+		const timestamp = normalizeEvidenceTimestamp(raw.timestamp);
 		const fp = computeEvidenceFingerprint({ groupId, sender, timestamp, text });
 
 		const tag = raw.sourceTag || `ntqq://group/${groupId}`;
@@ -525,21 +643,41 @@ export async function ingestExternalMessages(
 			counter.skippedDuplicates += 1;
 			continue;
 		}
-		const prevGroupMaxTs = lastExistingTsByGroup.get(groupId);
-		if (prevGroupMaxTs && timestamp < prevGroupMaxTs) {
-			needsChronoSort = true;
-		}
 		let sourceId = explicitSourceId || `qq-${groupId}-${fp.slice(0, 8)}`;
 		if (!explicitSourceId && usedIds.has(sourceId)) {
 			let suffix = 2;
 			while (usedIds.has(`${sourceId}-${suffix}`)) suffix += 1;
 			sourceId = `${sourceId}-${suffix}`;
 		}
+		if (FULL_DATE_TS_RE.test(timestamp)) {
+			const tsKey = sortableTimestampKey(timestamp);
+			const prevGroupMaxTs = lastExistingTsByGroup.get(groupId);
+			const rowid = extractNtqqRowid(sourceId);
+			if (
+				(prevGroupMaxTs && tsKey < prevGroupMaxTs) ||
+				(lastGlobalFullTs && tsKey < lastGlobalFullTs)
+			) {
+				needsChronoSort = true;
+			} else if (prevGroupMaxTs && tsKey === prevGroupMaxTs && rowid !== null) {
+				const prevRow = lastExistingRowidByGroup.get(groupId);
+				if (prevRow !== undefined && rowid < prevRow) {
+					needsChronoSort = true;
+				}
+			}
+			if (!lastGlobalFullTs || tsKey > lastGlobalFullTs) lastGlobalFullTs = tsKey;
+			if (!prevGroupMaxTs || tsKey > prevGroupMaxTs) {
+				lastExistingTsByGroup.set(groupId, tsKey);
+				if (rowid !== null) lastExistingRowidByGroup.set(groupId, rowid);
+				else lastExistingRowidByGroup.delete(groupId);
+			} else if (tsKey === prevGroupMaxTs && rowid !== null) {
+				const prevRow = lastExistingRowidByGroup.get(groupId);
+				if (prevRow === undefined || rowid > prevRow) {
+					lastExistingRowidByGroup.set(groupId, rowid);
+				}
+			}
+		}
 		seenFp.add(fp);
 		usedIds.add(sourceId);
-		if (!prevGroupMaxTs || timestamp > prevGroupMaxTs) {
-			lastExistingTsByGroup.set(groupId, timestamp);
-		}
 		merged.push({
 			sourceId,
 			groupId,
@@ -548,8 +686,6 @@ export async function ingestExternalMessages(
 			...(raw.senderId ? { senderId: raw.senderId } : {}),
 			timestamp,
 			text,
-			kind: classifyMessageKind(sender, text, role),
-			visibility,
 			fingerprint: fp,
 			lineIndex: merged.length,
 		});
@@ -557,7 +693,7 @@ export async function ingestExternalMessages(
 		counter.newlyIngested += 1;
 	}
 
-	if (newlyIngested > 0 || needsChronoSort) {
+	if (needsChronoSort) {
 		merged = sortEvidenceChronologically(merged);
 	}
 
@@ -587,7 +723,7 @@ export async function ingestExternalMessages(
 /**
  * 扫描 `00-群聊收集/` 多群聊天文件并增量合入 `.wenyou/evidence.jsonl`：
  * - 支持 QQ 纯文本粘贴 `.txt`、QCE `.json`、`.jsonl`
- * - 按指纹幂等去重
+ * - 按显式 sourceId（优先）与指纹幂等去重
  * - 严格区分总入库游标 (`lastIngestedSourceId`) 与上次简报已汇报游标 (`lastReportedSourceId`)
  */
 export async function pullQqGroupsIncremental(cwd: string, groupIdFilter?: string): Promise<WenyouPullQqResult> {
@@ -595,11 +731,21 @@ export async function pullQqGroupsIncremental(cwd: string, groupIdFilter?: strin
 	const cursors = await loadCursors(cwd);
 	const seenFp = new Set(existing.map((r) => r.fingerprint));
 	const usedIds = new Set(existing.map((r) => r.sourceId));
+	const lastExistingTsByGroup = new Map<string, string>();
+	let lastGlobalFullTs = "";
+	for (const rec of existing) {
+		if (!FULL_DATE_TS_RE.test(rec.timestamp)) continue;
+		const key = sortableTimestampKey(rec.timestamp);
+		if (!lastGlobalFullTs || key > lastGlobalFullTs) lastGlobalFullTs = key;
+		const prevTs = lastExistingTsByGroup.get(rec.groupId);
+		if (!prevTs || key > prevTs) lastExistingTsByGroup.set(rec.groupId, key);
+	}
 	let merged: EvidenceMessageRecord[] = [...existing];
 	const sourceFilesByGroup = new Map<string, Set<string>>();
 
 	let newlyIngested = 0;
 	let skippedDuplicates = 0;
+	let needsChronoSort = false;
 
 	const collectDir = join(cwd, "00-群聊收集");
 	const files = await listCollectFiles(collectDir);
@@ -609,7 +755,7 @@ export async function pullQqGroupsIncremental(cwd: string, groupIdFilter?: strin
 		if (groupIdFilter && meta.groupId !== groupIdFilter) continue;
 		const ext = extname(file.absPath).toLowerCase();
 		const content = await readFile(file.absPath, "utf8");
-		let parsed: Omit<EvidenceMessageRecord, "lineIndex">[] = [];
+		let parsed: ParsedEvidenceCandidate[] = [];
 
 		if (ext === ".txt") {
 			parsed = parsePlainTextMessages(content, meta);
@@ -658,20 +804,35 @@ export async function pullQqGroupsIncremental(cwd: string, groupIdFilter?: strin
 			parsed = normalizeRawJsonItems(items, meta);
 		}
 
-		for (const item of parsed) {
+		for (const candidate of parsed) {
+			const item = candidate.record;
 			const set = sourceFilesByGroup.get(item.groupId) ?? new Set<string>();
 			set.add(`00-群聊收集/${file.relPath}`);
 			sourceFilesByGroup.set(item.groupId, set);
 
-			if (seenFp.has(item.fingerprint)) {
+			if (candidate.hasExplicitSourceId) {
+				if (usedIds.has(item.sourceId)) {
+					skippedDuplicates += 1;
+					continue;
+				}
+			} else if (seenFp.has(item.fingerprint)) {
 				skippedDuplicates += 1;
 				continue;
 			}
 			let sourceId = item.sourceId;
-			if (usedIds.has(sourceId)) {
+			if (!candidate.hasExplicitSourceId && usedIds.has(sourceId)) {
 				let suffix = 2;
 				while (usedIds.has(`${sourceId}-${suffix}`)) suffix += 1;
 				sourceId = `${sourceId}-${suffix}`;
+			}
+			if (FULL_DATE_TS_RE.test(item.timestamp)) {
+				const tsKey = sortableTimestampKey(item.timestamp);
+				const prevGroupMaxTs = lastExistingTsByGroup.get(item.groupId);
+				if ((prevGroupMaxTs && tsKey < prevGroupMaxTs) || (lastGlobalFullTs && tsKey < lastGlobalFullTs)) {
+					needsChronoSort = true;
+				}
+				if (!lastGlobalFullTs || tsKey > lastGlobalFullTs) lastGlobalFullTs = tsKey;
+				if (!prevGroupMaxTs || tsKey > prevGroupMaxTs) lastExistingTsByGroup.set(item.groupId, tsKey);
 			}
 			seenFp.add(item.fingerprint);
 			usedIds.add(sourceId);
@@ -680,7 +841,7 @@ export async function pullQqGroupsIncremental(cwd: string, groupIdFilter?: strin
 		}
 	}
 
-	if (newlyIngested > 0) {
+	if (needsChronoSort) {
 		merged = sortEvidenceChronologically(merged);
 	}
 
@@ -701,18 +862,16 @@ export async function pullQqGroupsIncremental(cwd: string, groupIdFilter?: strin
 	};
 }
 
-/** 按 sourceId 回查同群前后 N（默认 30，最高支持 10,000 单侧即覆盖 20,000 条单群上限）条上下文，并遵守视角可见性裁剪 */
+/** 按 sourceId 回查同群前后 N（默认 30，最高支持 10,000 单侧即覆盖 20,000 条单群上限）条上下文 */
 export async function lookupSourceContext(
 	cwd: string,
 	sourceId: string,
 	windowSize = DEFAULT_SOURCE_CONTEXT_WINDOW,
-	viewer: ViewerScope = { kind: "gm" },
 ): Promise<SourceContextWindow | null> {
 	const all = await loadEvidenceRecords(cwd);
-	const visible = all.filter((rec) => canViewerSee(rec.visibility, rec.visibleToFactions, viewer));
-	const hit = visible.find((rec) => rec.sourceId === sourceId);
+	const hit = all.find((rec) => rec.sourceId === sourceId);
 	if (!hit) return null;
-	const sameGroup = visible.filter((rec) => rec.groupId === hit.groupId);
+	const sameGroup = all.filter((rec) => rec.groupId === hit.groupId);
 	const idx = sameGroup.findIndex((rec) => rec.sourceId === sourceId);
 	if (idx === -1) return null;
 	const win = Math.max(0, Math.min(MAX_SOURCE_CONTEXT_WINDOW, Math.floor(windowSize)));
@@ -739,7 +898,6 @@ export interface SearchEvidenceQuery {
 	until?: string;
 	order?: "latest" | "earliest";
 	limit?: number;
-	viewer?: ViewerScope;
 }
 
 export interface SearchEvidenceResult {
@@ -754,19 +912,17 @@ export async function searchEvidenceWithStats(
 	cwd: string,
 	query: SearchEvidenceQuery,
 ): Promise<SearchEvidenceResult> {
-	const viewer = query.viewer ?? { kind: "gm" };
 	const all = await loadEvidenceRecords(cwd);
-	const visible = all.filter((rec) => canViewerSee(rec.visibility, rec.visibleToFactions, viewer));
 	const kw = query.keyword?.trim().toLowerCase();
 	const senderKw = query.sender?.trim().toLowerCase();
 	const sinceNorm = normalizeDateBound(query.since, "since");
 	const untilNorm = normalizeDateBound(query.until, "until");
 	const limit = Math.max(1, Math.min(MAX_EVIDENCE_SEARCH_LIMIT, Math.floor(query.limit ?? DEFAULT_EVIDENCE_SEARCH_LIMIT)));
 	const order: "latest" | "earliest" = query.order === "earliest" ? "earliest" : "latest";
-	const matched = visible.filter((rec) => {
+	const matched = all.filter((rec) => {
 		if (query.groupId && rec.groupId !== query.groupId) return false;
-		if (sinceNorm && rec.timestamp < sinceNorm) return false;
-		if (untilNorm && rec.timestamp > untilNorm) return false;
+		if (sinceNorm && !matchesDateBound(rec.timestamp, sinceNorm, "since")) return false;
+		if (untilNorm && !matchesDateBound(rec.timestamp, untilNorm, "until")) return false;
 		if (senderKw && !rec.sender.toLowerCase().includes(senderKw)) return false;
 		if (kw && !rec.text.toLowerCase().includes(kw) && !rec.sender.toLowerCase().includes(kw)) return false;
 		return true;
@@ -774,7 +930,7 @@ export async function searchEvidenceWithStats(
 	const records = order === "earliest" ? matched.slice(0, limit) : matched.slice(-limit);
 	return {
 		records,
-		totalScanned: visible.length,
+		totalScanned: all.length,
 		totalMatched: matched.length,
 		order,
 	};

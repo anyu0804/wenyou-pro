@@ -73,52 +73,6 @@ function makeProjectV4Json(opts: {
 	);
 }
 
-function makeDeltaV2Json(opts: {
-	snapshotId: string;
-	statesByCell: number[];
-	burgs: Array<Record<string, unknown>>;
-	garrisons: Array<Record<string, unknown>>;
-	tacticalItems?: Array<Record<string, unknown>>;
-}): string {
-	const zeros = encodeCellLayerRle(opts.statesByCell.map(() => 0), 65535);
-	const heights = encodeCellLayerRle(
-		opts.statesByCell.map((s) => (s === 0 ? 10 : 30)),
-		100,
-	);
-	return JSON.stringify({
-		format: "wenyou-map-delta",
-		version: 2,
-		snapshotId: opts.snapshotId,
-		label: "RLE V2 快照",
-		createdAt: "2026-11-26T00:00:00Z",
-		activeMapId: "hebei-1000x800",
-		theaters: [
-			{
-				baseMapId: "hebei-1000x800",
-				baseMapSha256: "a".repeat(64),
-				mapName: "河朔战区",
-				overlay: {
-					heights,
-					statesByCell: encodeCellLayerRle(opts.statesByCell, 65535),
-					provincesByCell: zeros,
-					religionsByCell: zeros,
-					states: [
-						{ i: 0, name: "Neutrals" },
-						{ i: 1, name: "北周", color: "#3366cc", neighbors: [2], capital: 1 },
-						{ i: 2, name: "南楚", color: "#cc3344", neighbors: [1], capital: 2 },
-					],
-					burgs: [{}, ...opts.burgs],
-					provinces: [],
-				},
-				garrisons: opts.garrisons,
-				battle: { deployments: [] },
-				fieldBattles: [],
-				tacticalItems: opts.tacticalItems ?? [],
-			},
-		],
-	});
-}
-
 function makeFmgMapText(): string {
 	const lines = new Array<string>(32).fill("");
 	lines[0] = "1.108.0|FMG|2026|4242|1200|900|east-sea";
@@ -164,18 +118,23 @@ describe("map-state 纯算法与多格式解析/跨回合差分/安全边界", (
 		expect(computeCardinalSector(800, 800, 900, 900)).toBe("东南");
 	});
 
-	it("扫描并解析 wenyou-project v4、RLE delta v2 与 FMG .map，静默跳过非地图 JSON 且不污染 listMaps 图片列表", async () => {
+	it("扫描并解析 wenyou-project v4 与 FMG .map，静默跳过非地图/已移除 wenyou-map-delta JSON 且不污染 listMaps 图片列表", async () => {
 		const root = await mkdtemp(join(tmpdir(), "wenyou-map-state-"));
 		tempDirs.push(root);
 		await mkdir(join(root, "05-沙盘与图集"), { recursive: true });
 		await mkdir(join(root, "maps"), { recursive: true });
 
-		// 干扰文件：普通 JSON + 损坏 JSON + 图片
+		// 干扰文件：普通 JSON + 损坏 JSON + 已废弃 wenyou-map-delta + 图片
 		await writeFile(join(root, "05-沙盘与图集", "notes.json"), JSON.stringify({ note: "not a map" }), "utf8");
 		await writeFile(join(root, "05-沙盘与图集", "broken.json"), "{invalid-json", "utf8");
+		await writeFile(
+			join(root, "05-沙盘与图集", "legacy-delta.json"),
+			JSON.stringify({ format: "wenyou-map-delta", version: 2, theaters: [{ baseMapId: "hebei", overlay: {} }] }),
+			"utf8",
+		);
 		await writeFile(join(root, "05-沙盘与图集", "景平五年秋-河朔图.svg"), "<svg/>", "utf8");
 
-		// 3 类合法快照
+		// 合法快照：两期 wenyou-project v4 + 1 份 FMG .map
 		await writeFile(
 			join(root, "05-沙盘与图集", "景平五年秋-河朔.json"),
 			makeProjectV4Json({
@@ -217,9 +176,8 @@ describe("map-state 纯算法与多格式解析/跨回合差分/安全边界", (
 			"utf8",
 		);
 		await writeFile(
-			join(root, "05-沙盘与图集", "景平六年春-河朔delta.json"),
-			makeDeltaV2Json({
-				snapshotId: "snap-t2",
+			join(root, "05-沙盘与图集", "景平六年春-河朔.json"),
+			makeProjectV4Json({
 				statesByCell: [0, 1, 2, 2, 2, 2, 3],
 				burgs: [
 					{ i: 1, name: "清源城", x: 500, y: 120, cell: 1, state: 1, capital: 1, port: 0, population: 15 },
@@ -248,7 +206,8 @@ describe("map-state 纯算法与多格式解析/跨回合差分/安全边界", (
 
 		const snapshots = await listMapSnapshots(root);
 		expect(snapshots).toHaveLength(3);
-		expect(snapshots.map((s) => s.format).sort()).toEqual(["fmg-map", "wenyou-map-delta", "wenyou-project"]);
+		expect(snapshots.map((s) => s.format).sort()).toEqual(["fmg-map", "wenyou-project", "wenyou-project"]);
+		expect(snapshots.some((s) => s.relPath.includes("legacy-delta"))).toBe(false);
 
 		// 1) inspect wenyou-project v4
 		const inspV4 = await inspectMapSnapshot(root, "05-沙盘与图集/景平五年秋-河朔.json");
@@ -289,11 +248,11 @@ describe("map-state 纯算法与多格式解析/跨回合差分/安全边界", (
 		expect(wu.neighborStateNames).toEqual(["北魏"]);
 		expect(inspMap.burgs.find((b) => b.name === "建康港")?.isPort).toBe(true);
 
-		// 3) 跨格式差分（wenyou-project v4 → RLE wenyou-map-delta v2）
+		// 3) 跨回合差分（wenyou-project v4 → wenyou-project v4）
 		const diff = await diffMapSnapshots(
 			root,
 			"05-沙盘与图集/景平五年秋-河朔.json",
-			"05-沙盘与图集/景平六年春-河朔delta.json",
+			"05-沙盘与图集/景平六年春-河朔.json",
 		);
 		expect(diff.changedCellCount).toBe(2);
 		const northDelta = diff.stateDeltas.find((d) => d.stateName === "北周")!;
@@ -674,8 +633,8 @@ describe("map-state 纯算法与多格式解析/跨回合差分/安全边界", (
 		expect(() => buildOddRHexNeighbors(50_000, 50_000, 4)).toThrow("超出安全上限");
 		expect(buildOddRHexNeighbors(40, 30, 1)).toEqual(buildOddRHexNeighbors(40, 30, 4));
 
-		// 4. wenyou-map-delta 支持 overlay.source 中的 wenyouImageBase 比例尺与 hexRadius
-		const imgDelta = JSON.stringify({
+		// 4. wenyou-map-delta 格式已彻底移除：saveMapSnapshot 与 inspectMapSnapshot 均拒绝
+		const legacyDelta = JSON.stringify({
 			format: "wenyou-map-delta",
 			version: 2,
 			activeMapId: "img-delta-300x200",
@@ -684,14 +643,6 @@ describe("map-state 纯算法与多格式解析/跨回合差分/安全边界", (
 					baseMapId: "img-delta-300x200",
 					mapName: "江东图片增量",
 					overlay: {
-						source: JSON.stringify({
-							wenyouImageBase: 1,
-							width: 300,
-							height: 200,
-							hexRadius: 50,
-							imageRelPath: "05-沙盘与图集/jd.png",
-							mapWidthKm: 600,
-						}),
 						heights: encodeCellLayerRle(new Array<number>(12).fill(25), 100),
 						statesByCell: encodeCellLayerRle([1, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0], 65535),
 						states: [
@@ -708,11 +659,8 @@ describe("map-state 纯算法与多格式解析/跨回合差分/安全边界", (
 				},
 			],
 		});
-		await writeFile(join(root, "05-沙盘与图集", "img-delta.json"), imgDelta, "utf8");
-		const deltaInsp = await inspectMapSnapshot(root, "05-沙盘与图集/img-delta.json");
-		expect(deltaInsp.baseKind).toBe("image");
-		expect(deltaInsp.mapWidthKm).toBe(600);
-		expect(deltaInsp.kmPerPixel).toBe(2);
-		expect(deltaInsp.states.find((s) => s.name === "吴")?.neighborStateNames).toEqual(["越"]);
+		await expect(saveMapSnapshot(root, "img-delta.json", legacyDelta)).rejects.toThrow("必须是合法的 wenyou-project JSON");
+		await writeFile(join(root, "05-沙盘与图集", "img-delta.json"), legacyDelta, "utf8");
+		await expect(inspectMapSnapshot(root, "05-沙盘与图集/img-delta.json")).rejects.toThrow("文件不是有效的地图快照");
 	});
 });

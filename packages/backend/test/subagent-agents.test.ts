@@ -11,21 +11,11 @@ afterEach(async () => {
 });
 
 describe("subagent agent definitions", () => {
-	it("内置 worker 与 4 个文游专职子代理均可用", async () => {
-		const root = join(process.cwd(), ".local/tmp/subagent-dev-capability/empty");
+	it("无内置硬编码子代理：空目录仅返回空列表", async () => {
+		const root = await mkdtemp(join(tmpdir(), "percho-subagent-empty-"));
+		tempDirs.push(root);
 		const agents = await discoverAgents(root, { agentDir: root, projectTrusted: false });
-		expect(agents.map((a) => a.name)).toEqual([
-			"worker",
-			"qq-intel-analyst",
-			"policy-drafter",
-			"chronicle-historian",
-			"sandbox-cartographer",
-		]);
-		expect(agents[0]).toMatchObject({
-			name: "worker",
-			source: "builtin",
-			tools: ["read", "write", "edit", "bash", "grep", "find", "ls", "webfetch"],
-		});
+		expect(agents).toEqual([]);
 	});
 
 	it("可选边界字段：合法保留、非法丢弃并保留 deny 警示", () => {
@@ -42,6 +32,7 @@ describe("subagent agent definitions", () => {
 		expect(definition("permissionMode: invalid\nunknown: ignored")?.permissionMode).toBeUndefined();
 		expect(definition("")?.deny).toBeUndefined();
 	});
+
 	it("parses frontmatter and body", () => {
 		const agent = parseAgentMarkdown(
 			`---\nname: scout\ndescription: Code scout\ntools: read, grep, find\nmodel: provider/model # optional\n---\n\nInspect files only.`,
@@ -80,28 +71,35 @@ describe("subagent agent definitions", () => {
 		});
 	});
 
-	it("applies builtin → user → trusted project precedence", async () => {
+	it("applies user → trusted project precedence and ignores project agents when untrusted", async () => {
 		const root = await mkdtemp(join(tmpdir(), "percho-subagent-agents-"));
 		tempDirs.push(root);
 		const agentDir = join(root, "agent");
 		await mkdir(join(agentDir, "agents"), { recursive: true });
 		await mkdir(join(root, ".pi", "agents"), { recursive: true });
 		await writeFile(
-			join(agentDir, "agents", "worker.md"),
-			"---\nname: worker\ndescription: user\ntools: read\n---\nuser",
+			join(agentDir, "agents", "scout.md"),
+			"---\nname: scout\ndescription: user\ntools: read\n---\nuser",
 		);
 		await writeFile(
-			join(root, ".pi", "agents", "worker.md"),
-			"---\nname: worker\ndescription: project\ntools: grep\n---\nproject",
+			join(root, ".pi", "agents", "scout.md"),
+			"---\nname: scout\ndescription: project\ntools: grep\n---\nproject",
+		);
+		await writeFile(
+			join(root, ".pi", "agents", "project-only.md"),
+			"---\nname: project-only\ndescription: only in project\ntools: read\n---\nproj",
 		);
 
 		const trusted = await discoverAgents(root, { agentDir, projectTrusted: true });
-		expect(trusted.find((agent) => agent.name === "worker")).toMatchObject({
+		expect(trusted.map((a) => a.name).sort()).toEqual(["project-only", "scout"]);
+		expect(trusted.find((agent) => agent.name === "scout")).toMatchObject({
 			description: "project",
 			source: "project",
 		});
+
 		const untrusted = await discoverAgents(root, { agentDir, projectTrusted: false });
-		expect(untrusted.find((agent) => agent.name === "worker")).toMatchObject({
+		expect(untrusted.map((a) => a.name)).toEqual(["scout"]);
+		expect(untrusted.find((agent) => agent.name === "scout")).toMatchObject({
 			description: "user",
 			source: "user",
 		});

@@ -21,7 +21,6 @@ export {
 	normalizeQqUin,
 	resolveCustomDbDirCandidate,
 } from "./ntqq-sync";
-export { type LintVaultEntity, lintPolicyDraft, type PolicyLintContext } from "./policy-lint";
 export {
 	computeEvidenceFingerprint,
 	computeUnreportedMessages,
@@ -42,15 +41,11 @@ export {
 export {
 	assertPathInsideWorkspace,
 	assertRealTargetInsideWorkspace,
-	canViewerSee,
 	isPrivateVaultPath,
 	isRawChatPath,
 	normalizeVaultPath,
 	type ParsedFrontmatterDoc,
 	parseMarkdownWithFrontmatter,
-	parseVisibility,
 	resolveRealPathInsideWorkspace,
-	type SecretBlockStripResult,
-	stripRestrictedMarkdownBlocks,
-} from "./secret-blocks";
+} from "./vault-paths";
 export { type PublishBriefingInput, WenyouService } from "./service";

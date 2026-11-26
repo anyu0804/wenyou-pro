@@ -14,7 +14,6 @@ import type {
 	NtqqStatusSnapshot,
 	NtqqSyncCampaignResult,
 	NtqqSyncGroupDetail,
-	VisibilityLevel,
 } from "@percho/shared";
 import { computeUnreportedMessages, ingestExternalMessages, loadCursors, loadEvidenceRecords } from "./qq-ingest";
 
@@ -471,11 +470,6 @@ function parseRole(raw: unknown): GroupRole {
 	return "other";
 }
 
-function parseVisibility(raw: unknown, role: GroupRole): VisibilityLevel {
-	if (raw === "gm" || raw === "public" || raw === "faction") return raw;
-	return role === "cabinet" ? "gm" : "public";
-}
-
 /**
  * Wenyou Pro 本机 NTQQ 零依赖只读 VFS 解库与按群增量同步服务。
  * - 永远只读访问 QQ 源加密库（nt_msg.db / group_info.db + -wal），绝不写入或锁死源库
@@ -835,7 +829,6 @@ export class NtqqSyncService {
 						? { groupName: rec.groupName.trim() }
 						: {}),
 					role,
-					visibility: parseVisibility(rec.visibility, role),
 				});
 			}
 			return out;
@@ -862,7 +855,6 @@ export class NtqqSyncService {
 				groupId: gid,
 				...(item.groupName?.trim() ? { groupName: item.groupName.trim() } : {}),
 				role,
-				visibility: parseVisibility(item.visibility, role),
 			});
 		}
 		await atomicWriteJson(this.campaignBindingsPath(cwd), { version: 1, groups: clean });
@@ -990,7 +982,6 @@ export class NtqqSyncService {
 							groupId: msg.groupId,
 							groupName: binding?.groupName || msg.groupName || msg.groupId,
 							role: binding?.role,
-							visibility: binding?.visibility,
 							sender: msg.sender,
 							...(msg.senderId ? { senderId: msg.senderId } : {}),
 							timestamp: msg.timestamp,

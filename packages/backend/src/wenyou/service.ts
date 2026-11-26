@@ -1,31 +1,23 @@
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, readdir, readFile, realpath, rename, stat, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, join, relative, resolve } from "node:path";
 import {
 	type BriefingIntelCheck,
 	type BriefingProgressItem,
 	buildWenyouAssetUrl,
-	clampViewerScope,
-	formatViewerScope,
-	type GroupCursorRecord,
 	type MapAssetItem,
 	type MapInspectResult,
 	type MapSnapshotDiffResult,
 	type MapSnapshotSummary,
-	parseViewerScope,
 	type PolicyArtifact,
-	type PolicyLintReport,
 	type RollingLedgerCategory,
 	type RollingLedgerEntry,
 	type SituationBriefing,
 	type SourceContextWindow,
-	type ViewerScope,
-	type VisibilityLevel,
 	WENYOU_STANDARD_DIRS,
 	type WenyouCanonDocSummary,
 	type WenyouCanvasEvent,
-	type WenyouExportPreflightResult,
 	type WenyouPullQqResult,
 	type WenyouWorkspaceOverview,
 	type WenyouWritePolicyResult,
@@ -40,7 +32,6 @@ import {
 	saveMapSnapshot,
 } from "./map-state";
 import { NtqqSyncService, type NtqqSyncServiceOptions } from "./ntqq-sync";
-import { type LintVaultEntity, lintPolicyDraft } from "./policy-lint";
 import {
 	computeUnreportedMessages,
 	DEFAULT_SOURCE_CONTEXT_WINDOW,
@@ -55,17 +46,13 @@ import {
 	searchEvidenceWithStats,
 } from "./qq-ingest";
 import {
-	assertPathInsideWorkspace,
 	assertRealTargetInsideWorkspace,
-	canViewerSee,
 	isPrivateVaultPath,
 	isRawChatPath,
 	normalizeVaultPath,
 	parseMarkdownWithFrontmatter,
-	parseVisibility,
 	resolveRealPathInsideWorkspace,
-	stripRestrictedMarkdownBlocks,
-} from "./secret-blocks";
+} from "./vault-paths";
 
 const MAP_IMAGE_EXTS = new Set([".svg", ".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"]);
 const SERIAL_NO_RE = /^[A-Za-z0-9_-]{1,24}$/;
@@ -90,15 +77,25 @@ function slugSafe(raw: string): string {
 async function atomicWriteUtf8(filePath: string, content: string): Promise<void> {
 	await mkdir(dirname(filePath), { recursive: true });
 	const tmp = `${filePath}.tmp-${randomUUID().slice(0, 8)}`;
-	await writeFile(tmp, content, "utf8");
-	await rename(tmp, filePath);
+	try {
+		await writeFile(tmp, content, "utf8");
+		await rename(tmp, filePath);
+	} catch (err) {
+		await rm(tmp, { force: true }).catch(() => undefined);
+		throw err;
+	}
 }
 
 async function atomicWriteBuffer(filePath: string, content: Buffer): Promise<void> {
 	await mkdir(dirname(filePath), { recursive: true });
 	const tmp = `${filePath}.tmp-${randomUUID().slice(0, 8)}`;
-	await writeFile(tmp, content);
-	await rename(tmp, filePath);
+	try {
+		await writeFile(tmp, content);
+		await rename(tmp, filePath);
+	} catch (err) {
+		await rm(tmp, { force: true }).catch(() => undefined);
+		throw err;
+	}
 }
 
 async function walkRelativeFiles(root: string, relPrefix = ""): Promise<string[]> {
@@ -116,51 +113,6 @@ async function walkRelativeFiles(root: string, relPrefix = ""): Promise<string[]
 		}
 	}
 	return out;
-}
-
-function parseStringArray(value: unknown): string[] | undefined {
-	if (!Array.isArray(value)) return undefined;
-	const list = value.filter((v): v is string => typeof v === "string" && v.trim().length > 0);
-	return list.length ? list : undefined;
-}
-
-function isBriefingVaultPath(normPath: string): boolean {
-	return normPath === "02-局势简报与台账" || normPath.startsWith("02-局势简报与台账/");
-}
-
-function isPolicyVaultPath(normPath: string): boolean {
-	return normPath === "03-国策与文书" || normPath.startsWith("03-国策与文书/");
-}
-
-/**
- * 解析文档可见性（按目录类别实施不同缺省策略）：
- * - `02-局势简报与台账/`（内部参谋简报/台账）与 `03-国策与文书/`（各国国策/内阁文书）：
- *   未显式标 `visibility` 时默认非公开（若有 `visibleToFactions` 则为 `"faction"`，否则 `"gm"`）；
- * - 其余正史目录：未显式标 `visibility` 时默认 `"public"`；
- * - 任何非空未知值均 Fail-Closed 返回 `"gm"`。
- */
-export function resolveMarkdownDocVisibility(
-	normPath: string,
-	data: Record<string, unknown>,
-): { visibility: VisibilityLevel; visibleToFactions?: string[] } {
-	const visibleToFactions = parseStringArray(data.visibleToFactions);
-	if (isBriefingVaultPath(normPath) || isPolicyVaultPath(normPath)) {
-		const rawVis = data.visibility;
-		if (rawVis === undefined || rawVis === null || (typeof rawVis === "string" && rawVis.trim() === "")) {
-			return {
-				visibility: visibleToFactions && visibleToFactions.length > 0 ? "faction" : "gm",
-				...(visibleToFactions ? { visibleToFactions } : {}),
-			};
-		}
-		return {
-			visibility: parseVisibility(rawVis, "gm"),
-			...(visibleToFactions ? { visibleToFactions } : {}),
-		};
-	}
-	return {
-		visibility: parseVisibility(data.visibility, "public"),
-		...(visibleToFactions ? { visibleToFactions } : {}),
-	};
 }
 
 export interface PublishBriefingInput {
@@ -186,15 +138,10 @@ export interface ParsedCampaignManifest {
 	worldId: string;
 	title: string;
 	currentEra?: string;
-	maxViewer?: ViewerScope;
-	branchId?: string;
-	currentOrder?: number;
 }
 
 export class WenyouService {
 	readonly ntqq: NtqqSyncService;
-	private readonly activeViewers = new Map<string, ViewerScope>();
-	private readonly maxViewers = new Map<string, ViewerScope>();
 	private readonly workspaceLocks = new Map<string, Promise<unknown>>();
 
 	constructor(
@@ -224,45 +171,6 @@ export class WenyouService {
 				this.workspaceLocks.delete(key);
 			}
 		}
-	}
-
-	async setViewerScope(
-		cwd: string,
-		viewerRaw: string | ViewerScope,
-		maxViewerRaw?: string | ViewerScope,
-	): Promise<{ viewer: ViewerScope; maxViewer: ViewerScope }> {
-		const key = normalizeWorkspaceKey(cwd);
-		const manifest = await this.readManifest(cwd);
-		if (maxViewerRaw !== undefined) {
-			const parsedMax = parseViewerScope(maxViewerRaw);
-			const effectiveMax = clampViewerScope(parsedMax, manifest?.maxViewer);
-			this.maxViewers.set(key, effectiveMax);
-		}
-		const maxViewer = clampViewerScope(this.maxViewers.get(key) ?? { kind: "gm" }, manifest?.maxViewer);
-		const requested = parseViewerScope(viewerRaw);
-		const viewer = clampViewerScope(requested, maxViewer);
-		this.activeViewers.set(key, viewer);
-		return { viewer, maxViewer };
-	}
-
-	private async getViewerBounds(
-		cwd: string,
-		requestedViewer?: string | ViewerScope,
-	): Promise<{ viewer: ViewerScope; maxViewer: ViewerScope }> {
-		const key = normalizeWorkspaceKey(cwd);
-		const manifest = await this.readManifest(cwd);
-		const maxViewer = clampViewerScope(this.maxViewers.get(key) ?? { kind: "gm" }, manifest?.maxViewer);
-		const base =
-			requestedViewer !== undefined
-				? parseViewerScope(requestedViewer)
-				: (this.activeViewers.get(key) ?? { kind: "gm" });
-		const viewer = clampViewerScope(base, maxViewer);
-		return { viewer, maxViewer };
-	}
-
-	async getEffectiveViewer(cwd: string, requestedViewer?: string | ViewerScope): Promise<ViewerScope> {
-		const { viewer } = await this.getViewerBounds(cwd, requestedViewer);
-		return viewer;
 	}
 
 	async initCampaign(
@@ -317,43 +225,15 @@ export class WenyouService {
 				worldId?: string;
 				title?: string;
 				currentEra?: string;
-				maxViewer?: unknown;
-				branchId?: unknown;
-				currentOrder?: unknown;
 				branches?: Array<{
-					id?: unknown;
 					currentEra?: string;
-					currentOrder?: unknown;
-					order?: unknown;
 				}>;
 			};
-			let maxViewer: ViewerScope | undefined;
-			if (raw.maxViewer !== undefined && raw.maxViewer !== null && raw.maxViewer !== "") {
-				try {
-					maxViewer = parseViewerScope(raw.maxViewer as string | ViewerScope);
-				} catch {
-					// Fail-Closed: 非法 maxViewer 视为最严格的 public
-					maxViewer = { kind: "public" };
-				}
-			}
 			const firstBranch = raw.branches?.[0];
-			const branchId =
-				typeof raw.branchId === "string" && raw.branchId.trim()
-					? raw.branchId.trim()
-					: typeof firstBranch?.id === "string" && firstBranch.id.trim()
-						? firstBranch.id.trim()
-						: undefined;
-			const rawOrder = raw.currentOrder ?? firstBranch?.currentOrder ?? firstBranch?.order;
-			const currentOrder =
-				typeof rawOrder === "number" && Number.isFinite(rawOrder) ? rawOrder : undefined;
-
 			return {
 				worldId: raw.worldId || slugSafe(basename(cwd)),
 				title: raw.title || basename(cwd),
 				currentEra: raw.currentEra ?? firstBranch?.currentEra,
-				...(maxViewer ? { maxViewer } : {}),
-				...(branchId ? { branchId } : {}),
-				...(currentOrder !== undefined ? { currentOrder } : {}),
 			};
 		} catch {
 			return null;
@@ -445,10 +325,8 @@ export class WenyouService {
 		cwd: string,
 		sourceId: string,
 		windowSize = DEFAULT_SOURCE_CONTEXT_WINDOW,
-		viewerRaw?: string | ViewerScope,
 	): Promise<SourceContextWindow | null> {
-		const viewer = await this.getEffectiveViewer(cwd, viewerRaw);
-		return lookupSourceContext(cwd, sourceId, windowSize, viewer);
+		return lookupSourceContext(cwd, sourceId, windowSize);
 	}
 
 	async searchSources(
@@ -461,10 +339,8 @@ export class WenyouService {
 			until?: string;
 			order?: "latest" | "earliest";
 			limit?: number;
-			viewer?: string | ViewerScope;
 		},
 	) {
-		const viewer = await this.getEffectiveViewer(cwd, query.viewer);
 		return searchEvidenceRecords(cwd, {
 			keyword: query.keyword,
 			sender: query.sender,
@@ -473,7 +349,6 @@ export class WenyouService {
 			until: query.until,
 			order: query.order,
 			limit: query.limit,
-			viewer,
 		});
 	}
 
@@ -487,10 +362,8 @@ export class WenyouService {
 			until?: string;
 			order?: "latest" | "earliest";
 			limit?: number;
-			viewer?: string | ViewerScope;
 		},
 	): Promise<SearchEvidenceResult> {
-		const viewer = await this.getEffectiveViewer(cwd, query.viewer);
 		return searchEvidenceWithStats(cwd, {
 			keyword: query.keyword,
 			sender: query.sender,
@@ -499,12 +372,10 @@ export class WenyouService {
 			until: query.until,
 			order: query.order,
 			limit: query.limit,
-			viewer,
 		});
 	}
 
-	async listBriefings(cwd: string, viewerRaw?: string | ViewerScope): Promise<SituationBriefing[]> {
-		const viewer = await this.getEffectiveViewer(cwd, viewerRaw);
+	async listBriefings(cwd: string): Promise<SituationBriefing[]> {
 		const dir = join(cwd, "02-局势简报与台账", "briefings");
 		if (!existsSync(dir)) return [];
 		const entries = await readdir(dir, { withFileTypes: true });
@@ -512,16 +383,8 @@ export class WenyouService {
 		for (const entry of entries) {
 			if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
 			try {
-				const parsed = JSON.parse(await readFile(join(dir, entry.name), "utf8")) as SituationBriefing & {
-					visibility?: unknown;
-					visibleToFactions?: unknown;
-				};
+				const parsed = JSON.parse(await readFile(join(dir, entry.name), "utf8")) as SituationBriefing;
 				if (!parsed || typeof parsed.id !== "string" || typeof parsed.headline !== "string") continue;
-				if (viewer.kind !== "gm") {
-					const vis = parseVisibility(parsed.visibility, "gm");
-					const factions = parseStringArray(parsed.visibleToFactions);
-					if (!canViewerSee(vis, factions, viewer)) continue;
-				}
 				briefings.push(parsed);
 			} catch {
 				// ignore malformed briefing json
@@ -624,7 +487,7 @@ export class WenyouService {
 			const seq = String(nextNum).padStart(3, "0");
 			const id = `briefing-${seq}`;
 			const now = new Date().toISOString();
-			const headline = input.headline.trim().slice(0, 120);
+			const headline = input.headline.trim();
 
 			const allEvidence = await loadEvidenceRecords(input.cwd);
 			const cursors = refreshCursorStats(allEvidence, await loadCursors(input.cwd));
@@ -727,85 +590,6 @@ export class WenyouService {
 		});
 	}
 
-	async collectLintEntities(cwd: string): Promise<LintVaultEntity[]> {
-		const entities: LintVaultEntity[] = [];
-		const dirs = ["01-设定与国力实册", "04-编年史与条约", "wiki", "chronicle"];
-		for (const rootDir of dirs) {
-			const files = await walkRelativeFiles(cwd, rootDir);
-			for (const rel of files) {
-				if (!rel.endsWith(".md")) continue;
-				try {
-					const raw = await readFile(join(cwd, rel), "utf8");
-					const { data } = parseMarkdownWithFrontmatter(raw);
-					const id = typeof data.id === "string" ? data.id : basename(rel, ".md");
-					const title = typeof data.title === "string" ? data.title : basename(rel, ".md");
-					entities.push({
-						id,
-						title,
-						aliases: parseStringArray(data.aliases),
-						visibility: parseVisibility(data.visibility, "public"),
-						visibleToFactions: parseStringArray(data.visibleToFactions),
-						firstOrder: typeof data.order === "number" ? data.order : undefined,
-						branch: typeof data.branch === "string" ? data.branch : undefined,
-					});
-				} catch {
-					// skip unreadable doc
-				}
-			}
-		}
-		return entities;
-	}
-
-	private matchActorEntity(
-		entities: readonly LintVaultEntity[],
-		actor?: string,
-		actorEntityId?: string,
-	): LintVaultEntity | undefined {
-		const idTarget = actorEntityId?.trim();
-		if (idTarget) {
-			const byId = entities.find((e) => e.id === idTarget);
-			if (byId) return byId;
-		}
-		const nameTarget = actor?.trim();
-		if (!nameTarget) return undefined;
-		return entities.find(
-			(e) => e.id === nameTarget || e.title === nameTarget || (e.aliases?.includes(nameTarget) ?? false),
-		);
-	}
-
-	async lintPolicy(
-		cwd: string,
-		text: string,
-		options?: {
-			viewer?: string | ViewerScope;
-			actor?: string;
-			actorEntityId?: string;
-			branchId?: string;
-			currentOrder?: number;
-		},
-	): Promise<PolicyLintReport> {
-		const [effectiveViewer, manifest, entities] = await Promise.all([
-			this.getEffectiveViewer(cwd, options?.viewer),
-			this.readManifest(cwd),
-			this.collectLintEntities(cwd),
-		]);
-		const matchedActor = this.matchActorEntity(entities, options?.actor, options?.actorEntityId);
-		let lintViewer: ViewerScope = effectiveViewer;
-		if (effectiveViewer.kind === "gm" && matchedActor) {
-			const inferredFaction = matchedActor.visibleToFactions?.[0] ?? matchedActor.id;
-			lintViewer = { kind: "faction", factionId: inferredFaction };
-		}
-		const branchId = options?.branchId ?? manifest?.branchId;
-		const currentOrder = options?.currentOrder ?? manifest?.currentOrder;
-		return lintPolicyDraft(text, {
-			viewer: lintViewer,
-			actorEntityId: options?.actorEntityId ?? matchedActor?.id,
-			branchId,
-			currentOrder,
-			entities,
-		});
-	}
-
 	private async nextPolicySerialNumber(dir: string): Promise<number> {
 		if (!existsSync(dir)) return 1;
 		const entries = await readdir(dir, { withFileTypes: true });
@@ -832,8 +616,7 @@ export class WenyouService {
 		return maxNum + 1;
 	}
 
-	async listPolicies(cwd: string, viewerRaw?: string | ViewerScope): Promise<PolicyArtifact[]> {
-		const viewer = await this.getEffectiveViewer(cwd, viewerRaw);
+	async listPolicies(cwd: string): Promise<PolicyArtifact[]> {
 		const dir = join(cwd, "03-国策与文书");
 		if (!existsSync(dir)) return [];
 		const entries = await readdir(dir, { withFileTypes: true });
@@ -848,25 +631,17 @@ export class WenyouService {
 			const raw = await readFile(mdPath, "utf8");
 			const fileStat = await stat(mdPath);
 			const { data, body } = parseMarkdownWithFrontmatter(raw);
-			const { visibility, visibleToFactions } = resolveMarkdownDocVisibility(relMd, data);
-			if (!canViewerSee(visibility, visibleToFactions, viewer)) continue;
-			const stripped = stripRestrictedMarkdownBlocks(body, viewer);
-			const visibleBody = stripped.visibleBody;
 			const serialMatch = stem.match(/^(\d{2,4})[-_]/);
 			const serialNo =
 				typeof data.serialNo === "string"
 					? data.serialNo
 					: serialMatch?.[1] ?? String(policies.length + 1).padStart(3, "0");
-			const headingMatch = visibleBody.match(/^#\s+(.+)$/m);
+			const headingMatch = body.match(/^#\s+(.+)$/m);
 			const title =
 				typeof data.title === "string"
 					? data.title
 					: headingMatch?.[1]?.trim() || stem.replace(/^\d{2,4}[-_]/, "");
-			const lintReport = await this.lintPolicy(cwd, visibleBody, {
-				viewer,
-				actor: typeof data.actor === "string" ? data.actor : undefined,
-			});
-			const excerpt = visibleBody
+			const excerpt = body
 				.replace(/^#.*$/gm, "")
 				.replace(/\s+/g, " ")
 				.trim()
@@ -882,8 +657,7 @@ export class WenyouService {
 				markdownPath: relMd,
 				...(relDocx ? { docxPath: relDocx } : {}),
 				excerpt,
-				content: visibleBody.trim(),
-				lintReport,
+				content: body.trim(),
 			});
 		}
 		return policies.sort((a, b) => b.serialNo.localeCompare(a.serialNo) || b.createdAt.localeCompare(a.createdAt));
@@ -896,13 +670,14 @@ export class WenyouService {
 		actor?: string;
 		turnLabel?: string;
 		serialNo?: string;
-		viewer?: string | ViewerScope;
-		actorEntityId?: string;
-		branchId?: string;
-		currentOrder?: number;
-		force?: boolean;
+		author?: string;
 		sessionId?: string;
 	}): Promise<WenyouWritePolicyResult> {
+		const trimmedTitle = input.title.trim();
+		if (!trimmedTitle) {
+			return { ok: false, error: "国策标题不能为空" };
+		}
+
 		if (input.serialNo !== undefined && input.serialNo.trim() !== "") {
 			const trimmedSerial = input.serialNo.trim();
 			if (!SERIAL_NO_RE.test(trimmedSerial)) {
@@ -912,112 +687,105 @@ export class WenyouService {
 			}
 		}
 
-		const effectiveViewer = await this.getEffectiveViewer(input.cwd, input.viewer);
-		const lintReport = await this.lintPolicy(input.cwd, input.content, {
-			viewer: effectiveViewer,
-			actor: input.actor,
-			actorEntityId: input.actorEntityId,
-			branchId: input.branchId,
-			currentOrder: input.currentOrder,
-		});
-		if (!lintReport.passed && !input.force) {
-			return {
-				ok: false,
-				lintReport,
-				error: lintReport.rewriteInstructions ?? "国策门禁未通过，请重写后再提交。",
-			};
-		}
-
-		const dir = join(input.cwd, "03-国策与文书");
-		await mkdir(dir, { recursive: true });
-		const nextNum = await this.nextPolicySerialNumber(dir);
-		const serialNo = input.serialNo?.trim() || String(nextNum).padStart(3, "0");
-		if (!SERIAL_NO_RE.test(serialNo)) {
-			throw new Error(`非法国策编号 serialNo：${serialNo}`);
-		}
-		const stem = `${serialNo}-${slugSafe(input.title)}`;
-		const mdRel = `03-国策与文书/${stem}.md`;
-		const docxRel = `03-国策与文书/${stem}.docx`;
-		const [mdChecked, docxChecked] = await Promise.all([
-			assertRealTargetInsideWorkspace(input.cwd, mdRel),
-			assertRealTargetInsideWorkspace(input.cwd, docxRel),
-		]);
-		if (
-			!mdChecked.realRelPath.startsWith("03-国策与文书/") ||
-			!docxChecked.realRelPath.startsWith("03-国策与文书/")
-		) {
-			throw new Error("国策输出路径越界或落入受限目录，已拒绝写入");
-		}
-		const createdAt = new Date().toISOString();
-
-		// 确定国策可见性 frontmatter：阵营视角或可归属阵营的国策写入 faction 隔离，GM 无归属文书默认 gm，不裸露给公开导出包
-		let policyVisibility: VisibilityLevel;
-		let policyVisibleToFactions: string[] | undefined;
-		if (effectiveViewer.kind === "faction") {
-			policyVisibility = "faction";
-			policyVisibleToFactions = [effectiveViewer.factionId];
-		} else if (effectiveViewer.kind === "gm") {
-			if (lintReport.actorEntityId) {
-				const entities = await this.collectLintEntities(input.cwd);
-				const matched = entities.find((e) => e.id === lintReport.actorEntityId);
-				const factionId = matched?.visibleToFactions?.[0] ?? lintReport.actorEntityId;
-				policyVisibility = "faction";
-				policyVisibleToFactions = [factionId];
-			} else {
-				policyVisibility = "gm";
+		return this.withWorkspaceLock(input.cwd, async () => {
+			const dir = join(input.cwd, "03-国策与文书");
+			await mkdir(dir, { recursive: true });
+			const nextNum = await this.nextPolicySerialNumber(dir);
+			const serialNo = input.serialNo?.trim() || String(nextNum).padStart(3, "0");
+			if (!SERIAL_NO_RE.test(serialNo)) {
+				throw new Error(`非法国策编号 serialNo：${serialNo}`);
 			}
-		} else {
-			policyVisibility = "public";
-		}
+			const stem = `${serialNo}-${slugSafe(trimmedTitle)}`;
+			const mdRel = `03-国策与文书/${stem}.md`;
+			const docxRel = `03-国策与文书/${stem}.docx`;
+			const [mdChecked, docxChecked] = await Promise.all([
+				assertRealTargetInsideWorkspace(input.cwd, mdRel),
+				assertRealTargetInsideWorkspace(input.cwd, docxRel),
+			]);
+			if (
+				!mdChecked.realRelPath.startsWith("03-国策与文书/") ||
+				!docxChecked.realRelPath.startsWith("03-国策与文书/")
+			) {
+				throw new Error("国策输出路径越界或落入受限目录，已拒绝写入");
+			}
+			const createdAt = new Date().toISOString();
+			const trimmedActor = input.actor?.trim();
+			const trimmedTurnLabel = input.turnLabel?.trim();
 
-		const fmLines = [
-			"---",
-			`id: ${stem}`,
-			`serialNo: "${serialNo}"`,
-			`title: ${JSON.stringify(input.title.trim())}`,
-			...(input.actor ? [`actor: ${JSON.stringify(input.actor.trim())}`] : []),
-			...(input.turnLabel ? [`turnLabel: ${JSON.stringify(input.turnLabel.trim())}`] : []),
-			`visibility: ${policyVisibility}`,
-			...(policyVisibleToFactions
-				? [`visibleToFactions: [${policyVisibleToFactions.map((f) => JSON.stringify(f)).join(", ")}]`]
-				: []),
-			`createdAt: ${JSON.stringify(createdAt)}`,
-			"---",
-		];
-		const cleanBody = input.content.replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n").trim();
-		await atomicWriteUtf8(mdChecked.absPath, `${fmLines.join("\n")}\n\n${cleanBody}\n`);
+			const fmLines = [
+				"---",
+				`id: ${stem}`,
+				`serialNo: "${serialNo}"`,
+				`title: ${JSON.stringify(trimmedTitle)}`,
+				...(trimmedActor ? [`actor: ${JSON.stringify(trimmedActor)}`] : []),
+				...(trimmedTurnLabel ? [`turnLabel: ${JSON.stringify(trimmedTurnLabel)}`] : []),
+				`createdAt: ${JSON.stringify(createdAt)}`,
+				"---",
+			];
+			const cleanBody = input.content.replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n").trim();
+			const subtitleParts = [trimmedActor, trimmedTurnLabel].filter(Boolean);
 
-		const subtitleParts = [input.actor?.trim(), input.turnLabel?.trim()].filter(Boolean);
-		const docxBuf = buildPolicyDocx({
-			title: input.title.trim(),
-			bodyMarkdown: cleanBody,
-			subtitle: subtitleParts.length ? subtitleParts.join(" · ") : undefined,
-			createdAt,
+			let docxBuf: Buffer;
+			try {
+				docxBuf = buildPolicyDocx({
+					title: trimmedTitle,
+					bodyMarkdown: cleanBody,
+					subtitle: subtitleParts.length ? subtitleParts.join(" · ") : undefined,
+					createdAt,
+					author: input.author,
+				});
+			} catch (err) {
+				return { ok: false, error: err instanceof Error ? err.message : String(err) };
+			}
+
+			let prevMdBuf: Buffer | null = null;
+			if (existsSync(mdChecked.absPath)) {
+				try {
+					prevMdBuf = await readFile(mdChecked.absPath);
+				} catch {
+					prevMdBuf = null;
+				}
+			}
+
+			try {
+				await atomicWriteUtf8(mdChecked.absPath, `${fmLines.join("\n")}\n\n${cleanBody}\n`);
+			} catch (err) {
+				return { ok: false, error: err instanceof Error ? err.message : String(err) };
+			}
+
+			try {
+				await atomicWriteBuffer(docxChecked.absPath, docxBuf);
+			} catch (err) {
+				if (prevMdBuf !== null) {
+					await atomicWriteBuffer(mdChecked.absPath, prevMdBuf).catch(() => undefined);
+				} else {
+					await rm(mdChecked.absPath, { force: true }).catch(() => undefined);
+				}
+				return { ok: false, error: err instanceof Error ? err.message : String(err) };
+			}
+
+			const artifact: PolicyArtifact = {
+				id: stem,
+				serialNo,
+				title: trimmedTitle,
+				...(trimmedActor ? { actor: trimmedActor } : {}),
+				...(trimmedTurnLabel ? { turnLabel: trimmedTurnLabel } : {}),
+				createdAt,
+				markdownPath: mdRel,
+				docxPath: docxRel,
+				excerpt: cleanBody.replace(/^#.*$/gm, "").replace(/\s+/g, " ").trim().slice(0, 140),
+				content: cleanBody,
+			};
+
+			this.emitCanvas({
+				kind: "policy_written",
+				cwd: input.cwd,
+				policy: artifact,
+				...(input.sessionId ? { sessionId: input.sessionId } : {}),
+			});
+
+			return { ok: true, artifact };
 		});
-		await atomicWriteBuffer(docxChecked.absPath, docxBuf);
-
-		const artifact: PolicyArtifact = {
-			id: stem,
-			serialNo,
-			title: input.title.trim(),
-			...(input.actor ? { actor: input.actor.trim() } : {}),
-			...(input.turnLabel ? { turnLabel: input.turnLabel.trim() } : {}),
-			createdAt,
-			markdownPath: mdRel,
-			docxPath: docxRel,
-			excerpt: cleanBody.replace(/^#.*$/gm, "").replace(/\s+/g, " ").trim().slice(0, 140),
-			content: cleanBody,
-			lintReport,
-		};
-
-		this.emitCanvas({
-			kind: "policy_written",
-			cwd: input.cwd,
-			policy: artifact,
-			...(input.sessionId ? { sessionId: input.sessionId } : {}),
-		});
-
-		return { ok: true, lintReport, artifact };
 	}
 
 	async listMaps(cwd: string): Promise<MapAssetItem[]> {
@@ -1089,13 +857,10 @@ export class WenyouService {
 		return saved;
 	}
 
-	async listCanonDocs(cwd: string, viewerRaw?: string | ViewerScope): Promise<WenyouCanonDocSummary[]> {
-		const viewer = await this.getEffectiveViewer(cwd, viewerRaw);
-		const roots: Array<{ dir: string; kind: "setting" | "chronicle" | "wiki" }> = [
+	async listCanonDocs(cwd: string): Promise<WenyouCanonDocSummary[]> {
+		const roots: Array<{ dir: string; kind: "setting" | "chronicle" }> = [
 			{ dir: "01-设定与国力实册", kind: "setting" },
 			{ dir: "04-编年史与条约", kind: "chronicle" },
-			{ dir: "chronicle", kind: "chronicle" },
-			{ dir: "wiki", kind: "wiki" },
 		];
 		const docs: WenyouCanonDocSummary[] = [];
 		for (const { dir, kind } of roots) {
@@ -1104,16 +869,11 @@ export class WenyouService {
 				if (!rel.endsWith(".md")) continue;
 				const raw = await readFile(join(cwd, rel), "utf8");
 				const { data, body } = parseMarkdownWithFrontmatter(raw);
-				const visibility = parseVisibility(data.visibility, "public");
-				const visibleToFactions = parseStringArray(data.visibleToFactions);
-				if (!canViewerSee(visibility, visibleToFactions, viewer)) continue;
 				const heading = body.match(/^#\s+(.+)$/m)?.[1]?.trim();
 				docs.push({
 					relPath: rel,
 					title: typeof data.title === "string" ? data.title : heading || basename(rel, ".md"),
 					kind,
-					visibility,
-					...(visibleToFactions ? { visibleToFactions } : {}),
 					...(typeof data.turn === "number" ? { turn: data.turn } : {}),
 					...(typeof data.era === "string" ? { era: data.era } : {}),
 				});
@@ -1122,12 +882,7 @@ export class WenyouService {
 		return docs;
 	}
 
-	async readCanonDoc(
-		cwd: string,
-		relPath: string,
-		viewerRaw?: string | ViewerScope,
-	): Promise<{ relPath: string; content: string; strippedSecretBlocks: number }> {
-		const viewer = await this.getEffectiveViewer(cwd, viewerRaw);
+	async readCanonDoc(cwd: string, relPath: string): Promise<{ relPath: string; content: string }> {
 		const normalized = normalizeVaultPath(relPath);
 		if (!normalized || normalized.split("/").includes("..")) {
 			throw new Error(`非法文档路径：${relPath}`);
@@ -1135,8 +890,8 @@ export class WenyouService {
 		if (isRawChatPath(normalized)) {
 			throw new Error("当前接口禁止读取 00-群聊收集/ 原始群聊目录");
 		}
-		if (viewer.kind !== "gm" && isPrivateVaultPath(normalized)) {
-			throw new Error("当前视角无权访问 private/ 受限目录");
+		if (isPrivateVaultPath(normalized)) {
+			throw new Error("当前接口禁止读取 private/ 或 .wenyou/ 目录");
 		}
 		const realTarget = await resolveRealPathInsideWorkspace(cwd, normalized);
 		const realRoot = await realpath(resolve(cwd));
@@ -1144,219 +899,36 @@ export class WenyouService {
 		if (isRawChatPath(realRel)) {
 			throw new Error("符号链接目标落入 00-群聊收集/，已拒绝读取");
 		}
-		if (viewer.kind !== "gm" && isPrivateVaultPath(realRel)) {
+		if (isPrivateVaultPath(realRel)) {
 			throw new Error("符号链接目标落入受限目录，已拒绝读取");
 		}
-		const raw = await readFile(realTarget, "utf8");
-		const { data, body } = parseMarkdownWithFrontmatter(raw);
-		const { visibility, visibleToFactions } = resolveMarkdownDocVisibility(realRel, data);
-		if (!canViewerSee(visibility, visibleToFactions, viewer)) {
-			throw new Error("当前视角无权读取该受限档案");
+		const targetStat = await stat(realTarget);
+		if (!targetStat.isFile()) {
+			throw new Error(`目标不是常规文件：${normalized}`);
 		}
-		const stripped = stripRestrictedMarkdownBlocks(body, viewer);
+		const raw = await readFile(realTarget, "utf8");
+		const { body } = parseMarkdownWithFrontmatter(raw);
 		return {
 			relPath: normalized,
-			content: stripped.visibleBody,
-			strippedSecretBlocks: stripped.strippedBlockCount,
+			content: body,
 		};
 	}
 
-	async exportPreflight(cwd: string, targetViewerRaw: string): Promise<WenyouExportPreflightResult> {
-		const targetViewer = await this.getEffectiveViewer(cwd, targetViewerRaw);
-		const allFiles = await walkRelativeFiles(cwd);
-		const allowedFiles: string[] = [];
-		const blockedPrivateFiles: string[] = [];
-		const blockedVisibilityFiles: string[] = [];
-		const warnings: string[] = [];
-		let strippedSecretBlockCount = 0;
-
-		const exportedDocs: Array<{ relPath: string; title: string; content: string }> = [];
-		const manifest = await this.readManifest(cwd);
-
-		// 缓存国策 .md 可见性，供同名 .docx 联动隔离
-		const policyMdAllowed = new Map<string, boolean>();
-
-		for (const rel of allFiles) {
-			const norm = normalizeVaultPath(rel);
-			if (isPrivateVaultPath(norm) || isRawChatPath(norm)) {
-				blockedPrivateFiles.push(norm);
-				continue;
-			}
-			if (norm.endsWith(".md")) {
-				const raw = await readFile(join(cwd, norm), "utf8");
-				const { data, body } = parseMarkdownWithFrontmatter(raw);
-				const { visibility: vis, visibleToFactions: factions } = resolveMarkdownDocVisibility(norm, data);
-				if (!canViewerSee(vis, factions, targetViewer)) {
-					blockedVisibilityFiles.push(norm);
-					if (isPolicyVaultPath(norm)) policyMdAllowed.set(norm.slice(0, -3), false);
-					continue;
-				}
-				if (isPolicyVaultPath(norm)) policyMdAllowed.set(norm.slice(0, -3), true);
-				const stripped = stripRestrictedMarkdownBlocks(body, targetViewer);
-				strippedSecretBlockCount += stripped.strippedBlockCount;
-				allowedFiles.push(norm);
-				const title =
-					typeof data.title === "string"
-						? data.title
-						: body.match(/^#\s+(.+)$/m)?.[1]?.trim() || basename(norm, ".md");
-				exportedDocs.push({ relPath: norm, title, content: stripped.visibleBody });
-			} else if (isBriefingVaultPath(norm) && norm.endsWith(".json")) {
-				if (targetViewer.kind === "gm") {
-					allowedFiles.push(norm);
-				} else {
-					let visible = false;
-					try {
-						const parsed = JSON.parse(await readFile(join(cwd, norm), "utf8")) as {
-							visibility?: unknown;
-							visibleToFactions?: unknown;
-						};
-						const vis = parseVisibility(parsed?.visibility, "gm");
-						const factions = parseStringArray(parsed?.visibleToFactions);
-						visible = canViewerSee(vis, factions, targetViewer);
-					} catch {
-						visible = false;
-					}
-					if (visible) allowedFiles.push(norm);
-					else blockedVisibilityFiles.push(norm);
-				}
-			} else if (isPolicyVaultPath(norm) && norm.endsWith(".docx")) {
-				if (targetViewer.kind === "gm") {
-					allowedFiles.push(norm);
-				} else {
-					const stemKey = norm.slice(0, -5);
-					let allowed = policyMdAllowed.get(stemKey);
-					if (allowed === undefined) {
-						const mdPeer = join(cwd, `${stemKey}.md`);
-						if (existsSync(mdPeer)) {
-							const { data } = parseMarkdownWithFrontmatter(await readFile(mdPeer, "utf8"));
-							const { visibility, visibleToFactions } = resolveMarkdownDocVisibility(`${stemKey}.md`, data);
-							allowed = canViewerSee(visibility, visibleToFactions, targetViewer);
-						} else {
-							allowed = false;
-						}
-					}
-					if (allowed) allowedFiles.push(norm);
-					else blockedVisibilityFiles.push(norm);
-				}
-			} else if (norm === "manifest.json") {
-				allowedFiles.push(norm);
-			} else if (MAP_IMAGE_EXTS.has(extname(norm).toLowerCase())) {
-				const isPublicMapRoot =
-					norm.startsWith("05-沙盘与图集/") || norm.startsWith("maps/") || norm.startsWith("assets/maps/");
-				if (targetViewer.kind === "gm" || isPublicMapRoot) {
-					allowedFiles.push(norm);
-				} else {
-					blockedVisibilityFiles.push(norm);
-				}
-			}
-		}
-
-		if (blockedPrivateFiles.length > 0) {
-			warnings.push(`已物理拦截 ${blockedPrivateFiles.length} 个私有/原始群聊文件，禁止进入发包产物`);
-		}
-		if (blockedVisibilityFiles.length > 0) {
-			warnings.push(`已按视角 ${formatViewerScope(targetViewer)} 隔离 ${blockedVisibilityFiles.length} 个受限简报/国策/档案文件`);
-		}
-		if (strippedSecretBlockCount > 0) {
-			warnings.push(`已按视角 ${formatViewerScope(targetViewer)} 自动剥离 ${strippedSecretBlockCount} 处 :::secret 受限暗线块`);
-		}
-
-		const bundleJson = JSON.stringify(
-			{
-				schemaVersion: 1,
-				exportedAt: new Date().toISOString(),
-				exportedViewer: targetViewer,
-				worldTitle: manifest?.title ?? basename(cwd),
-				worldId: manifest?.worldId ?? slugSafe(basename(cwd)),
-				documents: exportedDocs,
-				maps: (await this.listMaps(cwd)).map((m) => ({ name: m.name, relPath: m.relPath, yearLabel: m.yearLabel })),
-			},
-			null,
-			2,
-		);
-
-		return {
-			targetViewer,
-			allowedFiles,
-			blockedPrivateFiles,
-			blockedVisibilityFiles,
-			strippedSecretBlockCount,
-			warnings,
-			bundleJson,
-		};
-	}
-
-	private filterLedgerForViewer(
-		entries: readonly RollingLedgerEntry[],
-		viewer: ViewerScope,
-		entities: readonly LintVaultEntity[],
-	): RollingLedgerEntry[] {
-		if (viewer.kind === "gm") return [...entries];
-		const allowedFactionTokens = new Set<string>();
-		if (viewer.kind === "faction") {
-			allowedFactionTokens.add(viewer.factionId.toLowerCase());
-			for (const ent of entities) {
-				const belongs =
-					ent.id === viewer.factionId ||
-					(ent.visibleToFactions?.includes(viewer.factionId) ?? false);
-				if (belongs) {
-					allowedFactionTokens.add(ent.id.toLowerCase());
-					allowedFactionTokens.add(ent.title.toLowerCase());
-					for (const al of ent.aliases ?? []) {
-						allowedFactionTokens.add(al.toLowerCase());
-					}
-				}
-			}
-		}
-		return entries.filter((entry) => {
-			if (entry.category === "unconfirmed_draft") return false;
-			const ext = entry as RollingLedgerEntry & { visibility?: unknown; visibleToFactions?: unknown };
-			if (ext.visibility !== undefined) {
-				const vis = parseVisibility(ext.visibility, "gm");
-				const facs = parseStringArray(ext.visibleToFactions);
-				if (!canViewerSee(vis, facs, viewer)) return false;
-			}
-			if (entry.faction && entry.faction.trim().length > 0) {
-				if (viewer.kind === "public") return false;
-				const token = entry.faction.trim().toLowerCase();
-				if (!allowedFactionTokens.has(token)) return false;
-			}
-			return true;
-		});
-	}
-
-	async getOverview(cwd: string, viewerRaw?: string | ViewerScope): Promise<WenyouWorkspaceOverview> {
-		const { viewer, maxViewer } = await this.getViewerBounds(cwd, viewerRaw);
+	async getOverview(cwd: string): Promise<WenyouWorkspaceOverview> {
 		const initialized = await this.isCampaignWorkspace(cwd);
 		const manifest = await this.readManifest(cwd);
 		const allEvidence = await loadEvidenceRecords(cwd);
-		const visibleEvidence =
-			viewer.kind === "gm"
-				? allEvidence
-				: allEvidence.filter((rec) => canViewerSee(rec.visibility, rec.visibleToFactions, viewer));
 		const rawCursors = await loadCursors(cwd);
-		let scopedExistingCursors: Record<string, GroupCursorRecord> = rawCursors;
-		if (viewer.kind !== "gm") {
-			const visibleGroupIds = new Set(visibleEvidence.map((rec) => rec.groupId));
-			scopedExistingCursors = {};
-			for (const [gid, cur] of Object.entries(rawCursors)) {
-				if (visibleGroupIds.has(gid)) {
-					scopedExistingCursors[gid] = cur;
-				}
-			}
-		}
-		const cursorsMap = refreshCursorStats(visibleEvidence, scopedExistingCursors);
+		const cursorsMap = refreshCursorStats(allEvidence, rawCursors);
 		const cursors = Object.values(cursorsMap).sort((a, b) => a.groupId.localeCompare(b.groupId));
 		const unreportedCount = cursors.reduce((sum, c) => sum + c.unreportedCount, 0);
-		const [briefings, rawLedger, entities, policies, maps, canonDocs] = await Promise.all([
-			this.listBriefings(cwd, viewer),
+		const [briefings, rollingLedger, policies, maps, canonDocs] = await Promise.all([
+			this.listBriefings(cwd),
 			this.loadRollingLedger(cwd),
-			viewer.kind === "gm" ? Promise.resolve([] as LintVaultEntity[]) : this.collectLintEntities(cwd),
-			this.listPolicies(cwd, viewer),
+			this.listPolicies(cwd),
 			this.listMaps(cwd),
-			this.listCanonDocs(cwd, viewer),
+			this.listCanonDocs(cwd),
 		]);
-		const rollingLedger = this.filterLedgerForViewer(rawLedger, viewer, entities);
 
 		return {
 			cwd,
@@ -1364,10 +936,8 @@ export class WenyouService {
 			worldTitle: manifest?.title ?? basename(cwd),
 			worldId: manifest?.worldId ?? slugSafe(basename(cwd)),
 			...(manifest?.currentEra ? { currentEra: manifest.currentEra } : {}),
-			viewer,
-			maxViewer,
 			cursors,
-			totalEvidenceCount: visibleEvidence.length,
+			totalEvidenceCount: allEvidence.length,
 			unreportedCount,
 			briefings,
 			rollingLedger,

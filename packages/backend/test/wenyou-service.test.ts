@@ -2,15 +2,18 @@ import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { inflateRawSync } from "node:zlib";
 import type { WenyouCanvasEvent } from "@percho/shared";
 import { afterEach, describe, expect, it } from "vitest";
+import { computeCrc32 } from "../src/wenyou/docx-builder";
 import { ingestExternalMessages, pullQqGroupsIncremental } from "../src/wenyou/qq-ingest";
-import {
-	parseMarkdownWithFrontmatter,
-	parseVisibility,
-	stripRestrictedMarkdownBlocks,
-} from "../src/wenyou/secret-blocks";
 import { WenyouService } from "../src/wenyou/service";
+import {
+	assertPathInsideWorkspace,
+	isPrivateVaultPath,
+	normalizeVaultPath,
+	parseMarkdownWithFrontmatter,
+} from "../src/wenyou/vault-paths";
 
 const tempDirs: string[] = [];
 
@@ -18,8 +21,27 @@ afterEach(async () => {
 	await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
 
+function readDocxCoreXml(buf: Buffer): string {
+	let offset = 0;
+	while (offset + 30 <= buf.length && buf.readUInt32LE(offset) === 0x04034b50) {
+		const method = buf.readUInt16LE(offset + 8);
+		const crc = buf.readUInt32LE(offset + 14);
+		const compSize = buf.readUInt32LE(offset + 18);
+		const nameLen = buf.readUInt16LE(offset + 26);
+		const extraLen = buf.readUInt16LE(offset + 28);
+		const name = buf.subarray(offset + 30, offset + 30 + nameLen).toString("utf8");
+		const dataStart = offset + 30 + nameLen + extraLen;
+		const comp = buf.subarray(dataStart, dataStart + compSize);
+		const raw = method === 8 ? inflateRawSync(comp) : comp;
+		expect(computeCrc32(raw)).toBe(crc);
+		if (name === "docProps/core.xml") return raw.toString("utf8");
+		offset = dataStart + compSize;
+	}
+	throw new Error("docProps/core.xml missing");
+}
+
 describe("WenyouService 端到端领域闭环", () => {
-	it("完整覆盖建库、多群增量采集防重报、sourceId 上下文回查、局势书推进游标、国策门禁+.docx、档案落盘与泄密预检", async () => {
+	it("完整覆盖建库、多群增量采集防重报、sourceId 上下文回查、局势书完整 headline 与游标推进、无静态门禁 .docx 生成、标准档案读取与路径保护", async () => {
 		const root = await mkdtemp(join(tmpdir(), "wenyou-service-"));
 		tempDirs.push(root);
 		const events: WenyouCanvasEvent[] = [];
@@ -29,6 +51,8 @@ describe("WenyouService 端到端领域闭环", () => {
 		const init = await service.initCampaign(root, { worldTitle: "测试战役", currentEra: "景平六年春" });
 		expect(init.initialized).toBe(true);
 		expect(init.worldTitle).toBe("测试战役");
+		expect("viewer" in init).toBe(false);
+		expect("maxViewer" in init).toBe(false);
 
 		// 2. 写入主群 .txt 与 骰子群 QCE .json
 		const mainChat = Array.from({ length: 14 }, (_, idx) => {
@@ -56,6 +80,8 @@ describe("WenyouService 端到端领域闭环", () => {
 		const pull1 = await service.pullQq(root);
 		expect(pull1.newlyIngested).toBe(15);
 		expect(pull1.unreportedMessages).toHaveLength(15);
+		expect("kind" in pull1.unreportedMessages[0]!).toBe(false);
+		expect("visibility" in pull1.unreportedMessages[0]!).toBe(false);
 
 		// 再次拉取必须幂等去重
 		const pull2 = await service.pullQq(root);
@@ -69,12 +95,16 @@ describe("WenyouService 端到端领域闭环", () => {
 		expect(ctxWin!.messages).toHaveLength(7); // 前3 + 自身 + 后3
 		expect(ctxWin!.messages[ctxWin!.targetIndex]?.sourceId).toBe(target.sourceId);
 
-		// 4. 发布局势简报并推进游标，同时写入 [未定案草案] 台账
+		// 4. 发布局势简报（超过 160 字的完整 headline 绝不静默截断）并推进游标，同时写入 [未定案草案] 台账
+		const longHeadline =
+			"南楚前锋战船二十二艘与步卒水手一万一千人已进驻临河渡南岸新筑木栅水寨，但大型楼船受春汛水浅所限仍滞留广陵；经河阳镇斥候侦察检定与司历官正式裁定交叉核实，敌方主群宣称十万大军压境纯属心理威慑宣传。北周当下最忌自乱阵脚抽调白狼关朔北镇兵马冒险强渡，应以清源城为总枢收拢周边三县常平仓春粮八万石、沿济水北岸增筑烽燧三座，并按约交付河东官盐三万引以稳固西凉盟约。";
+		expect(longHeadline.length).toBeGreaterThan(160);
+
 		const pub = await service.publishBriefing({
 			cwd: root,
 			title: "景平六年春首次局势简报",
 			turnLabel: "景平六年春",
-			headline: "南楚北上扩寨但主力楼船受阻，北周宜稳守清源。",
+			headline: `  ${longHeadline}  `,
 			progressItems: [
 				{ title: "南岸侦察落地", detail: "检定成功查明敌情", status: "settled", sourceRefs: ["dice-r1"] },
 			],
@@ -87,6 +117,7 @@ describe("WenyouService 端到端领域闭环", () => {
 				{ category: "unconfirmed_draft", faction: "北周", summary: "夜袭南岸方案尚在内阁争论", sourceRefs: [target.sourceId] },
 			],
 		});
+		expect(pub.briefing.headline).toBe(longHeadline);
 		expect(pub.advancedGroups.sort()).toEqual(["group-dice-1002", "group-main-1001"]);
 		expect(events.some((e) => e.kind === "briefing_published")).toBe(true);
 
@@ -95,52 +126,68 @@ describe("WenyouService 端到端领域闭环", () => {
 		expect(pullAfterReport.unreportedMessages).toHaveLength(0);
 
 		const overviewAfter = await service.getOverview(root);
+		expect(overviewAfter.briefings[0]?.headline).toBe(longHeadline);
 		expect(overviewAfter.rollingLedger[0]?.tag).toBe("[未定案草案]");
 		expect(overviewAfter.rollingLedger[0]?.summary).toContain("[未定案草案]");
 
-		// 5. 国策门禁拦截坏稿，放行好稿并生成 .docx
-		const badPolicy = await service.writePolicyDocx({
+		// 5. writePolicyDocx 无静态门禁拦截，直接写出 .md 与 .docx；默认 creator 为空，传入 author 时写入 author
+		const tablePolicy = await service.writePolicyDocx({
 			cwd: root,
-			title: "违规国策测试",
-			content: "我们要做好顶层设计，打出一套组合拳。\n\n| A | B |\n| - | - |\n| 1 | 2 |",
+			title: "含表格群友归档国策",
+			content: "我们要做好顶层设计。\n\n| A | B |\n| - | - |\n| 1 | 2 |",
 		});
-		expect(badPolicy.ok).toBe(false);
-		expect(badPolicy.lintReport.passed).toBe(false);
+		expect(tablePolicy.ok).toBe(true);
+		expect(tablePolicy.artifact?.docxPath).toBeTruthy();
+		const defaultCoreXml = readDocxCoreXml(await readFile(join(root, tablePolicy.artifact!.docxPath!)));
+		expect(defaultCoreXml).toContain("<dc:creator></dc:creator>");
+		expect(defaultCoreXml).not.toContain("安钰");
 
-		const goodPolicy = await service.writePolicyDocx({
+		const authoredPolicy = await service.writePolicyDocx({
 			cwd: root,
 			title: "清源守备条陈",
 			actor: "北周",
 			turnLabel: "景平六年春",
+			author: "河阳幕府",
 			content:
 				"河阳镇今春以守为先，清源城收拢周边三县常平仓春粮八万石入库，临河渡北岸增筑烽燧三座，严密监视南岸水寨动向。",
 		});
-		expect(goodPolicy.ok).toBe(true);
-		expect(goodPolicy.artifact?.docxPath).toBeTruthy();
-		expect(existsSync(join(root, goodPolicy.artifact!.docxPath!))).toBe(true);
+		expect(authoredPolicy.ok).toBe(true);
+		expect(authoredPolicy.artifact?.docxPath).toBeTruthy();
+		expect(existsSync(join(root, authoredPolicy.artifact!.docxPath!))).toBe(true);
+		const authoredCoreXml = readDocxCoreXml(await readFile(join(root, authoredPolicy.artifact!.docxPath!)));
+		expect(authoredCoreXml).toContain("<dc:creator>河阳幕府</dc:creator>");
+		expect(authoredCoreXml).toContain("<cp:lastModifiedBy>河阳幕府</cp:lastModifiedBy>");
 		expect(events.some((e) => e.kind === "policy_written")).toBe(true);
 
-		// 6. 直接写入编年史档案并验证概览索引与按视角读取裁剪
+		const mdRaw = await readFile(join(root, authoredPolicy.artifact!.markdownPath), "utf8");
+		expect(mdRaw).not.toContain("visibility:");
+		expect(mdRaw).not.toContain("visibleToFactions:");
+
+		// 6. 标准目录档案索引仅扫描 01-设定与国力实册 与 04-编年史与条约，忽略旧版 wiki/ 与 chronicle/
 		const canonRelPath = "04-编年史与条约/002-清源守备记.md";
 		await writeFile(
 			join(root, canonRelPath),
-			"---\nid: ch-002\ntitle: 清源守备记\nvisibility: public\n---\n\n正文公开。\n\n:::secret[gm]\n裁判私密内容绝不可外泄\n:::\n",
+			"---\nid: ch-002\ntitle: 清源守备记\n---\n\n正文记录。",
 			"utf8",
 		);
-		const overviewWithCanon = await service.getOverview(root, "gm");
-		expect(overviewWithCanon.canonDocs.some((d) => d.relPath === canonRelPath)).toBe(true);
-		const pubCanonRead = await service.readCanonDoc(root, canonRelPath, "public");
-		expect(pubCanonRead.strippedSecretBlocks).toBe(1);
-		expect(pubCanonRead.content).not.toContain("裁判私密内容绝不可外泄");
+		await mkdir(join(root, "wiki"), { recursive: true });
+		await mkdir(join(root, "chronicle"), { recursive: true });
+		await writeFile(join(root, "wiki", "legacy.md"), "# 旧版词条", "utf8");
+		await writeFile(join(root, "chronicle", "legacy.md"), "# 旧版编年史", "utf8");
 
-		// 7. 泄密预检拦截 private/ 与 00-群聊收集/ 并剥离 :::secret[gm]
+		const overviewWithCanon = await service.getOverview(root);
+		expect(overviewWithCanon.canonDocs.some((d) => d.relPath === canonRelPath && d.kind === "chronicle")).toBe(true);
+		expect(overviewWithCanon.canonDocs.some((d) => d.relPath.startsWith("wiki/"))).toBe(false);
+		expect(overviewWithCanon.canonDocs.some((d) => d.relPath.startsWith("chronicle/"))).toBe(false);
+
+		const canonRead = await service.readCanonDoc(root, canonRelPath);
+		expect(canonRead).toEqual({ relPath: canonRelPath, content: "正文记录。" });
+
+		// 7. readCanonDoc 拒绝路径穿越、00-群聊收集/ 与 private/
 		await writeFile(join(root, "private", "secret.md"), "机密", "utf8");
-		const preflight = await service.exportPreflight(root, "public");
-		expect(preflight.blockedPrivateFiles.some((f) => f.startsWith("private/"))).toBe(true);
-		expect(preflight.blockedPrivateFiles.some((f) => f.startsWith("00-群聊收集/"))).toBe(true);
-		expect(preflight.strippedSecretBlockCount).toBe(1);
-		expect(preflight.bundleJson).not.toContain("裁判私密内容绝不可外泄");
-		expect(await readFile(join(root, canonRelPath), "utf8")).toContain("裁判私密内容绝不可外泄");
+		await expect(service.readCanonDoc(root, "00-群聊收集/主群_group-main-1001.txt")).rejects.toThrow("00-群聊收集");
+		await expect(service.readCanonDoc(root, "private/secret.md")).rejects.toThrow("private/");
+		await expect(service.readCanonDoc(root, "../escape.md")).rejects.toThrow("非法文档路径");
 	});
 
 	it("长程回溯突破旧 50 条上限、支持 earliest 追最早原话与时间线补抓不污染未汇报游标", async () => {
@@ -149,7 +196,6 @@ describe("WenyouService 端到端领域闭环", () => {
 		const service = new WenyouService();
 		await service.initCampaign(root, { worldTitle: "传话溯源测试", currentEra: "景平七年" });
 
-		// 先入库近期 60 条消息（第 101～160 条），模拟先按默认 500 抓取近期记录
 		const recentItems = Array.from({ length: 60 }, (_, idx) => {
 			const seq = 101 + idx;
 			const mm = String(Math.floor(idx / 60)).padStart(2, "0");
@@ -166,7 +212,6 @@ describe("WenyouService 端到端领域闭环", () => {
 		});
 		await ingestExternalMessages(root, recentItems);
 
-		// 发布局势书推进汇报游标到最新第 160 条
 		await service.publishBriefing({
 			cwd: root,
 			title: "中期简报",
@@ -178,7 +223,6 @@ describe("WenyouService 端到端领域闭环", () => {
 			strategicJudgment: "继续观察",
 		});
 
-		// 随后回溯补抓更早的 100 条历史（第 1～100 条，含第 5 条最早原话）
 		const olderItems = Array.from({ length: 100 }, (_, idx) => {
 			const seq = 1 + idx;
 			const hh = String(10 + Math.floor(idx / 60)).padStart(2, "0");
@@ -197,10 +241,8 @@ describe("WenyouService 端到端领域闭环", () => {
 		expect(backfillRes.newlyIngested).toBe(100);
 		expect(backfillRes.skippedDuplicates).toBe(60);
 		expect(backfillRes.totalEvidenceCount).toBe(160);
-		// 历史补抓排在原已报游标之前，绝不产生 100 条虚假未汇报告警
 		expect(backfillRes.cursors[0]?.unreportedCount).toBe(0);
 
-		// 1) 全库按 earliest 追源应先找到 11-20 最早 GM 原话，按 latest 则先看到 11-26 走样转述
 		const earliest = await service.searchSourcesWithStats(root, {
 			keyword: "盟约",
 			order: "earliest",
@@ -217,7 +259,6 @@ describe("WenyouService 端到端领域闭环", () => {
 		});
 		expect(latest.records[0]?.sourceId).toBe("qq-900001-155");
 
-		// 2) 时间区间过滤可锁定早期阶段
 		const ranged = await service.searchSourcesWithStats(root, {
 			keyword: "盟约",
 			since: "2026-11-20",
@@ -226,129 +267,23 @@ describe("WenyouService 端到端领域闭环", () => {
 		expect(ranged.totalMatched).toBe(1);
 		expect(ranged.records[0]?.sourceId).toBe("qq-900001-5");
 
-		// 3) 长程上下文窗口（window = 80）突破旧 50 上限，且按正确时间线衔接补抓前后的消息
 		const win = await service.lookupSource(root, "qq-900001-101", 80);
 		expect(win).not.toBeNull();
 		expect(win!.windowSize).toBe(80);
 		expect(win!.totalGroupMessages).toBe(160);
-		expect(win!.beforeRemaining).toBe(20); // idx=100, start=20
-		expect(win!.afterRemaining).toBe(0); // end=160
+		expect(win!.beforeRemaining).toBe(20);
+		expect(win!.afterRemaining).toBe(0);
 		expect(win!.messages).toHaveLength(140);
 		expect(win!.messages[win!.targetIndex - 1]?.sourceId).toBe("qq-900001-100");
 		expect(win!.messages[win!.targetIndex]?.sourceId).toBe("qq-900001-101");
 	});
 
-	it("视角强钳制、非 GM 简报/密群/台账/国策隔离、exportPreflight 防泄密与 readCanonDoc 路径隔离", async () => {
-		const root = await mkdtemp(join(tmpdir(), "wenyou-scope-"));
-		tempDirs.push(root);
-		const service = new WenyouService();
-		await service.initCampaign(root, { worldTitle: "视角隔离战役", currentEra: "景平六年春" });
-
-		// 在 manifest.json 写入硬上限 maxViewer: faction:north-zhou 与主线进度 order=2
-		const manifestPath = join(root, "manifest.json");
-		const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as Record<string, unknown>;
-		manifest.maxViewer = "faction:north-zhou";
-		manifest.branches = [{ id: "main", title: "主线", currentEra: "景平六年春", currentOrder: 2 }];
-		await writeFile(manifestPath, JSON.stringify(manifest, null, 2), "utf8");
-
-		// 请求提升到 gm 必须被强钳制回 faction:north-zhou
-		const clamped = await service.setViewerScope(root, "gm");
-		expect(clamped.viewer).toEqual({ kind: "faction", factionId: "north-zhou" });
-		expect(clamped.maxViewer).toEqual({ kind: "faction", factionId: "north-zhou" });
-
-		// 准备公开群 + 内阁密群（gm 可见）
-		await ingestExternalMessages(root, [
-			{
-				sourceId: "qq-1001-1",
-				groupId: "1001",
-				groupName: "主群",
-				role: "main",
-				visibility: "public",
-				sender: "燕王",
-				timestamp: "2026-11-26 10:00:00",
-				text: "公开宣诏：整饬边防。",
-			},
-			{
-				sourceId: "qq-1002-1",
-				groupId: "1002",
-				groupName: "裁判密群",
-				role: "cabinet",
-				visibility: "gm",
-				sender: "司历",
-				timestamp: "2026-11-26 10:01:00",
-				text: "绝密：南楚暗藏伏兵。",
-			},
-		]);
-
-		// 发布一份默认 GM 内部简报 + 三类台账（本国、他国、未定案草案）
-		await service.publishBriefing({
-			cwd: root,
-			title: "内部参谋简报",
-			turnLabel: "景平六年春",
-			headline: "GM 内部机密简报",
-			progressItems: [],
-			diplomacySummary: "暗中调停",
-			intelChecks: [],
-			strategicJudgment: "绝密推演",
-			ledgerUpdates: [
-				{ category: "military", faction: "north-zhou", summary: "北周河阳镇备粮完毕" },
-				{ category: "military", faction: "south-chu", summary: "南楚水师暗渡计划" },
-				{ category: "unconfirmed_draft", faction: "north-zhou", summary: "内阁未定案草案" },
-				{ category: "treaty", summary: "济水停战界约生效" },
-			],
-		});
-
-		// 准备一份未标 visibility 的他国国策、一份本国国策
-		await writeFile(
-			join(root, "03-国策与文书", "001-南楚密策.md"),
-			"---\nid: chu-001\ntitle: 南楚密策\nactor: 南楚\n---\n\n南楚私密兵力部署。",
-			"utf8",
-		);
-		await writeFile(
-			join(root, "03-国策与文书", "002-北周国策.md"),
-			"---\nid: zhou-002\ntitle: 北周国策\nvisibility: faction\nvisibleToFactions: [north-zhou]\n---\n\n北周守城方略。",
-			"utf8",
-		);
-
-		// faction:north-zhou 视角下：密群游标/条数完全隐藏，GM 简报隐藏，他国台账与未定案草案隐藏，他国国策隐藏
-		const ovFaction = await service.getOverview(root, "gm"); // 即使传 gm 也被 manifest.maxViewer 强钳制
-		expect(ovFaction.viewer).toEqual({ kind: "faction", factionId: "north-zhou" });
-		expect(ovFaction.maxViewer).toEqual({ kind: "faction", factionId: "north-zhou" });
-		expect(ovFaction.cursors.map((c) => c.groupId)).toEqual(["1001"]);
-		expect(ovFaction.totalEvidenceCount).toBe(1);
-		expect(ovFaction.briefings).toHaveLength(0);
-		expect(ovFaction.rollingLedger.map((e) => e.summary)).toEqual(["北周河阳镇备粮完毕", "济水停战界约生效"]);
-		expect(ovFaction.policies.map((p) => p.title)).toEqual(["北周国策"]);
-
-		// public 导出预检：隔离 GM 简报与未显式公开的各国国策（含北周 faction 国策与南楚无 visibility 国策）
-		const pubPreflight = await service.exportPreflight(root, "public");
-		expect(pubPreflight.blockedVisibilityFiles.some((f) => f.startsWith("02-局势简报与台账/"))).toBe(true);
-		expect(pubPreflight.blockedVisibilityFiles).toContain("03-国策与文书/001-南楚密策.md");
-		expect(pubPreflight.blockedVisibilityFiles).toContain("03-国策与文书/002-北周国策.md");
-		expect(pubPreflight.bundleJson).not.toContain("南楚私密兵力部署");
-		expect(pubPreflight.bundleJson).not.toContain("北周守城方略");
-		expect(pubPreflight.bundleJson).not.toContain("GM 内部机密简报");
-
-		// readCanonDoc 拦截 00-群聊收集/ 与 private/
-		await writeFile(join(root, "00-群聊收集", "主群_1001.txt"), "原始群聊内容", "utf8");
-		await expect(service.readCanonDoc(root, "00-群聊收集/主群_1001.txt", "gm")).rejects.toThrow("00-群聊收集");
-		await writeFile(join(root, "private", "note.md"), "机密", "utf8");
-		await expect(service.readCanonDoc(root, "private/note.md", "faction:north-zhou")).rejects.toThrow("无权");
-	});
-
-	it("serialNo 路径穿越拒绝与 writePolicyDocx 自动补齐上下文拦截跨阵营/时间线穿帮", async () => {
+	it("serialNo 路径穿越拒绝仍严格生效", async () => {
 		const root = await mkdtemp(join(tmpdir(), "wenyou-policy-sec-"));
 		tempDirs.push(root);
 		const service = new WenyouService();
-		await service.initCampaign(root, { worldTitle: "门禁安全测试", currentEra: "景平六年春" });
+		await service.initCampaign(root, { worldTitle: "路径安全测试", currentEra: "景平六年春" });
 
-		// 设置主线 currentOrder=2
-		const manifestPath = join(root, "manifest.json");
-		const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as Record<string, unknown>;
-		manifest.branches = [{ id: "main", title: "主线", currentEra: "景平六年春", currentOrder: 2 }];
-		await writeFile(manifestPath, JSON.stringify(manifest, null, 2), "utf8");
-
-		// 1. 恶意 serialNo 必须直接抛错拒绝
 		for (const badSerial of ["../escape", "a/b", "001\\evil", "..", "a".repeat(30)]) {
 			await expect(
 				service.writePolicyDocx({
@@ -359,34 +294,6 @@ describe("WenyouService 端到端领域闭环", () => {
 				}),
 			).rejects.toThrow("非法国策编号");
 		}
-
-		// 2. 写入阵营实册、敌国暗线实体与未来时间线实体
-		await writeFile(
-			join(root, "01-设定与国力实册", "north-zhou.md"),
-			"---\nid: north-zhou\ntitle: 北周国力实册\naliases: [北周]\nvisibility: public\n---\n北周基线。",
-			"utf8",
-		);
-		await writeFile(
-			join(root, "01-设定与国力实册", "chu-secret.md"),
-			"---\nid: chu-secret\ntitle: 芦苇荡伏兵密计\nvisibility: gm\n---\n裁判机密。",
-			"utf8",
-		);
-		await writeFile(
-			join(root, "04-编年史与条约", "future-event.md"),
-			"---\nid: future-01\ntitle: 景平九年北伐大捷\nvisibility: public\nbranch: main\norder: 9\n---\n未来事件。",
-			"utf8",
-		);
-
-		// 即使在默认 GM 视角下，只要指定 actor="北周"，writePolicyDocx 自动匹配阵营并补齐 manifest 的 branch/currentOrder
-		const leakedRes = await service.writePolicyDocx({
-			cwd: root,
-			title: "穿帮国策",
-			actor: "北周",
-			content: "我军先行清剿芦苇荡伏兵密计，并依景平九年北伐大捷旧例整训前锋。",
-		});
-		expect(leakedRes.ok).toBe(false);
-		expect(leakedRes.lintReport.issues.map((i) => i.code)).toContain("CROSS_FACTION_LEAK");
-		expect(leakedRes.lintReport.issues.map((i) => i.code)).toContain("TIMELINE_ANACHRONISM");
 	});
 
 	it("publishBriefing 删旧不撞号、游标单调不倒退与未指定 coveredSourceIds 不卡死未报队列", async () => {
@@ -401,7 +308,6 @@ describe("WenyouService 端到端领域闭环", () => {
 			{ sourceId: "m-3", groupId: "g1", groupName: "主群", sender: "丙", timestamp: "2026-11-26 10:02:00", text: "第三条" },
 		]);
 
-		// 未显式传 coveredSourceIds，仅在 progressItems 点名引用 m-1，仍应把 g1 游标推进至末尾 m-3
 		const p1 = await service.publishBriefing({
 			cwd: root,
 			title: "首报",
@@ -413,11 +319,10 @@ describe("WenyouService 端到端领域闭环", () => {
 			strategicJudgment: "稳守",
 		});
 		expect(p1.briefing.id).toBe("briefing-001");
-		const ov1 = await service.getOverview(root, "gm");
+		const ov1 = await service.getOverview(root);
 		expect(ov1.cursors[0]?.lastReportedSourceId).toBe("m-3");
 		expect(ov1.unreportedCount).toBe(0);
 
-		// 再发一份简报，且仅显式引用旧消息 m-1：游标绝不可从 m-3 倒退回 m-1！
 		const p2 = await service.publishBriefing({
 			cwd: root,
 			title: "回溯简报",
@@ -430,11 +335,10 @@ describe("WenyouService 端到端领域闭环", () => {
 			coveredSourceIds: ["m-1"],
 		});
 		expect(p2.briefing.id).toBe("briefing-002");
-		const ov2 = await service.getOverview(root, "gm");
+		const ov2 = await service.getOverview(root);
 		expect(ov2.cursors[0]?.lastReportedSourceId).toBe("m-3");
 		expect(ov2.unreportedCount).toBe(0);
 
-		// 删除旧简报 briefing-001，再发新简报必须生成 briefing-003 而不是撞号 briefing-002！
 		await rm(join(root, p1.briefing.jsonPath), { force: true });
 		await rm(join(root, p1.briefing.markdownPath), { force: true });
 		const p3 = await service.publishBriefing({
@@ -451,43 +355,42 @@ describe("WenyouService 端到端领域闭环", () => {
 		expect(existsSync(join(root, p2.briefing.jsonPath))).toBe(true);
 	});
 
-	it("secret-blocks CommonMark 围栏/frontmatter Fail-Closed 与 qq-ingest 幂等去重/短时间不误拆", async () => {
-		// 1. 行内 ```inline``` 不应误开启多行围栏，后续 :::secret[gm] 必须被剥离
-		const md = "前言 ```inline``` 说明\n\n:::secret[gm]\n绝密内容绝不可见\n:::\n\n正文收尾";
-		const stripped = stripRestrictedMarkdownBlocks(md, { kind: "public" });
-		expect(stripped.strippedBlockCount).toBe(1);
-		expect(stripped.visibleBody).not.toContain("绝密内容绝不可见");
-		expect(stripped.visibleBody).toContain("前言 ```inline``` 说明");
-
-		// 2. frontmatter 兼容 \r、--- 尾随空格与 # 注释，parseVisibility 对未知非空值 Fail-Closed 返回 gm
+	it("vault-paths 路径与 frontmatter 解析，以及 qq-ingest 保留空/纯时分秒时间戳（不伪造 2026-01-01）", async () => {
 		const parsed = parseMarkdownWithFrontmatter(
-			"---   \rvisibility: SECRET_UNKNOWN # 拼写错误\rtitle: \"含 # 号标题\" # 注释\r---  \r正文",
+			"---   \rtitle: \"含 # 号标题\" # 注释\rturn: 6\r---  \r正文",
 		);
-		expect(parsed.data.visibility).toBe("SECRET_UNKNOWN");
 		expect(parsed.data.title).toBe("含 # 号标题");
-		expect(parseVisibility(parsed.data.visibility, "public")).toBe("gm");
-		expect(parseVisibility("PUBLIC", "gm")).toBe("public");
-		expect(parseVisibility(undefined, "public")).toBe("public");
-		expect(parseVisibility(undefined, "gm")).toBe("gm");
+		expect(parsed.data.turn).toBe(6);
+		expect(parsed.body).toBe("正文");
+		expect(normalizeVaultPath("\\01-设定与国力实册\\./北周.md")).toBe("01-设定与国力实册/北周.md");
+		expect(isPrivateVaultPath("private/note.md")).toBe(true);
+		expect(isPrivateVaultPath(".wenyou/cursors.json")).toBe(true);
+		expect(isPrivateVaultPath("01-设定与国力实册/北周.md")).toBe(false);
 
-		// 3. qq-ingest：不同显式 sourceId 同秒重句不误吞；相同 sourceId 幂等不生成 -2；短时间正则不误拆正文比分/时间
 		const root = await mkdtemp(join(tmpdir(), "wenyou-ingest-edge-"));
 		tempDirs.push(root);
+		expect(() => assertPathInsideWorkspace(root, "../outside.txt")).toThrow("路径越界");
 		await mkdir(join(root, "00-群聊收集"), { recursive: true });
+
+		// 1. 外部导入缺省时间戳保留空串 ""，且不伪造 2026-01-01
 		const r1 = await ingestExternalMessages(root, [
 			{ sourceId: "qq-900-10", groupId: "900", groupName: "主群", sender: "甲", timestamp: "2026-11-26 12:00:00", text: "收到" },
 			{ sourceId: "qq-900-11", groupId: "900", groupName: "主群", sender: "甲", timestamp: "2026-11-26 12:00:00", text: "收到" },
+			{ sourceId: "qq-900-12", groupId: "900", groupName: "主群", sender: "乙", timestamp: "   ", text: "无时间戳外部消息" },
 		]);
-		expect(r1.newlyIngested).toBe(2);
+		expect(r1.newlyIngested).toBe(3);
 		const r2 = await ingestExternalMessages(root, [
 			{ sourceId: "qq-900-10", groupId: "900", groupName: "主群", sender: "甲", timestamp: "2026-11-26 12:00:00", text: "收到（改文）" },
 		]);
 		expect(r2.newlyIngested).toBe(0);
 		expect(r2.skippedDuplicates).toBe(1);
 
+		// 2. 纯文本缺少前置日期时保留 HH:MM:SS，短时间不误拆正文比分/时间；JSON 缺失时间保留 ""
 		await writeFile(
 			join(root, "00-群聊收集", "主群_group-main-777.txt"),
 			[
+				"先遣哨 09:15:30",
+				"无前置日期的纯时分秒消息",
 				"燕王 2026-11-26 10:00:00",
 				"我军兵力对比，目前为 25:80",
 				"预计抵达时间，大约 12:30",
@@ -496,11 +399,186 @@ describe("WenyouService 端到端领域闭环", () => {
 			].join("\n"),
 			"utf8",
 		);
-		const pulled = await pullQqGroupsIncremental(root, "group-main-777");
-		expect(pulled.newlyIngested).toBe(2);
-		expect(pulled.unreportedMessages[0]?.sender).toBe("燕王");
-		expect(pulled.unreportedMessages[0]?.text).toContain("25:80");
-		expect(pulled.unreportedMessages[0]?.text).toContain("12:30");
-		expect(pulled.unreportedMessages[1]?.sender).toBe("周相");
+		await writeFile(
+			join(root, "00-群聊收集", "外交群_group-dip-888.json"),
+			JSON.stringify({
+				groupId: "group-dip-888",
+				groupName: "外交群",
+				messages: [{ id: "dip-1", sender: "西凉使节", text: "无时间戳 JSON 照会" }],
+			}),
+			"utf8",
+		);
+
+		const pulled = await pullQqGroupsIncremental(root);
+		expect(pulled.newlyIngested).toBe(4);
+
+		const service = new WenyouService();
+		const allSearch = await service.searchSourcesWithStats(root, { limit: 50 });
+		const timeOnlyRec = allSearch.records.find((m) => m.sender === "先遣哨");
+		expect(timeOnlyRec?.timestamp).toBe("09:15:30");
+		expect(timeOnlyRec?.timestamp).not.toContain("2026-01-01");
+
+		const emptyJsonRec = allSearch.records.find((m) => m.sourceId === "dip-1");
+		expect(emptyJsonRec?.timestamp).toBe("");
+		expect(emptyJsonRec?.timestamp).not.toContain("2026-01-01");
+
+		const emptyExtRec = allSearch.records.find((m) => m.sourceId === "qq-900-12");
+		expect(emptyExtRec?.timestamp).toBe("");
+
+		const mainRec = allSearch.records.find((m) => m.sender === "燕王");
+		expect(mainRec?.text).toContain("25:80");
+		expect(mainRec?.text).toContain("12:30");
+
+		// 指定完整日期 since/until 过滤时，不会因空字符串或纯时分秒报错或误命中
+		const dateFiltered = await service.searchSourcesWithStats(root, {
+			since: "2026-11-26",
+			until: "2026-11-26",
+		});
+		expect(dateFiltered.records.every((m) => m.timestamp.startsWith("2026-11-26"))).toBe(true);
+		expect(dateFiltered.records.some((m) => m.sourceId === "dip-1")).toBe(false);
+		expect(dateFiltered.records.some((m) => m.sender === "先遣哨")).toBe(false);
+	});
+
+	it("无日期与纯时分秒消息不阻塞后续带日期消息的未汇报游标，且 .txt 时间顺序不反转", async () => {
+		const root = await mkdtemp(join(tmpdir(), "wenyou-undated-cursor-"));
+		tempDirs.push(root);
+		const service = new WenyouService();
+		await service.initCampaign(root, { worldTitle: "游标无日期回归", currentEra: "T1" });
+
+		// 1. 先入库含空时间戳与纯时分秒的记录，再发布简报推进 lastReportedSourceId
+		await ingestExternalMessages(root, [
+			{ sourceId: "g1-empty", groupId: "g1", groupName: "主群", sender: "甲", timestamp: "", text: "无时间戳开场" },
+			{ sourceId: "g1-timeonly", groupId: "g1", groupName: "主群", sender: "乙", timestamp: "09:15:30", text: "纯时分秒消息" },
+		]);
+		await service.publishBriefing({
+			cwd: root,
+			title: "首报",
+			turnLabel: "T1",
+			headline: "首报覆盖无日期记录",
+			progressItems: [],
+			diplomacySummary: "平稳",
+			intelChecks: [],
+			strategicJudgment: "继续",
+		});
+
+		const ovAfterFirst = await service.getOverview(root);
+		expect(ovAfterFirst.unreportedCount).toBe(0);
+		expect(ovAfterFirst.cursors[0]?.lastReportedSourceId).toBe("g1-timeonly");
+
+		// 2. 随后新到来带完整日期的消息（包含触发重排的乱序日期），必须全部落在新未汇报队列尾部，绝不被吞掉
+		await ingestExternalMessages(root, [
+			{ sourceId: "g1-d2", groupId: "g1", groupName: "主群", sender: "丙", timestamp: "2026-11-26 11:00:00", text: "后发带日期消息" },
+			{ sourceId: "g1-d1", groupId: "g1", groupName: "主群", sender: "丁", timestamp: "2026-11-26 10:00:00", text: "较早带日期消息" },
+		]);
+		const pulled = await service.pullQq(root);
+		expect(pulled.unreportedMessages.map((m) => m.sourceId)).toEqual(["g1-d1", "g1-d2"]);
+		const g1Cursor = pulled.cursors.find((c) => c.groupId === "g1");
+		expect(g1Cursor?.unreportedCount).toBe(2);
+		expect(g1Cursor?.lastIngestedSourceId).toBe("g1-d2");
+		expect(g1Cursor?.lastIngestedTimestamp).toBe("2026-11-26 11:00:00");
+
+		// 3. .txt 中纯时分秒在前、带日期在后，触发排序后仍保持纯时分秒在前、完整日期在后
+		await writeFile(
+			join(root, "00-群聊收集", "外交群_group-dip-200.txt"),
+			[
+				"先遣哨 09:15:30",
+				"无前置日期消息",
+				"燕王 2026-11-26 11:00:00",
+				"较晚消息",
+				"周相 2026-11-26 10:00:00",
+				"较早消息",
+			].join("\n"),
+			"utf8",
+		);
+		const pullTxt = await service.pullQq(root, "group-dip-200");
+		expect(pullTxt.unreportedMessages.map((m) => m.sender)).toEqual(["先遣哨", "周相", "燕王"]);
+	});
+
+	it("until/since 边界补齐 HH:MM / ISO-T / 纯日期，且 pullQqGroupsIncremental 优先按显式 JSON id 去重", async () => {
+		const root = await mkdtemp(join(tmpdir(), "wenyou-bounds-dedup-"));
+		tempDirs.push(root);
+		const service = new WenyouService();
+		await service.initCampaign(root, { worldTitle: "边界与去重测试", currentEra: "T1" });
+
+		await writeFile(
+			join(root, "00-群聊收集", "主群_group-main-300.json"),
+			JSON.stringify({
+				groupId: "group-main-300",
+				groupName: "主群",
+				messages: [
+					{ id: "m-t1", sender: "哨兵", timestamp: "09:15:30", text: "准点回报" },
+					{ id: "m-t2", sender: "哨兵", timestamp: "09:16:00", text: "超出一分钟" },
+					{ id: "m-iso", sender: "使节", timestamp: "2026-11-26T09:30:00Z", text: "ISO 格式时间" },
+					{ id: "m-dateonly", sender: "史官", timestamp: "2026-11-26", text: "纯日期记录" },
+					{ id: "m-dup-a", sender: "甲", timestamp: "", text: "收到" },
+					{ id: "m-dup-b", sender: "甲", timestamp: "", text: "收到" },
+					{ id: "m-dup-a", sender: "甲", timestamp: "", text: "收到（重复ID改文）" },
+				],
+			}),
+			"utf8",
+		);
+
+		const pulled = await pullQqGroupsIncremental(root);
+		expect(pulled.newlyIngested).toBe(6);
+		expect(pulled.skippedDuplicates).toBe(1);
+		expect(pulled.unreportedMessages.some((m) => m.sourceId === "m-dup-a")).toBe(true);
+		expect(pulled.unreportedMessages.some((m) => m.sourceId === "m-dup-b")).toBe(true);
+
+		const untilMinute = await service.searchSourcesWithStats(root, { until: "09:15" });
+		expect(untilMinute.records.map((m) => m.sourceId)).toEqual(["m-t1"]);
+
+		const fullDateRange = await service.searchSourcesWithStats(root, {
+			since: "2026-11-26",
+			until: "2026-11-26",
+		});
+		expect(fullDateRange.records.map((m) => m.sourceId).sort()).toEqual(["m-dateonly", "m-iso"]);
+	});
+
+	it("writePolicyDocx 拒绝空白标题、并发写串行编号不冲突、.docx 失败回滚 .md，且 readCanonDoc 拒绝目录目标", async () => {
+		const root = await mkdtemp(join(tmpdir(), "wenyou-policy-atomic-"));
+		tempDirs.push(root);
+		const events: WenyouCanvasEvent[] = [];
+		const service = new WenyouService((ev) => events.push(ev));
+		await service.initCampaign(root, { worldTitle: "原子性测试", currentEra: "T1" });
+
+		// 1. 空白标题返回 ok: false 且不落盘
+		const blankRes = await service.writePolicyDocx({
+			cwd: root,
+			title: "   \t  ",
+			content: "正文",
+		});
+		expect(blankRes.ok).toBe(false);
+		expect(blankRes.error).toContain("不能为空");
+		expect(await service.listPolicies(root)).toHaveLength(0);
+
+		// 2. 并发写两份无显式编号的国策，经 workspace lock 串行获得 001 / 002 互不撞号
+		const [p1, p2] = await Promise.all([
+			service.writePolicyDocx({ cwd: root, title: "并发国策甲", content: "正文甲" }),
+			service.writePolicyDocx({ cwd: root, title: "并发国策乙", content: "正文乙" }),
+		]);
+		expect(p1.ok).toBe(true);
+		expect(p2.ok).toBe(true);
+		expect([p1.artifact?.serialNo, p2.artifact?.serialNo].sort()).toEqual(["001", "002"]);
+		expect(existsSync(join(root, p1.artifact!.docxPath!))).toBe(true);
+		expect(existsSync(join(root, p2.artifact!.docxPath!))).toBe(true);
+
+		// 3. 在目标 .docx 路径预先占一个目录导致 .docx 写入失败，必须返回 ok: false 并回滚新建的 .md（且不触发 policy_written）
+		const beforeEventCount = events.length;
+		const occupiedDocxPath = join(root, "03-国策与文书", "099-回滚校验.docx");
+		const orphanMdPath = join(root, "03-国策与文书", "099-回滚校验.md");
+		await mkdir(occupiedDocxPath, { recursive: true });
+		const failRes = await service.writePolicyDocx({
+			cwd: root,
+			serialNo: "099",
+			title: "回滚校验",
+			content: "应当被回滚的国策正文",
+		});
+		expect(failRes.ok).toBe(false);
+		expect(failRes.error).toBeTruthy();
+		expect(existsSync(orphanMdPath)).toBe(false);
+		expect(events.length).toBe(beforeEventCount);
+
+		// 4. readCanonDoc 指向目录时抛出清晰错误
+		await expect(service.readCanonDoc(root, "01-设定与国力实册")).rejects.toThrow("目标不是常规文件");
 	});
 });

@@ -1,161 +1,11 @@
-import { existsSync } from "node:fs";
-import { readFile, realpath } from "node:fs/promises";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { defineTool, type InlineExtension } from "@earendil-works/pi-coding-agent";
-import { INTEL_RELIABILITIES, type ViewerScope, type WenyouCanvasEvent } from "@percho/shared";
+import { INTEL_RELIABILITIES, type WenyouCanvasEvent } from "@percho/shared";
 import { Type } from "typebox";
-import {
-	assertRealTargetInsideWorkspace,
-	canViewerSee,
-	isPrivateVaultPath,
-	isRawChatPath,
-	normalizeVaultPath,
-	parseMarkdownWithFrontmatter,
-} from "./secret-blocks";
-import { resolveMarkdownDocVisibility, type WenyouService } from "./service";
+import type { WenyouService } from "./service";
 
 export interface WenyouExtensionOptions {
 	service: WenyouService;
 	cwd: string;
-}
-
-const POLICY_WRITE_PROTECTED_PREFIX = "03-国策与文书";
-const BRIEFING_RESTRICTED_PREFIX = "02-局势简报与台账";
-
-const NON_GM_READ_BLOCKED_PREFIXES = [
-	"private",
-	".wenyou",
-	"00-群聊收集",
-	BRIEFING_RESTRICTED_PREFIX,
-] as const;
-
-const BASH_PROTECTED_PATH_TOKENS = ["private", ".wenyou"] as const;
-
-const BASH_WRITE_OP_RE =
-	/(?:^|[;&|]\s*|[\s(])(?:rm|rmdir|del|erase|mv|move|cp|copy|touch|truncate|chmod|chown|mkdir|tee|dd|install|patch|ln|mklink|Set-Content|Add-Content|Out-File|Remove-Item|Move-Item|Copy-Item|New-Item|Clear-Content)\b|\bsed\s+[^\n]*-i\b|\bperl\s+[^\n]*-i\b|\bpython\d?\b[^\n]*-c\b|\bnode\b[^\n]*-e\b|[12&]?>{1,2}\s*\S/i;
-
-function matchesDirOrPrefix(normRel: string, prefix: string): boolean {
-	const lower = normRel.toLowerCase();
-	const p = prefix.toLowerCase();
-	return lower === p || lower.startsWith(`${p}/`);
-}
-
-function isPolicyProtectedRel(normRel: string): boolean {
-	return matchesDirOrPrefix(normRel, POLICY_WRITE_PROTECTED_PREFIX);
-}
-
-function isNonGmBlockedDir(normRel: string): boolean {
-	if (isPrivateVaultPath(normRel) || isRawChatPath(normRel)) return true;
-	return NON_GM_READ_BLOCKED_PREFIXES.some((p) => matchesDirOrPrefix(normRel, p));
-}
-
-function isAncestorOfNonGmBlockedDir(normRel: string): boolean {
-	if (!normRel) return true;
-	const lower = normRel.toLowerCase();
-	return NON_GM_READ_BLOCKED_PREFIXES.some((p) => p.toLowerCase().startsWith(`${lower}/`));
-}
-
-function extractToolPaths(toolName: string, input: Record<string, unknown>): string[] {
-	const out: string[] = [];
-	const pushIfString = (v: unknown) => {
-		if (typeof v === "string" && v.trim().length > 0) out.push(v.trim());
-	};
-	if (toolName === "show_image") {
-		if (Array.isArray(input.paths)) {
-			for (const p of input.paths) pushIfString(p);
-		}
-		pushIfString(input.path);
-		return out;
-	}
-	pushIfString(input.path);
-	pushIfString(input.file_path);
-	pushIfString(input.filePath);
-	pushIfString(input.target);
-	pushIfString(input.dir);
-	pushIfString(input.directory);
-	return out;
-}
-
-async function resolveWorkspaceRelCandidates(
-	workDir: string,
-	rawPath: string,
-): Promise<{ inside: boolean; rels: string[]; absPath: string }> {
-	const root = resolve(workDir);
-	const absPath = isAbsolute(rawPath) ? resolve(rawPath) : resolve(root, rawPath);
-	const rel = relative(root, absPath);
-	const inside = rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
-	if (!inside) {
-		return { inside: false, rels: [], absPath };
-	}
-	const rels = new Set<string>([normalizeVaultPath(rel)]);
-	try {
-		if (existsSync(absPath)) {
-			const [realRoot, realTarget] = await Promise.all([realpath(root), realpath(absPath)]);
-			const realRel = relative(realRoot, realTarget);
-			if (realRel !== ".." && !realRel.startsWith(`..${sep}`) && !isAbsolute(realRel)) {
-				rels.add(normalizeVaultPath(realRel));
-			}
-		} else {
-			const checked = await assertRealTargetInsideWorkspace(root, absPath);
-			rels.add(checked.realRelPath);
-		}
-	} catch {
-		// 符号链接逃逸等情况保留原始 rel，由外层阻断或 permission-gate 拦截
-	}
-	return { inside: true, rels: [...rels], absPath };
-}
-
-function commandMentionsAnyToken(command: string, tokens: readonly string[]): string | null {
-	const lower = command.replace(/\\/g, "/").toLowerCase();
-	for (const token of tokens) {
-		const t = token.toLowerCase();
-		if (lower.includes(t)) return token;
-	}
-	return null;
-}
-
-async function checkNonGmFileReadBlock(
-	workDir: string,
-	absPath: string,
-	normRel: string,
-	viewer: ViewerScope,
-): Promise<string | null> {
-	if (isNonGmBlockedDir(normRel)) {
-		return `【非 GM 读隔离】当前视角无权访问受限目录（${normRel}）；请改调 wenyou_read_memory 或 wenyou_lookup_source 受控读取。`;
-	}
-	const lower = normRel.toLowerCase();
-	if (lower.endsWith(".md") && existsSync(absPath)) {
-		try {
-			const raw = await readFile(absPath, "utf8");
-			const { data, body } = parseMarkdownWithFrontmatter(raw);
-			const { visibility, visibleToFactions } = resolveMarkdownDocVisibility(normRel, data);
-			if (!canViewerSee(visibility, visibleToFactions, viewer)) {
-				return `【非 GM 读隔离】文档 ${normRel} 当前视角不可见（visibility=${visibility}），已阻断裸 read。`;
-			}
-			if (body.includes(":::secret")) {
-				return `【暗线块保护】文档 ${normRel} 包含 :::secret 受限暗线块，非 GM 视角禁止裸 read；请改调 wenyou_read_memory 受控裁剪读取。`;
-			}
-		} catch {
-			return `【非 GM 读隔离】无法校验文档 ${normRel} 的权限边界，Fail-Closed 已阻断裸 read。`;
-		}
-	}
-	if (isPolicyProtectedRel(normRel) && lower.endsWith(".docx")) {
-		const peerMdRel = `${normRel.slice(0, -5)}.md`;
-		const peerMdAbs = join(workDir, peerMdRel);
-		if (!existsSync(peerMdAbs)) {
-			return `【非 GM 读隔离】无法核实国策文书 ${normRel} 的可见性元数据，已阻断读取。`;
-		}
-		try {
-			const { data } = parseMarkdownWithFrontmatter(await readFile(peerMdAbs, "utf8"));
-			const { visibility, visibleToFactions } = resolveMarkdownDocVisibility(peerMdRel, data);
-			if (!canViewerSee(visibility, visibleToFactions, viewer)) {
-				return `【非 GM 读隔离】国策文书 ${normRel} 当前视角不可见，已阻断读取。`;
-			}
-		} catch {
-			return `【非 GM 读隔离】无法核实国策文书 ${normRel} 的可见性，已阻断读取。`;
-		}
-	}
-	return null;
 }
 
 const initCampaignParams = Type.Object({
@@ -215,7 +65,7 @@ const readMemoryParams = Type.Object({
 const publishBriefingParams = Type.Object({
 	title: Type.String({ minLength: 1, description: "局势简报标题，如「景平六年春河朔局势简报」" }),
 	turnLabel: Type.String({ minLength: 1, description: "轮次或年代标签，如「景平六年春」" }),
-	headline: Type.String({ minLength: 1, maxLength: 160, description: "<=120字核心结论，先说结论再列细节" }),
+	headline: Type.String({ minLength: 1, description: "核心结论，先说结论再列细节" }),
 	progressItems: Type.Array(
 		Type.Object({
 			title: Type.String({ minLength: 1 }),
@@ -267,16 +117,12 @@ const writePolicyDocxParams = Type.Object({
 	title: Type.String({ minLength: 1, description: "国策或文书标题，如「景平六年春北周整军理财疏」" }),
 	content: Type.String({
 		minLength: 20,
-		description: "国策正文（起草己方国策建议采用纯手写自然段，不带表格/嵌套清单/AI套话；原样归档群友国策可配合 force=true）",
+		description: "国策正文（推荐采用清晰平实的自然段或一级编号条陈，直接落盘为 .md 与规范宋体 .docx）",
 	}),
 	actor: Type.Optional(Type.String({ description: "上疏/执行阵营或国家名" })),
 	turnLabel: Type.Optional(Type.String({ description: "所属轮次/年代" })),
 	serialNo: Type.Optional(Type.String({ description: "可选编号（如 002），留空自动递增" })),
-	force: Type.Optional(
-		Type.Boolean({
-			description: "可选：为 true 时忽略静态门禁告警强制写出 .md 与 .docx（用于原样归档群友国策或用户明确允许的格式）",
-		}),
-	),
+	author: Type.Optional(Type.String({ description: "可选：Word 文档元数据作者署名（默认留空）" })),
 });
 
 const openMapsParams = Type.Object({
@@ -314,7 +160,6 @@ const inspectMapParams = Type.Object({
 /**
  * Wenyou Pro 核心内联扩展：
  * - 注册 8 个文游专职工具（采集/回查/记忆/局势书/国策.docx生成/双屏地图/地图快照核账/初始化）
- * - 通过 tool_call 钩子实施非 GM 视角物理读写隔离与内部目录（.wenyou/、private/）防误删保护；GM 视角可直接读写设定、编年史与国策归档
  * - 在文游工作区内通过 context_with_system 动态注入精简战役态势头
  */
 export function makeWenyouExtension(options: WenyouExtensionOptions): InlineExtension {
@@ -331,107 +176,6 @@ export function makeWenyouExtension(options: WenyouExtensionOptions): InlineExte
 
 			pi.on("session_shutdown", () => {
 				activeSessionId = undefined;
-			});
-
-			// 物理门控：非 GM 视角读写与暗线隔离 + GM 内部状态目录（.wenyou/、private/）bash 防误删
-			pi.on("tool_call", async (event, ctx) => {
-				const workDir = ctx.cwd || cwd;
-				if (!(await service.isCampaignWorkspace(workDir))) return;
-
-				const toolName = event.toolName;
-				const input = (event.input ?? {}) as Record<string, unknown>;
-				const effectiveViewer = await service.getEffectiveViewer(workDir);
-
-				// 1. 内置写工具（edit / write）：GM 视角自由读写设定、编年史与国策归档；非 GM 禁止写入受限目录或覆写不可见/含暗线档案
-				if (toolName === "edit" || toolName === "write") {
-					if (effectiveViewer.kind === "gm") return;
-					const paths = extractToolPaths(toolName, input);
-					for (const rawPath of paths) {
-						const { inside, rels, absPath } = await resolveWorkspaceRelCandidates(workDir, rawPath);
-						if (!inside) continue;
-						for (const normRel of rels) {
-							if (isNonGmBlockedDir(normRel)) {
-								return {
-									block: true,
-									reason: `【视角写隔离】非 GM 视角禁止写入受限目录（${normRel}）。`,
-								};
-							}
-							if (existsSync(absPath)) {
-								const readBlock = await checkNonGmFileReadBlock(workDir, absPath, normRel, effectiveViewer);
-								if (readBlock) {
-									return {
-										block: true,
-										reason: `【视角写隔离】当前视角无权直接覆写不可见或含暗线的档案（${normRel}）。`,
-									};
-								}
-							}
-						}
-					}
-					return;
-				}
-
-				// 2. bash 命令拦截：非 GM 物理沙箱 + GM 仅保护内部证据库与密区（.wenyou/、private/）不被 bash 误改删
-				if (toolName === "bash") {
-					const command = typeof input.command === "string" ? input.command : "";
-					if (!command.trim()) return;
-					if (effectiveViewer.kind !== "gm") {
-						return {
-							block: true,
-							reason:
-								"【非 GM 物理沙箱】当前非裁判视角在文游战役工作区内禁止执行裸 bash 命令（防止通配符、递归搜索或脚本绕过暗线隔离）；检索情报请调用 wenyou_read_memory、wenyou_lookup_source 或 wenyou_inspect_map。",
-						};
-					}
-					const hitProtected = commandMentionsAnyToken(command, BASH_PROTECTED_PATH_TOKENS);
-					if (hitProtected && BASH_WRITE_OP_RE.test(command)) {
-						return {
-							block: true,
-							reason: `【内部目录保护】禁止通过 bash 对内部受保护目录（${hitProtected}）执行写入、重定向或删除操作，防止损坏 L0 证据库或私有笔记。`,
-						};
-					}
-					return;
-				}
-
-				// 3. 非 GM 视角内置读/列/看图/搜工具拦截
-				if (
-					effectiveViewer.kind !== "gm" &&
-					(toolName === "read" ||
-						toolName === "ls" ||
-						toolName === "show_image" ||
-						toolName === "grep" ||
-						toolName === "find")
-				) {
-					if (toolName === "grep") {
-						return {
-							block: true,
-							reason:
-								"【非 GM 读隔离】当前视角禁止在文游工作区直接调用裸 grep（防穿透 :::secret 暗线块与受限目录）；请改调 wenyou_read_memory 或 wenyou_lookup_source 受控检索。",
-						};
-					}
-					const extracted = extractToolPaths(toolName, input);
-					const paths =
-						extracted.length === 0 && (toolName === "ls" || toolName === "find") ? ["."] : extracted;
-					for (const rawPath of paths) {
-						const { inside, rels, absPath } = await resolveWorkspaceRelCandidates(workDir, rawPath);
-						if (!inside) continue;
-						for (const normRel of rels) {
-							if (toolName === "read" || toolName === "show_image") {
-								if (!normRel) {
-									return {
-										block: true,
-										reason: `【非 GM 读隔离】当前视角无权直接读取工作区根路径。`,
-									};
-								}
-								const reason = await checkNonGmFileReadBlock(workDir, absPath, normRel, effectiveViewer);
-								if (reason) return { block: true, reason };
-							} else if (isNonGmBlockedDir(normRel) || isAncestorOfNonGmBlockedDir(normRel)) {
-								return {
-									block: true,
-									reason: `【非 GM 读隔离】当前视角无权使用 ${toolName} 枚举工作区根或受限目录（${normRel || "."}）；请指定允许的子目录或调用 wenyou_read_memory。`,
-								};
-							}
-						}
-					}
-				}
 			});
 
 			// 1. wenyou_init_campaign
@@ -476,33 +220,23 @@ export function makeWenyouExtension(options: WenyouExtensionOptions): InlineExte
 					parameters: pullQqParams,
 					execute: async (_id, params, _sig, _upd, ctx) => {
 						const workDir = ctx.cwd || cwd;
-						const viewer = await service.getEffectiveViewer(workDir);
 						const res = await service.pullQq(workDir, params.groupId, activeSessionId, {
 							historyLimit: params.historyLimit,
 							backfill: params.backfill,
 						});
-						const visibleUnreported =
-							viewer.kind === "gm"
-								? res.unreportedMessages
-								: res.unreportedMessages.filter((m) =>
-										canViewerSee(m.visibility, m.visibleToFactions, viewer),
-									);
-						const visibleGroupIds = new Set(visibleUnreported.map((m) => m.groupId));
-						const visibleCursors =
-							viewer.kind === "gm"
-								? res.cursors
-								: res.cursors.filter((c) => c.role !== "cabinet" || visibleGroupIds.has(c.groupId));
 						const cap = params.maxMessages ?? 80;
-						const slice = visibleUnreported.slice(0, cap);
-						const cursorLines = visibleCursors.map(
+						const slice = res.unreportedMessages.slice(0, cap);
+						const cursorLines = res.cursors.map(
 							(c) =>
 								`- ${c.groupName} (${c.groupId}/${c.role}): 总入库 ${c.totalIngested}，未汇报 ${c.unreportedCount}（已报至 ${c.lastReportedSourceId ?? "无"}）`,
 						);
-						const msgLines = slice.map(
-							(m) => `[${m.sourceId}] (${m.groupName}) ${m.timestamp} ${m.sender} [${m.kind}]: ${m.text}`,
+						const msgLines = slice.map((m) =>
+							m.timestamp
+								? `[${m.sourceId}] (${m.groupName}) ${m.timestamp} ${m.sender}: ${m.text}`
+								: `[${m.sourceId}] (${m.groupName}) ${m.sender}: ${m.text}`,
 						);
 						const summary = [
-							`增量采集完成：新入库 ${res.newlyIngested} 条${res.ntqqSyncedCount ? `（其中本机 NTQQ 直读 ${res.ntqqSyncedCount} 条）` : ""}，跳过重复 ${res.skippedDuplicates} 条，总证据 ${res.totalEvidenceCount} 条，待汇报 ${visibleUnreported.length} 条。`,
+							`增量采集完成：新入库 ${res.newlyIngested} 条${res.ntqqSyncedCount ? `（其中本机 NTQQ 直读 ${res.ntqqSyncedCount} 条）` : ""}，跳过重复 ${res.skippedDuplicates} 条，总证据 ${res.totalEvidenceCount} 条，待汇报 ${res.unreportedMessages.length} 条。`,
 							...(res.ntqqWarning ? [`[本机 NTQQ 提示] ${res.ntqqWarning}`] : []),
 							"",
 							"各群游标：",
@@ -510,7 +244,7 @@ export function makeWenyouExtension(options: WenyouExtensionOptions): InlineExte
 								? cursorLines
 								: ["（暂无群聊记录，可在右侧「局势书与台账」绑定本机 QQ 群或将聊天记录放入 00-群聊收集/）"]),
 							"",
-							`未汇报新消息（展示 ${slice.length}/${visibleUnreported.length} 条）：`,
+							`未汇报新消息（展示 ${slice.length}/${res.unreportedMessages.length} 条）：`,
 							...(msgLines.length ? msgLines : ["（无新增未汇报消息）"]),
 						].join("\n");
 						return {
@@ -518,7 +252,7 @@ export function makeWenyouExtension(options: WenyouExtensionOptions): InlineExte
 							details: {
 								wenyouAction: "pull_qq",
 								newlyIngested: res.newlyIngested,
-								unreportedCount: visibleUnreported.length,
+								unreportedCount: res.unreportedMessages.length,
 							},
 						};
 					},
@@ -538,13 +272,12 @@ export function makeWenyouExtension(options: WenyouExtensionOptions): InlineExte
 					parameters: lookupSourceParams,
 					execute: async (_id, params, _sig, _upd, ctx) => {
 						const workDir = ctx.cwd || cwd;
-						const viewer = await service.getEffectiveViewer(workDir);
 						if (params.sourceId) {
 							const reqWindow = params.window ?? 30;
-							const win = await service.lookupSource(workDir, params.sourceId, reqWindow, viewer);
+							const win = await service.lookupSource(workDir, params.sourceId, reqWindow);
 							if (!win) {
 								return {
-									content: [{ type: "text", text: `未在 L0 证据库中找到当前视角可见的 sourceId=${params.sourceId}` }],
+									content: [{ type: "text", text: `未在 L0 证据库中找到 sourceId=${params.sourceId}` }],
 									details: { wenyouAction: "lookup_source", found: false },
 								};
 							}
@@ -559,7 +292,9 @@ export function makeWenyouExtension(options: WenyouExtensionOptions): InlineExte
 							}
 							const lines = win.messages.map((m, idx) => {
 								const mark = idx === win.targetIndex ? ">>> " : "    ";
-								return `${mark}[${m.sourceId}] ${m.timestamp} ${m.sender} (${m.kind}): ${m.text}`;
+								return m.timestamp
+									? `${mark}[${m.sourceId}] ${m.timestamp} ${m.sender}: ${m.text}`
+									: `${mark}[${m.sourceId}] ${m.sender}: ${m.text}`;
 							});
 							const totalInGroup = win.totalGroupMessages ?? win.messages.length;
 							const beforeRem = win.beforeRemaining ?? 0;
@@ -597,10 +332,11 @@ export function makeWenyouExtension(options: WenyouExtensionOptions): InlineExte
 							until: params.until,
 							order: params.order ?? "latest",
 							limit: params.limit ?? 50,
-							viewer,
 						});
-						const lines = searchRes.records.map(
-							(m) => `[${m.sourceId}] (${m.groupName}) ${m.timestamp} ${m.sender}: ${m.text}`,
+						const lines = searchRes.records.map((m) =>
+							m.timestamp
+								? `[${m.sourceId}] (${m.groupName}) ${m.timestamp} ${m.sender}: ${m.text}`
+								: `[${m.sourceId}] (${m.groupName}) ${m.sender}: ${m.text}`,
 						);
 						const orderLabel = searchRes.order === "earliest" ? "最早优先" : "最近优先";
 						const overflowHint =
@@ -635,14 +371,12 @@ export function makeWenyouExtension(options: WenyouExtensionOptions): InlineExte
 					name: "wenyou_read_memory",
 					label: "读取文游三层记忆",
 					annotations: { readOnlyHint: true, openWorldHint: false },
-					description:
-						"读取当前工作区在当前视角下的最新局势简报（L1）、跨群滚动台账与 01-设定与国力实册 关键基线文档（自动按视角剥离 :::secret 受限暗线）。",
+					description: "读取当前工作区的最新局势简报（L1）、跨群滚动台账与 01-设定与国力实册 关键基线文档。",
 					promptSnippet: "wenyou_read_memory({includeSettings?, maxBriefings?})",
 					parameters: readMemoryParams,
 					execute: async (_id, params, _sig, _upd, ctx) => {
 						const workDir = ctx.cwd || cwd;
-						const viewer = await service.getEffectiveViewer(workDir);
-						const overview = await service.getOverview(workDir, viewer);
+						const overview = await service.getOverview(workDir);
 						const maxB = params.maxBriefings ?? 2;
 						const recentBriefings = overview.briefings.slice(0, maxB);
 						const sections: string[] = [
@@ -681,14 +415,14 @@ export function makeWenyouExtension(options: WenyouExtensionOptions): InlineExte
 							);
 							for (const doc of inlineDocs) {
 								try {
-									const safeDoc = await service.readCanonDoc(workDir, doc.relPath, viewer);
+									const safeDoc = await service.readCanonDoc(workDir, doc.relPath);
 									const truncated = safeDoc.content.length > MAX_DOC_CHARS;
 									const excerpt = truncated
 										? `${safeDoc.content.slice(0, MAX_DOC_CHARS)}\n…（已截断，原文共 ${safeDoc.content.length} 字；如需全文请用 read 读取 ${doc.relPath}）`
 										: safeDoc.content;
 									sections.push(`### ${doc.title} (${doc.relPath})\n${excerpt}`);
 								} catch {
-									// skip inaccessible doc under current viewer
+									// skip unreadable doc
 								}
 							}
 						}
@@ -767,15 +501,14 @@ export function makeWenyouExtension(options: WenyouExtensionOptions): InlineExte
 			pi.registerTool(
 				defineTool({
 					name: "wenyou_write_policy_docx",
-					label: "校验并生成国策 DOCX",
+					label: "生成国策 DOCX",
 					annotations: { readOnlyHint: false },
 					description:
-						"对国策正文执行静态风格体检并生成 03-国策与文书/*.md 与规范 .docx，同时打开右侧「国策书案」面板。默认拦截 Markdown 表格、多层嵌套清单与高频 AI 套话；如需原样归档群友国策或用户明确要求保留格式，可传 force=true 强制落盘。",
-					promptSnippet: "wenyou_write_policy_docx({title, content, actor?, turnLabel?, serialNo?, force?})",
+						"将国策正文写入 03-国策与文书/*.md 并生成规范宋体 .docx 文书，同时刷新右侧「国策书案」面板。",
+					promptSnippet: "wenyou_write_policy_docx({title, content, actor?, turnLabel?, serialNo?, author?})",
 					parameters: writePolicyDocxParams,
 					execute: async (_id, params, _sig, _upd, ctx) => {
 						const workDir = ctx.cwd || cwd;
-						const viewer = await service.getEffectiveViewer(workDir);
 						const res = await service.writePolicyDocx({
 							cwd: workDir,
 							title: params.title,
@@ -783,8 +516,7 @@ export function makeWenyouExtension(options: WenyouExtensionOptions): InlineExte
 							actor: params.actor,
 							turnLabel: params.turnLabel,
 							serialNo: params.serialNo,
-							force: params.force,
-							viewer,
+							author: params.author,
 							sessionId: activeSessionId,
 						});
 						if (!res.ok || !res.artifact) {
@@ -792,26 +524,19 @@ export function makeWenyouExtension(options: WenyouExtensionOptions): InlineExte
 								content: [
 									{
 										type: "text",
-										text: `${res.error ?? "国策门禁未通过，请修改后重新调用 wenyou_write_policy_docx。"}\n（若是原样归档群友国策或用户明确允许当前格式，可传 force: true 强制生成，或直接写入 03-国策与文书/）`,
+										text: res.error ?? "生成国策文书失败。",
 									},
 								],
 								details: {
-									wenyouAction: "write_policy_docx_rejected",
-									lintReport: res.lintReport,
+									wenyouAction: "write_policy_docx_failed",
 								},
 							};
 						}
-						const forcedNote =
-							!res.lintReport.passed && params.force
-								? `（已按 force=true 忽略 ${res.lintReport.issues.length} 项门禁提示强制写出）`
-								: res.lintReport.issues.length > 0
-									? `（已通过，附 ${res.lintReport.issues.length} 条风格提醒）`
-									: "国策门禁全部通过！";
 						return {
 							content: [
 								{
 									type: "text",
-									text: `${forcedNote}已写出：\n- Markdown：${res.artifact.markdownPath}\n- Word 文书：${res.artifact.docxPath}（宋体五号 10.5pt、首行缩进 2 字符、1.25 倍行距、居中 15pt 标题）\n右侧「国策书案」画布已自动更新。`,
+									text: `国策文书已写出：\n- Markdown：${res.artifact.markdownPath}\n- Word 文书：${res.artifact.docxPath}（宋体五号 10.5pt、首行缩进 2 字符、1.25 倍行距、居中 15pt 标题）\n右侧「国策书案」画布已自动更新。`,
 								},
 							],
 							details: {
@@ -819,7 +544,6 @@ export function makeWenyouExtension(options: WenyouExtensionOptions): InlineExte
 								artifactId: res.artifact.id,
 								markdownPath: res.artifact.markdownPath,
 								docxPath: res.artifact.docxPath,
-								forced: Boolean(params.force && !res.lintReport.passed),
 							},
 						};
 					},
@@ -896,7 +620,7 @@ export function makeWenyouExtension(options: WenyouExtensionOptions): InlineExte
 					label: "核对沙盘地图与疆域差分",
 					annotations: { readOnlyHint: true, openWorldHint: false },
 					description:
-						"只读解析 05-沙盘与图集/、maps/ 或 assets/maps/ 下的结构化推演工程 JSON（wenyou-project / RLE delta）与 FMG .map 文件，返回真实政权地块、邻国接壤、城邦八方位与海港/首都标识、部队部署兵力及两期跨回合疆域差分，用于审国策核账与写战报防地理错位。",
+						"只读解析 05-沙盘与图集/、maps/ 或 assets/maps/ 下的结构化推演工程 JSON（wenyou-project）与 FMG .map 文件，返回真实政权地块、邻国接壤、城邦八方位与海港/首都标识、部队部署兵力及两期跨回合疆域差分，用于审国策核账与写战报防地理错位。",
 					promptSnippet: "wenyou_inspect_map({action, target?, compareTo?, theaterId?, faction?, maxBurgs?})",
 					parameters: inspectMapParams,
 					execute: async (_id, params, _sig, _upd, ctx) => {
@@ -1080,21 +804,20 @@ export function makeWenyouExtension(options: WenyouExtensionOptions): InlineExte
 				}),
 			);
 
-			// 动态文游态势感知注入（仅当工作区为文游战役目录时生效；严格按当前生效视角裁剪）
+			// 动态文游态势感知注入（仅当工作区为文游战役目录时生效）
 			pi.on("context_with_system", async (event, ctx) => {
 				try {
 					const workDir = ctx.cwd || cwd;
 					if (!(await service.isCampaignWorkspace(workDir))) return;
-					const viewer = await service.getEffectiveViewer(workDir);
 					const [overview, snapshots] = await Promise.all([
-						service.getOverview(workDir, viewer),
+						service.getOverview(workDir),
 						service.listMapSnapshots(workDir),
 					]);
 					const latest = overview.briefings[0];
 					const note = [
-						`[Wenyou Pro · 司命战役工作区态] 世界：${overview.worldTitle}｜轮次：${overview.currentEra ?? "未定"}｜已入库群聊：${overview.totalEvidenceCount} 条｜待汇报新消息：${overview.unreportedCount} 条｜设定与正史档案：${overview.canonDocs.length} 篇｜图集：${overview.maps.length} 张｜地图快照：${snapshots.length} 份。`,
-						latest ? `最新局势简报（${latest.id} / ${latest.turnLabel}）：${latest.headline}` : "尚无当前视角可见的局势简报。",
-						"纪律：1) 汇报局势前先调 wenyou_pull_qq 与 wenyou_read_memory，严禁混同敌方宣传与 GM 裁定事实，关键论断附 [sourceId]；2) 起草己方 Word 国策优先走 wenyou_write_policy_docx（禁表格/嵌套列表/AI 套话），归档群友原版国策或特殊格式可直接写 03-国策与文书/ 或传 force=true；3) 整理世界设定、国力实册与编年史时，可直接读写更新 01-设定与国力实册/ 与 04-编年史与条约/ 并注明 [sourceId] 溯源；4) 审涉海、接壤、行军方位或战报疆域变动前，须先调 wenyou_inspect_map 核对真实城邦坐标、海港与邻国，严禁架空臆造地理。",
+						`[Wenyou Pro · 司命战役工作区态] 世界：${overview.worldTitle}｜轮次：${overview.currentEra ?? "未定"}｜已入库群聊：${overview.totalEvidenceCount} 条｜待汇报新消息：${overview.unreportedCount} 条｜设定与编年史档案：${overview.canonDocs.length} 篇｜图集：${overview.maps.length} 张｜地图快照：${snapshots.length} 份。`,
+						latest ? `最新局势简报（${latest.id} / ${latest.turnLabel}）：${latest.headline}` : "尚无局势简报。",
+						"工作指引：1) 汇报局势前先调 wenyou_pull_qq 与 wenyou_read_memory，区分敌方宣传与 GM 裁定事实，关键论断附 [sourceId]；2) 起草 Word 国策可调 wenyou_write_policy_docx 生成 03-国策与文书/*.md 与规范宋体 .docx；3) 维护世界设定、国力实册与编年史可直接读写 01-设定与国力实册/ 与 04-编年史与条约/ 并注明 [sourceId] 溯源；4) 核查涉海、接壤、行军方位或战报疆域变动前，先调 wenyou_inspect_map 核对真实城邦坐标、海港与邻国。",
 					].join("\n");
 					return {
 						messages: [

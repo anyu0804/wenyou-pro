@@ -141,29 +141,12 @@ export function createExecutionHandlers(
 			}),
 		wenyouInitCampaign: ({ cwd, worldTitle, currentEra }) =>
 			backend.wenyou.initCampaign(cwd, { worldTitle, currentEra }),
-		wenyouGetOverview: ({ cwd, viewer }) => backend.wenyou.getOverview(cwd, viewer),
-		wenyouSetViewerScope: ({ cwd, viewer, maxViewer }) =>
-			backend.wenyou.setViewerScope(cwd, viewer, maxViewer),
+		wenyouGetOverview: ({ cwd }) => backend.wenyou.getOverview(cwd),
 		wenyouPullQq: ({ cwd, groupId }) => backend.wenyou.pullQq(cwd, groupId),
-		wenyouLookupSource: ({ cwd, sourceId, window, viewer }) =>
-			backend.wenyou.lookupSource(cwd, sourceId, window, viewer),
-		wenyouListBriefings: ({ cwd, viewer }) => backend.wenyou.listBriefings(cwd, viewer),
-		wenyouListPolicies: ({ cwd, viewer }) => backend.wenyou.listPolicies(cwd, viewer),
-		wenyouLintPolicy: ({ cwd, text, viewer, actorEntityId, branchId, currentOrder }) =>
-			backend.wenyou.lintPolicy(cwd, text, { viewer, actorEntityId, branchId, currentOrder }),
-		wenyouWritePolicyDocx: ({
-			cwd,
-			title,
-			content,
-			actor,
-			turnLabel,
-			serialNo,
-			viewer,
-			actorEntityId,
-			branchId,
-			currentOrder,
-			force,
-		}) =>
+		wenyouLookupSource: ({ cwd, sourceId, window }) => backend.wenyou.lookupSource(cwd, sourceId, window),
+		wenyouListBriefings: ({ cwd }) => backend.wenyou.listBriefings(cwd),
+		wenyouListPolicies: ({ cwd }) => backend.wenyou.listPolicies(cwd),
+		wenyouWritePolicyDocx: ({ cwd, title, content, actor, turnLabel, serialNo, author }) =>
 			backend.wenyou.writePolicyDocx({
 				cwd,
 				title,
@@ -171,11 +154,7 @@ export function createExecutionHandlers(
 				actor,
 				turnLabel,
 				serialNo,
-				viewer,
-				actorEntityId,
-				branchId,
-				currentOrder,
-				force,
+				author,
 			}),
 		wenyouListMaps: ({ cwd }) => backend.wenyou.listMaps(cwd),
 		wenyouListMapSnapshots: ({ cwd }) => backend.wenyou.listMapSnapshots(cwd),
@@ -186,7 +165,6 @@ export function createExecutionHandlers(
 		wenyouReadMapSnapshotRaw: ({ cwd, relPath }) => backend.wenyou.readMapSnapshotRaw(cwd, relPath),
 		wenyouSaveMapSnapshot: ({ cwd, fileName, content }) =>
 			backend.wenyou.saveMapSnapshot(cwd, fileName, content),
-		wenyouExportPreflight: ({ cwd, targetViewer }) => backend.wenyou.exportPreflight(cwd, targetViewer),
-		wenyouReadCanonDoc: ({ cwd, relPath, viewer }) => backend.wenyou.readCanonDoc(cwd, relPath, viewer),
+		wenyouReadCanonDoc: ({ cwd, relPath }) => backend.wenyou.readCanonDoc(cwd, relPath),
 	};
 }

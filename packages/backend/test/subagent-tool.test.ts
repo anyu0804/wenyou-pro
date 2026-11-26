@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
+import type { SubagentDefinition } from "../src/tools/subagent/agents";
 import type { SingleResult } from "../src/tools/subagent/runner";
-import { finalizeSubagentResult, subagentParams } from "../src/tools/subagent/tool";
+import { finalizeSubagentResult, resolveTaskAgent, subagentParams } from "../src/tools/subagent/tool";
 
 function makeResult(overrides: Partial<SingleResult> = {}): SingleResult {
 	return {
@@ -13,8 +14,17 @@ function makeResult(overrides: Partial<SingleResult> = {}): SingleResult {
 	};
 }
 
+function makeAgent(name: string): SubagentDefinition {
+	return {
+		name,
+		description: `${name} agent`,
+		tools: ["read"],
+		systemPrompt: `You are ${name}.`,
+		source: "user",
+	};
+}
+
 describe("subagentParams schema（provider 兼容，0.4.5 回归）", () => {
-	// SDK 发送前会 JSON 序列化 schema（symbol 键丢失），断言序列化后的形态最贴近真实请求
 	const schema = JSON.parse(JSON.stringify(subagentParams)) as Record<string, unknown>;
 
 	it("顶层必须是 type:object（DeepSeek 等 openai-completions 端点硬性要求）", () => {
@@ -42,6 +52,25 @@ describe("subagentParams schema（provider 兼容，0.4.5 回归）", () => {
 	});
 });
 
+describe("resolveTaskAgent（无内置 worker 回退语义）", () => {
+	it("未配置任何子代理时抛出明确提示", () => {
+		expect(() => resolveTaskAgent([], undefined)).toThrow(/No subagents are configured/);
+		expect(() => resolveTaskAgent([], "worker")).toThrow(/No subagents are configured/);
+	});
+
+	it("仅配置一个子代理且省略 agent 时自动选中该子代理", () => {
+		const only = makeAgent("historian");
+		expect(resolveTaskAgent([only], undefined)).toBe(only);
+	});
+
+	it("配置多个子代理且省略 agent 时抛出包含可用列表的错误", () => {
+		const agents = [makeAgent("scout"), makeAgent("historian")];
+		expect(() => resolveTaskAgent(agents, undefined)).toThrow(/scout, historian/);
+		expect(resolveTaskAgent(agents, "historian").name).toBe("historian");
+		expect(() => resolveTaskAgent(agents, "missing")).toThrow(/Available agents: scout, historian/);
+	});
+});
+
 describe("finalizeSubagentResult（失败语义 spec §6）", () => {
 	it("中止不会误导重试，事实块独立保留，长文本按每任务截断", () => {
 		const summary = {
@@ -65,6 +94,7 @@ describe("finalizeSubagentResult（失败语义 spec §6）", () => {
 		expect(result.isError).toBeUndefined();
 		expect(finalizeSubagentResult("single", [makeResult({ status: "aborted" })]).isError).toBe(true);
 	});
+
 	it("single 成功：content 为结论，无 isError", () => {
 		const result = finalizeSubagentResult("single", [makeResult({ content: "done" })]);
 		expect(result.isError).toBeUndefined();
