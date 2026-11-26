@@ -1,8 +1,6 @@
-name: Release
+name: Release (Upstream Archive)
 
 on:
-  push:
-    tags: ["v*"]
   workflow_dispatch:
     inputs:
       version:
@@ -17,14 +15,15 @@ on:
 permissions:
   contents: read
 
-# Never run two publishers for the same ref concurrently. Do not interrupt an upload.
+# Archived upstream workflow: manual dispatch only, allow newer manual runs to cancel stalled ones.
 concurrency:
   group: percho-release
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   prepare:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     outputs:
       version: ${{ steps.plan.outputs.version }}
       tag: ${{ steps.plan.outputs.tag }}
@@ -51,6 +50,7 @@ jobs:
 
   check:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -71,6 +71,7 @@ jobs:
   publish:
     needs: [prepare, build]
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: write
     env:
@@ -105,6 +106,7 @@ jobs:
     needs: [prepare, publish]
     if: needs.prepare.outputs.channel == 'stable' && (github.event_name == 'push' || inputs.publish)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Trigger Cloudflare Pages deploy hook
         env:

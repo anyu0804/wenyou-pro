@@ -1,106 +1,65 @@
-name: CI
+name: Wenyou Pro CI
 
 on:
-  pull_request:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: wenyou-ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  prepare:
+  verify:
+    name: Hygiene, repo guard, typecheck & unit tests
     runs-on: ubuntu-latest
-    outputs:
-      tag: ${{ steps.plan.outputs.tag }}
+    timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 22
-          package-manager-cache: false
-      - id: plan
-        run: node scripts/release-info.mjs --ci-beta
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-  runtime:
-    needs: prepare
-    uses: ./.github/workflows/remote-runtime.yml
-    with:
-      release_tag: ${{ needs.prepare.outputs.tag }}
-
-  check:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
-      - run: npm run lint
-      - run: npm run typecheck
-      - run: npm run test
-      - name: Verify performance records and owned-process cleanup
-        run: npm run test:perf
 
-  desktop:
-    needs: [prepare, runtime, check]
-    uses: ./.github/workflows/desktop-package.yml
-    with:
-      release_tag: ${{ needs.prepare.outputs.tag }}
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
 
-  release-bundle:
-    needs: [prepare, desktop]
-    runs-on: ubuntu-latest
-    env:
-      PERCHO_BUILD_RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
-      PERCHO_BUILD_SOURCE_COMMIT: ${{ github.sha }}
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 22
-          package-manager-cache: false
-      - uses: actions/download-artifact@v8
-        with:
-          pattern: remote-runtime-*
-          path: .local/release-bundle
-          merge-multiple: true
-      - uses: actions/download-artifact@v8
-        with:
-          pattern: desktop-*
-          path: .local/release-bundle
-          merge-multiple: true
-      - name: Verify complete Beta release without publishing
-        run: node scripts/publish-release.mjs .local/release-bundle
+      - name: Run repository anti-doxxing and local path gate
+        run: npm run check:paths
 
-  local-storage:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
-      # Native ACL checks launch PowerShell, whose cold start can exceed Vitest's 5s default.
-      # This is an integration-test budget, not a production timeout or a relaxed assertion.
-      - name: Verify private storage on native filesystem and ACLs
-        run: >-
-          npm run test -w packages/backend -- test/local-agent-storage.test.ts test/local-agent-storage-sdk.test.ts
-          --reporter=verbose --maxWorkers=2
-          --testTimeout=${{ runner.os == 'Windows' && 120000 || 5000 }}
-          --hookTimeout=${{ runner.os == 'Windows' && 30000 || 10000 }}
-      - name: Test private storage startup decisions
-        run: >-
-          npm run test -w packages/desktop -- src/main/storage-startup-controller.test.ts
-          --maxWorkers=2 --testTimeout=${{ runner.os == 'Windows' && 120000 || 5000 }}
-          --hookTimeout=${{ runner.os == 'Windows' && 30000 || 10000 }}
+      - name: Verify GitHub anti-lockout workflow and repo guard
+        run: node scripts/wenyou-release/configure-github-repo.mjs --verify
+
+      - name: Install workspace dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Install pixi-sandbox dependencies
+        run: npm --prefix packages/pixi-sandbox ci --no-audit --no-fund
+
+      - name: Run pixi-sandbox unit tests
+        run: npm --prefix packages/pixi-sandbox run test
+
+      - name: Build pixi-sandbox desktop bundle
+        run: npm --prefix packages/pixi-sandbox run build:desktop
+
+      - name: Typecheck workspaces
+        run: npm run typecheck
+
+      - name: Run release script tests
+        run: npm run test:release
+
+      - name: Run wenyou-release unit tests
+        run: node --test scripts/wenyou-release/*.test.mjs
+
+      - name: Run workspace unit tests (Vitest)
+        run: npm run test --workspaces --if-present

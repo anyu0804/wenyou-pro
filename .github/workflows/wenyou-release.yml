@@ -29,14 +29,16 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: wenyou-release-${{ github.ref }}
-  cancel-in-progress: false
-
+# Job-level concurrency is used instead of workflow-level cancellation so a newer
+# workflow_dispatch build can cancel stalled builds without aborting an active release upload.
 jobs:
   hygiene-and-tests:
     name: Path hygiene & release script tests
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    concurrency:
+      group: wenyou-release-hygiene-and-tests-${{ github.ref }}
+      cancel-in-progress: ${{ github.event_name == 'workflow_dispatch' }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -63,6 +65,10 @@ jobs:
     name: Build & verify macOS (${{ github.event_name == 'workflow_dispatch' && inputs.mac_arch || 'all' }})
     needs: hygiene-and-tests
     runs-on: macos-latest
+    timeout-minutes: 45
+    concurrency:
+      group: wenyou-release-build-macos-${{ github.ref }}
+      cancel-in-progress: ${{ github.event_name == 'workflow_dispatch' }}
     env:
       CSC_IDENTITY_AUTO_DISCOVERY: "false"
       CSC_FOR_PULL_REQUEST: "true"
@@ -133,6 +139,10 @@ jobs:
     needs: hygiene-and-tests
     if: github.event_name == 'push' || inputs.include_windows == true
     runs-on: windows-latest
+    timeout-minutes: 45
+    concurrency:
+      group: wenyou-release-build-windows-${{ github.ref }}
+      cancel-in-progress: ${{ github.event_name == 'workflow_dispatch' }}
     env:
       CSC_IDENTITY_AUTO_DISCOVERY: "false"
       NODE_OPTIONS: "--max-old-space-size=4096"
@@ -147,6 +157,7 @@ jobs:
           cache: npm
 
       - name: Provision embedded Python 3.13.2 runtime for Windows ntqq-vfs
+        timeout-minutes: 10
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -154,8 +165,30 @@ jobs:
           $pythonExe = Join-Path $pythonDir "python.exe"
           if (-not (Test-Path $pythonExe)) {
             $zipPath = Join-Path $env:RUNNER_TEMP "python-3.13.2-embed-amd64.zip"
+            $url = "https://www.python.org/ftp/python/3.13.2/python-3.13.2-embed-amd64.zip"
             New-Item -ItemType Directory -Force -Path $pythonDir | Out-Null
-            Invoke-WebRequest -Uri "https://www.python.org/ftp/python/3.13.2/python-3.13.2-embed-amd64.zip" -OutFile $zipPath
+            $maxAttempts = 3
+            $downloaded = $false
+            for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+              try {
+                Write-Host "Downloading embedded Python 3.13.2 (attempt $attempt/$maxAttempts)..."
+                if (Test-Path $zipPath) {
+                  Remove-Item -Force $zipPath
+                }
+                Invoke-WebRequest -Uri $url -OutFile $zipPath -TimeoutSec 120
+                $downloaded = $true
+                break
+              } catch {
+                Write-Warning "Download attempt $attempt/$maxAttempts failed: $($_.Exception.Message)"
+                if ($attempt -eq $maxAttempts) {
+                  throw
+                }
+                Start-Sleep -Seconds (5 * $attempt)
+              }
+            }
+            if (-not $downloaded -or -not (Test-Path $zipPath)) {
+              throw "Failed to download embedded Python zip after $maxAttempts attempts"
+            }
             Expand-Archive -Path $zipPath -DestinationPath $pythonDir -Force
             Remove-Item -Force $zipPath
           }
@@ -199,6 +232,10 @@ jobs:
       (needs.build-windows.result == 'success' || needs.build-windows.result == 'skipped') &&
       (github.event_name == 'push' || inputs.create_github_release == true)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: wenyou-release-publish
+      cancel-in-progress: false
     permissions:
       contents: write
     steps:
@@ -219,6 +256,7 @@ jobs:
           path: release-staging/win
 
       - name: Create or update GitHub Release
+        timeout-minutes: 10
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash

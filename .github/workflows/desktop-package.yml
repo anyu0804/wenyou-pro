@@ -12,6 +12,7 @@ permissions:
 
 jobs:
   build-and-verify:
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
