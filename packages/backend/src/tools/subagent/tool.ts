@@ -11,7 +11,7 @@ import type { PermissionMode } from "@percho/shared";
 import { type Static, Type } from "typebox";
 import type { PermissionGate } from "../../permissions/gate";
 import type { SessionTraces } from "../../session/traces";
-import { DEFAULT_AGENT, discoverAgents, findAgent } from "./agents";
+import { discoverAgents, findAgent, type SubagentDefinition } from "./agents";
 import { runSubagent, type SingleResult, type SubagentRunHandle } from "./runner";
 
 const MAX_TASKS = 8;
@@ -19,7 +19,9 @@ const MAX_CONCURRENCY = 4;
 const MAX_CONTENT = 50_000;
 
 const taskSchema = Type.Object({
-	agent: Type.Optional(Type.String({ minLength: 1, description: "Custom agent name; defaults to worker" })),
+	agent: Type.Optional(
+		Type.String({ minLength: 1, description: "Configured subagent name (required when multiple agents exist)" }),
+	),
 	task: Type.String({ minLength: 1, description: "Self-contained task for the subagent" }),
 });
 
@@ -32,7 +34,10 @@ const taskSchema = Type.Object({
  */
 export const subagentParams = Type.Object({
 	agent: Type.Optional(
-		Type.String({ minLength: 1, description: "Custom agent name; defaults to worker (single run)" }),
+		Type.String({
+			minLength: 1,
+			description: "Configured subagent name (single run; optional only when exactly one agent is configured)",
+		}),
 	),
 	task: Type.Optional(
 		Type.String({ minLength: 1, description: "Self-contained task for the subagent (single run)" }),
@@ -158,6 +163,23 @@ async function confirmProjectAgents(
 	if (!allowed) throw new Error("Project subagent definitions were not approved");
 }
 
+export function resolveTaskAgent(agents: SubagentDefinition[], requestedName?: string): SubagentDefinition {
+	if (requestedName?.trim()) {
+		return findAgent(agents, requestedName.trim());
+	}
+	if (agents.length === 1) {
+		return agents[0]!;
+	}
+	if (agents.length === 0) {
+		throw new Error(
+			"No subagents are configured. Add markdown agent definitions under ~/.percho/agent/agents or .pi/agents.",
+		);
+	}
+	throw new Error(
+		`Missing "agent": multiple subagents are configured. Specify one of: ${agents.map((a) => a.name).join(", ")}`,
+	);
+}
+
 /** 内置进程内 subagent 工具：single + bounded parallel，子会话深度固定为 1。 */
 export function makeSubagentTool(deps: MakeSubagentToolDeps): ToolDefinition {
 	// defineTool：官方 1.0.4 的类型收窄入口（execute 参数由 TParams 推导）
@@ -168,7 +190,7 @@ export function makeSubagentTool(deps: MakeSubagentToolDeps): ToolDefinition {
 		annotations: { readOnlyHint: false, destructiveHint: true },
 		label: "Subagent",
 		description:
-			"Delegate one self-contained task to an isolated subagent with its own context window. It can read\nand edit files, run commands and tests, and fetch docs. It cannot see this conversation, cannot\nspawn further subagents, cannot commit or push, and cannot change Percho's own configuration.\n\nUse it for work you can specify with a clear acceptance criterion: multi-file implementation or\nrefactor, fixing a failing suite, investigating an unfamiliar area. Do not delegate a single file\nread or a one-line answer — do that yourself.\n\nWrite the brief as if to a capable engineer who just joined: the goal, relevant paths, constraints,\nthe acceptance criteria, and what you already know. Anything you omit will be rediscovered at extra\ncost.\n\n{task, agent?} runs one task. {tasks:[...]} runs independent tasks in parallel (up to 8, 4 at a\ntime); the call returns after all of them finish. Omit `agent` to use the built-in subagent.\n\nReturns its final report plus machine-derived facts (files changed, duration, tokens). The full\ntranscript is not returned — the user can open it from the card. Runs are one-shot: to continue the\nwork, dispatch again with the new information.\n\nSpecify agent only for a custom definition. Bash is not path-restricted except for the git allowlist and text-level Percho state protection. Write scope is not enforced. Agent deny, the git allowlist, and read-only <agentDir> always apply, including fullAccess and permissions.json disabled; boundaries can only be tightened.",
+			"Delegate one self-contained task to an isolated subagent with its own context window. It can read\nand edit files, run commands and tests, and fetch docs. It cannot see this conversation, cannot\nspawn further subagents, cannot commit or push, and cannot change Percho's own configuration.\n\nUse it for work you can specify with a clear acceptance criterion: multi-file implementation or\nrefactor, fixing a failing suite, investigating an unfamiliar area. Do not delegate a single file\nread or a one-line answer — do that yourself.\n\nWrite the brief as if to a capable engineer who just joined: the goal, relevant paths, constraints,\nthe acceptance criteria, and what you already know. Anything you omit will be rediscovered at extra\ncost.\n\n{task, agent?} runs one task. {tasks:[...]} runs independent tasks in parallel (up to 8, 4 at a\ntime); the call returns after all of them finish. Omit `agent` only when a single subagent is configured.\n\nReturns its final report plus machine-derived facts (files changed, duration, tokens). The full\ntranscript is not returned — the user can open it from the card. Runs are one-shot: to continue the\nwork, dispatch again with the new information.\n\nSpecify agent from configured user/project definitions. Bash is not path-restricted except for the git allowlist and text-level Percho state protection. Write scope is not enforced. Agent deny, the git allowlist, and read-only <agentDir> always apply, including fullAccess and permissions.json disabled; boundaries can only be tightened.",
 		parameters: subagentParams,
 		execute: async (
 			toolCallId,
@@ -197,7 +219,7 @@ export function makeSubagentTool(deps: MakeSubagentToolDeps): ToolDefinition {
 			const definitions = tasks.map((task) => ({
 				task,
 				cwd: ctx.cwd,
-				agent: findAgent(agents, task.agent ?? DEFAULT_AGENT),
+				agent: resolveTaskAgent(agents, task.agent),
 			}));
 			await confirmProjectAgents(
 				ctx,

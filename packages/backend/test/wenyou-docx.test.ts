@@ -27,7 +27,7 @@ function unzipEntries(buf: Buffer): Map<string, string> {
 }
 
 describe("纯 Node 原生 .docx 生成器", () => {
-	it("生成合法 OOXML ZIP 包，包含固定署名安钰与中文排版规范", () => {
+	it("默认生成合法 OOXML ZIP 包，creator/lastModifiedBy 留空并遵守中文排版规范", () => {
 		const buf = buildPolicyDocx({
 			title: "景平六年春北周整军理财疏",
 			subtitle: "北周 · 景平六年春",
@@ -57,8 +57,9 @@ describe("纯 Node 原生 .docx 生成器", () => {
 		]);
 
 		const core = entries.get("docProps/core.xml")!;
-		expect(core).toContain("<dc:creator>安钰</dc:creator>");
-		expect(core).toContain("<cp:lastModifiedBy>安钰</cp:lastModifiedBy>");
+		expect(core).toContain("<dc:creator></dc:creator>");
+		expect(core).toContain("<cp:lastModifiedBy></cp:lastModifiedBy>");
+		expect(core).not.toContain("安钰");
 		expect(core).toContain("<dc:title>景平六年春北周整军理财疏</dc:title>");
 
 		const styles = entries.get("word/styles.xml")!;
@@ -75,6 +76,19 @@ describe("纯 Node 原生 .docx 生成器", () => {
 		expect(doc).toContain("<w:b/><w:bCs/>");
 		expect(doc).not.toContain("**清源城**");
 		expect(doc).toContain("清源城");
+	});
+
+	it("显式传入 author 时写入 XML 转义后的 creator 与 lastModifiedBy", () => {
+		const buf = buildPolicyDocx({
+			title: "河阳防务策",
+			bodyMarkdown: "清源城加筑烽燧三座，常平仓收粮八万石。",
+			author: "北周<史官>&幕僚",
+			createdAt: "2026-11-26T00:00:00.000Z",
+		});
+		const entries = unzipEntries(buf);
+		const core = entries.get("docProps/core.xml")!;
+		expect(core).toContain("<dc:creator>北周&lt;史官&gt;&amp;幕僚</dc:creator>");
+		expect(core).toContain("<cp:lastModifiedBy>北周&lt;史官&gt;&amp;幕僚</cp:lastModifiedBy>");
 	});
 
 	it("单级有序列表独立分段保留序号，且剥离 XML 1.0 非法控制字符", () => {

@@ -5,9 +5,8 @@ export interface PolicyDocxInput {
 	bodyMarkdown: string;
 	subtitle?: string;
 	createdAt?: string;
+	author?: string;
 }
-
-const DEFAULT_AUTHOR = "安钰";
 
 const CRC32_TABLE = (() => {
 	const table = new Uint32Array(256);
@@ -252,13 +251,14 @@ function buildStylesXml(): string {
 	].join("");
 }
 
-function buildCorePropsXml(title: string, createdIso: string): string {
+function buildCorePropsXml(title: string, createdIso: string, author = ""): string {
+	const safeAuthor = escapeXml(author.trim());
 	return [
 		'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
 		'<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:dcmitype="http://purl.org/dc/dcmitype/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">',
 		`<dc:title>${escapeXml(title)}</dc:title>`,
-		`<dc:creator>${DEFAULT_AUTHOR}</dc:creator>`,
-		`<cp:lastModifiedBy>${DEFAULT_AUTHOR}</cp:lastModifiedBy>`,
+		`<dc:creator>${safeAuthor}</dc:creator>`,
+		`<cp:lastModifiedBy>${safeAuthor}</cp:lastModifiedBy>`,
 		`<dcterms:created xsi:type="dcterms:W3CDTF">${escapeXml(createdIso)}</dcterms:created>`,
 		`<dcterms:modified xsi:type="dcterms:W3CDTF">${escapeXml(createdIso)}</dcterms:modified>`,
 		"</cp:coreProperties>",
@@ -369,7 +369,7 @@ export function buildZipBuffer(entries: readonly ZipEntry[], date = new Date()):
  * 免 Python 纯 Node 生成中文国策规范 .docx：
  * - 标题居中 15pt
  * - 正文宋体 SimSun 10.5pt（五号）、首行缩进 2 字符（firstLineChars="200"）、1.25 倍行距（line="300"）
- * - docProps/core.xml creator 固定为「安钰」
+ * - docProps/core.xml creator 默认为空字符串，可由 author 参数指定
  */
 export function buildPolicyDocx(input: PolicyDocxInput): Buffer {
 	const createdDate = input.createdAt ? new Date(input.createdAt) : new Date();
@@ -380,7 +380,10 @@ export function buildPolicyDocx(input: PolicyDocxInput): Buffer {
 	const entries: ZipEntry[] = [
 		{ name: "[Content_Types].xml", data: Buffer.from(buildContentTypesXml(), "utf8") },
 		{ name: "_rels/.rels", data: Buffer.from(buildRootRelsXml(), "utf8") },
-		{ name: "docProps/core.xml", data: Buffer.from(buildCorePropsXml(input.title.trim(), createdIso), "utf8") },
+		{
+			name: "docProps/core.xml",
+			data: Buffer.from(buildCorePropsXml(input.title.trim(), createdIso, input.author ?? ""), "utf8"),
+		},
 		{ name: "docProps/app.xml", data: Buffer.from(buildAppPropsXml(), "utf8") },
 		{ name: "word/_rels/document.xml.rels", data: Buffer.from(buildDocumentRelsXml(), "utf8") },
 		{ name: "word/styles.xml", data: Buffer.from(buildStylesXml(), "utf8") },

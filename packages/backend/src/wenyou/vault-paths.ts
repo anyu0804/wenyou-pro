@@ -1,13 +1,6 @@
 import { existsSync } from "node:fs";
 import { realpath } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
-import { parseViewerScope, type ViewerScope, type VisibilityLevel } from "@percho/shared";
-
-export interface SecretBlockStripResult {
-	readonly visibleBody: string;
-	readonly strippedBodies: readonly string[];
-	readonly strippedBlockCount: number;
-}
 
 export interface ParsedFrontmatterDoc {
 	readonly data: Record<string, unknown>;
@@ -42,39 +35,6 @@ export function isPrivateVaultPath(relPath: string): boolean {
 export function isRawChatPath(relPath: string): boolean {
 	const normalized = normalizeVaultPath(relPath);
 	return normalized === "00-群聊收集" || normalized.startsWith("00-群聊收集/");
-}
-
-/**
- * 规范化文档可见性（Fail-Closed）：
- * - `undefined` / `null` / 空字符串返回 `defaultWhenUndefined`（正史词条默认 `"public"`，国策/简报应显式传 `"gm"`）；
- * - `"gm"` / `"public"` / `"faction"`（大小写无关）原样归一化返回；
- * - 任何非空未知值一律 Fail-Closed 返回 `"gm"`，防止拼写错误意外公开机密。
- */
-export function parseVisibility(
-	value: unknown,
-	defaultWhenUndefined: VisibilityLevel = "public",
-): VisibilityLevel {
-	if (value === undefined || value === null || value === "") return defaultWhenUndefined;
-	if (typeof value === "string") {
-		const norm = value.trim().toLowerCase();
-		if (norm === "") return defaultWhenUndefined;
-		if (norm === "gm" || norm === "public" || norm === "faction") return norm;
-	}
-	return "gm";
-}
-
-export function canViewerSee(
-	visibility: VisibilityLevel,
-	visibleToFactions: readonly string[] | undefined,
-	viewer: ViewerScope,
-): boolean {
-	if (viewer.kind === "gm") return true;
-	if (visibility === "public") return true;
-	if (visibility === "gm") return false;
-	if (viewer.kind === "faction") {
-		return Array.isArray(visibleToFactions) && visibleToFactions.includes(viewer.factionId);
-	}
-	return false;
 }
 
 export function assertPathInsideWorkspace(cwd: string, relOrAbsPath: string): string {
@@ -128,137 +88,6 @@ export async function assertRealTargetInsideWorkspace(
 		throw new Error(`符号链接路径越界：${relOrAbsPath}`);
 	}
 	return { absPath, realRelPath: normalizeVaultPath(realRel) };
-}
-
-const SECRET_OPEN_RE = /^[ \t]*:::secret(?:\[([^\]]*)\])?[ \t]*$/;
-const SECRET_CLOSE_RE = /^[ \t]*:::[ \t]*$/;
-/** CommonMark 反引号围栏开启：info string 中禁止出现反引号，避免把行内 ```inline``` 误判为多行围栏 */
-const BACKTICK_FENCE_OPEN_RE = /^[ \t]*(`{3,})([^`]*)$/;
-/** CommonMark 波浪号围栏开启 */
-const TILDE_FENCE_OPEN_RE = /^[ \t]*(~{3,})(.*)$/;
-/** CommonMark 闭合围栏：仅允许同字符且长度 >= 开启长度，后接可选空白 */
-const CODE_FENCE_CLOSE_RE = /^[ \t]*(`{3,}|~{3,})[ \t]*$/;
-
-function parseAllowedScopes(specRaw: string | undefined): ViewerScope[] | null {
-	if (specRaw === undefined) return null;
-	const parts = specRaw
-		.split(",")
-		.map((s) => s.trim())
-		.filter((s) => s.length > 0);
-	if (parts.length === 0) return null;
-	const scopes: ViewerScope[] = [];
-	try {
-		for (const part of parts) {
-			scopes.push(parseViewerScope(part));
-		}
-		return scopes;
-	} catch {
-		return null;
-	}
-}
-
-function isViewerAuthorizedForSecret(
-	allowedScopes: readonly ViewerScope[] | null,
-	viewer: ViewerScope,
-): boolean {
-	if (viewer.kind === "gm") return true;
-	if (allowedScopes === null) return false;
-	for (const scope of allowedScopes) {
-		if (scope.kind === "public") return true;
-		if (scope.kind === "faction" && viewer.kind === "faction" && scope.factionId === viewer.factionId) {
-			return true;
-		}
-	}
-	return false;
-}
-
-/**
- * 块级受限暗线剥离器（Fail-Closed）：
- * 语法 `:::secret[gm]` 或 `:::secret[faction:north-zhou]` ... `:::`
- */
-export function stripRestrictedMarkdownBlocks(
-	markdownBody: string,
-	viewer: ViewerScope,
-): SecretBlockStripResult {
-	const normalized = markdownBody.replace(/\r\n?/g, "\n");
-	if (!normalized.includes(":::secret")) {
-		return { visibleBody: normalized, strippedBodies: [], strippedBlockCount: 0 };
-	}
-	const lines = normalized.split("\n");
-	const visibleLines: string[] = [];
-	const strippedBodies: string[] = [];
-
-	let activeFenceChar: "`" | "~" | null = null;
-	let activeFenceLen = 0;
-	let inSecret = false;
-	let secretAuthorized = false;
-	let secretBuffer: string[] = [];
-
-	for (const line of lines) {
-		if (activeFenceChar !== null) {
-			const closeMatch = line.match(CODE_FENCE_CLOSE_RE);
-			if (
-				closeMatch?.[1] &&
-				closeMatch[1][0] === activeFenceChar &&
-				closeMatch[1].length >= activeFenceLen
-			) {
-				activeFenceChar = null;
-				activeFenceLen = 0;
-			}
-			if (inSecret) secretBuffer.push(line);
-			else visibleLines.push(line);
-			continue;
-		}
-
-		const btOpen = line.match(BACKTICK_FENCE_OPEN_RE);
-		if (btOpen?.[1]) {
-			activeFenceChar = "`";
-			activeFenceLen = btOpen[1].length;
-			if (inSecret) secretBuffer.push(line);
-			else visibleLines.push(line);
-			continue;
-		}
-		const tildeOpen = line.match(TILDE_FENCE_OPEN_RE);
-		if (tildeOpen?.[1]) {
-			activeFenceChar = "~";
-			activeFenceLen = tildeOpen[1].length;
-			if (inSecret) secretBuffer.push(line);
-			else visibleLines.push(line);
-			continue;
-		}
-
-		if (!inSecret) {
-			const openMatch = line.match(SECRET_OPEN_RE);
-			if (openMatch) {
-				inSecret = true;
-				secretAuthorized = isViewerAuthorizedForSecret(parseAllowedScopes(openMatch[1]), viewer);
-				secretBuffer = [];
-				continue;
-			}
-			visibleLines.push(line);
-			continue;
-		}
-		if (SECRET_CLOSE_RE.test(line)) {
-			if (secretAuthorized) visibleLines.push(...secretBuffer);
-			else strippedBodies.push(secretBuffer.join("\n"));
-			inSecret = false;
-			secretAuthorized = false;
-			secretBuffer = [];
-			continue;
-		}
-		secretBuffer.push(line);
-	}
-
-	if (inSecret) {
-		if (viewer.kind === "gm") visibleLines.push(...secretBuffer);
-		else strippedBodies.push(secretBuffer.join("\n"));
-	}
-
-	return {
-		visibleBody: visibleLines.join("\n"),
-		strippedBodies,
-		strippedBlockCount: strippedBodies.length,
-	};
 }
 
 function stripInlineYamlComment(raw: string): string {

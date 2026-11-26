@@ -28,29 +28,30 @@ afterEach(() => {
 	for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-it("独占模式默认关闭，和总开关独立保存；并发写入不互相覆盖", async () => {
+it("总开关与独占模式默认均关闭，两者独立保存；并发写入不互相覆盖", async () => {
 	const dir = isolatedDir();
-	expect(readCodemodeConfig(dir)).toEqual({ enabled: true, only: false });
-	await Promise.all([writeCodemodeOnly(dir, true), writeCodemodeEnabled(dir, false)]);
-	expect(readCodemodeConfig(dir)).toEqual({ enabled: false, only: true });
-	await writeCodemodeEnabled(dir, true);
+	expect(readCodemodeConfig(dir)).toEqual({ enabled: false, only: false });
+	await Promise.all([writeCodemodeOnly(dir, true), writeCodemodeEnabled(dir, true)]);
 	expect(readCodemodeConfig(dir)).toEqual({ enabled: true, only: true });
+	await writeCodemodeEnabled(dir, false);
+	expect(readCodemodeConfig(dir)).toEqual({ enabled: false, only: true });
 	await writeCodemodeOnly(dir, false);
-	expect(readCodemodeConfig(dir)).toEqual({ enabled: true, only: false });
+	expect(readCodemodeConfig(dir)).toEqual({ enabled: false, only: false });
 });
 
-it("缺省开启，保存关闭与重新开启；不覆盖其他字段", async () => {
+it("缺省关闭，保存开启与重新关闭；不覆盖其他字段", async () => {
 	const dir = isolatedDir();
-	expect(readCodemodeEnabled(dir)).toBe(true);
-	writeFileSync(join(dir, "codemode.json"), JSON.stringify({ extra: 1 }));
-	await writeCodemodeEnabled(dir, false);
 	expect(readCodemodeEnabled(dir)).toBe(false);
-	expect(JSON.parse(readFileSync(join(dir, "codemode.json"), "utf8"))).toEqual({
-		extra: 1,
-		enabled: false,
-	});
+	writeFileSync(join(dir, "codemode.json"), JSON.stringify({ extra: 1 }));
+	expect(readCodemodeEnabled(dir)).toBe(false);
 	await writeCodemodeEnabled(dir, true);
 	expect(readCodemodeEnabled(dir)).toBe(true);
+	expect(JSON.parse(readFileSync(join(dir, "codemode.json"), "utf8"))).toEqual({
+		extra: 1,
+		enabled: true,
+	});
+	await writeCodemodeEnabled(dir, false);
+	expect(readCodemodeEnabled(dir)).toBe(false);
 });
 
 it.each(["{", "null", "[]"])("损坏配置拒绝保存：%s", async (raw) => {
@@ -60,13 +61,21 @@ it.each(["{", "null", "[]"])("损坏配置拒绝保存：%s", async (raw) => {
 });
 
 it.each([undefined, ["read", "tool_search"], ["+grep", "-write"]])(
-	"默认激活 Code Mode，保留其他工具选择：%j",
+	"默认关闭 Code Mode 时排除 codemode，显式开启后才激活：%j",
 	async (defaultTools) => {
 		const dir = isolatedDir();
-		const settings = SettingsManager.inMemory({ defaultTools });
-		const before = settings.getDefaultTools() ?? ["read", "bash", "edit", "write", "grep", "find", "ls"];
-		codemodeSessionOptions(settings, dir);
-		expect(settings.getDefaultTools()).toEqual([...before, "codemode"]);
+		const settingsDisabled = SettingsManager.inMemory({ defaultTools });
+		const beforeDisabled = settingsDisabled.getDefaultTools() ?? ["read", "bash", "edit", "write", "grep", "find", "ls"];
+		const disabledOpts = codemodeSessionOptions(settingsDisabled, dir);
+		expect(disabledOpts.excludeTools).toEqual(["codemode"]);
+		expect(settingsDisabled.getDefaultTools()).toEqual(beforeDisabled.filter((n) => n !== "codemode"));
+
+		await writeCodemodeEnabled(dir, true);
+		const settingsEnabled = SettingsManager.inMemory({ defaultTools });
+		const beforeEnabled = settingsEnabled.getDefaultTools() ?? ["read", "bash", "edit", "write", "grep", "find", "ls"];
+		const enabledOpts = codemodeSessionOptions(settingsEnabled, dir);
+		expect(enabledOpts.excludeTools).toBeUndefined();
+		expect(settingsEnabled.getDefaultTools()).toEqual([...beforeEnabled, "codemode"]);
 	},
 );
 

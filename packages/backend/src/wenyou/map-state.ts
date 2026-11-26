@@ -21,7 +21,7 @@ import {
 	isPrivateVaultPath,
 	normalizeVaultPath,
 	resolveRealPathInsideWorkspace,
-} from "./secret-blocks";
+} from "./vault-paths";
 
 const MAP_SEARCH_ROOTS = ["05-沙盘与图集", "maps", "assets/maps"] as const;
 const SNAPSHOT_EXTS = new Set([".json", ".map"]);
@@ -735,77 +735,6 @@ function parseProjectTheater(raw: unknown, idx: number, fallbackName: string): N
 	};
 }
 
-function parseDeltaTheater(raw: unknown, idx: number, fallbackName: string): NormalizedTheater | null {
-	if (!isRecord(raw) || !isRecord(raw.overlay)) return null;
-	const overlay = raw.overlay;
-	const source =
-		typeof overlay.source === "string"
-			? overlay.source
-			: typeof raw.source === "string"
-				? raw.source
-				: undefined;
-	const imageBase = parseImageBaseSource(source);
-	const baseKind: "fmg" | "image" = imageBase ? "image" : "fmg";
-	const mapId = toNonEmptyString(raw.baseMapId) ?? `theater-${idx + 1}`;
-	const name = toNonEmptyString(raw.mapName) ?? fallbackName;
-	const heights = unpackCellLayer(overlay.heights, 100);
-	const statesByCell = unpackCellLayer(overlay.statesByCell, 65535);
-	const states = parseStatesArray(overlay.states);
-	const provinces = parseProvincesArray(overlay.provinces);
-	const burgs = parseBurgsArray(overlay.burgs, statesByCell);
-	const units = parseUnits(raw.garrisons, raw.battle);
-	const { frontlineCount, arrowCount } = countTacticalItems(raw.tacticalItems);
-	const fieldBattleCount = Array.isArray(raw.fieldBattles) ? raw.fieldBattles.length : 0;
-	const { width, height } = inferDimensions(
-		toFiniteNumber(overlay.width) ?? imageBase?.width,
-		toFiniteNumber(overlay.height) ?? imageBase?.height,
-		imageBase ? undefined : source,
-		mapId,
-		burgs,
-		units,
-	);
-	const hexRadius = imageBase?.hexRadius ?? toFiniteNumber(overlay.hexRadius);
-	let cellNeighbors = parseCellNeighbors(overlay.cellNeighbors ?? overlay.neighborsByCell);
-	if (!cellNeighbors && imageBase && hexRadius && hexRadius > 0) {
-		cellNeighbors = buildOddRHexNeighbors(width, height, hexRadius);
-	}
-	const rawKmPerPixel = imageBase?.kmPerPixel ?? toFiniteNumber(overlay.kmPerPixel);
-	const rawMapWidthKm = imageBase?.mapWidthKm ?? toFiniteNumber(overlay.mapWidthKm);
-	const kmPerPixel =
-		rawKmPerPixel !== undefined && rawKmPerPixel > 0
-			? rawKmPerPixel
-			: rawMapWidthKm !== undefined && rawMapWidthKm > 0 && width > 0
-				? rawMapWidthKm / width
-				: undefined;
-	const mapWidthKm =
-		rawMapWidthKm !== undefined && rawMapWidthKm > 0
-			? rawMapWidthKm
-			: kmPerPixel !== undefined && width > 0
-				? kmPerPixel * width
-				: undefined;
-	return {
-		mapId,
-		name,
-		baseKind,
-		...(imageBase?.imageRelPath ? { imageAssetPath: imageBase.imageRelPath } : {}),
-		...(hexRadius && hexRadius > 0 ? { hexRadius } : {}),
-		...(kmPerPixel !== undefined ? { kmPerPixel } : {}),
-		...(mapWidthKm !== undefined ? { mapWidthKm } : {}),
-		width,
-		height,
-		heights,
-		statesByCell,
-		...(cellNeighbors ? { cellNeighbors } : {}),
-		states,
-		provinces,
-		burgs,
-		units,
-		frontlineCount,
-		arrowCount,
-		fieldBattleCount,
-	};
-}
-
 function parseCommaIntLine(line: string | undefined, maxVal: number): number[] {
 	if (!line) return [];
 	const trimmed = line.trim();
@@ -889,7 +818,7 @@ function parseFmgMapText(content: string, fallbackName: string): NormalizedMapSn
 }
 
 /**
- * 解析地图快照原文（自动识别 wenyou-project v1-v4 / wenyou-map-delta v1-v2 / FMG .map）。
+ * 解析地图快照原文（自动识别 wenyou-project v1-v4 / FMG .map）。
  * 非地图文件返回 null。
  */
 export function parseMapSnapshotContent(
@@ -910,23 +839,6 @@ export function parseMapSnapshotContent(
 		return null;
 	}
 	if (!isRecord(parsed)) return null;
-
-	if (parsed.format === "wenyou-map-delta") {
-		if (!Array.isArray(parsed.theaters) || parsed.theaters.length === 0) return null;
-		const theaters: NormalizedTheater[] = [];
-		for (let i = 0; i < parsed.theaters.length; i += 1) {
-			const t = parseDeltaTheater(parsed.theaters[i], i, fallbackName);
-			if (!t) return null;
-			theaters.push(t);
-		}
-		const version = toFiniteNumber(parsed.version);
-		return {
-			format: "wenyou-map-delta",
-			...(version !== undefined ? { version: Math.trunc(version) } : {}),
-			...(toNonEmptyString(parsed.activeMapId) ? { activeMapId: String(parsed.activeMapId).trim() } : {}),
-			theaters,
-		};
-	}
 
 	const isProjectFormat = parsed.format === "wenyou-project";
 	const hasLegacySingleMap =
@@ -1208,7 +1120,7 @@ async function loadValidatedSnapshot(
 	const ext = extname(normalized).toLowerCase();
 	const snapshot = parseMapSnapshotContent(content, ext, basename(normalized, ext));
 	if (!snapshot) {
-		throw new Error(`文件不是有效的地图快照（wenyou-project / wenyou-map-delta / FMG .map）：${normalized}`);
+		throw new Error(`文件不是有效的地图快照（wenyou-project / FMG .map）：${normalized}`);
 	}
 	return { normalized, fileName: basename(normalized), content, snapshot };
 }
@@ -1225,7 +1137,7 @@ export async function readMapSnapshotRaw(
 }
 
 /**
- * 将沙盘导出的 wenyou-project / wenyou-map-delta JSON 校验后原子落盘至 05-沙盘与图集/。
+ * 将沙盘导出的 wenyou-project JSON 校验后原子落盘至 05-沙盘与图集/。
  */
 export async function saveMapSnapshot(
 	cwd: string,
@@ -1243,8 +1155,8 @@ export async function saveMapSnapshot(
 		throw new Error(`非法快照文件名（禁止路径穿越或包含目录分隔符）：${fileName}`);
 	}
 	const parsed = parseMapSnapshotContent(content, ".json", basename(rawName, ".json"));
-	if (!parsed || (parsed.format !== "wenyou-project" && parsed.format !== "wenyou-map-delta")) {
-		throw new Error("保存失败：content 必须是合法的 wenyou-project 或 wenyou-map-delta JSON");
+	if (!parsed || parsed.format !== "wenyou-project") {
+		throw new Error("保存失败：content 必须是合法的 wenyou-project JSON");
 	}
 	const stemRaw = rawName.toLowerCase().endsWith(".json") ? rawName.slice(0, -5) : rawName;
 	const safeStem = stemRaw
@@ -1510,7 +1422,7 @@ function formatSigned(n: number): string {
 }
 
 /**
- * 对比两份地图快照（支持 wenyou-project / wenyou-map-delta v1-v2 / FMG .map 任意组合），
+ * 对比两份地图快照（支持 wenyou-project / FMG .map 任意组合），
  * 计算各国领土增减、易手城邦、新建/毁灭城邦、兵力与战线变动。
  */
 export async function diffMapSnapshots(

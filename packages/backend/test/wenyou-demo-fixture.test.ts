@@ -28,9 +28,9 @@ function readDocxCoreXml(buf: Buffer): string {
 }
 
 describe("开箱演示推演夹具 fixtures/demo-campaign 完整性验证", () => {
-	it("具备三群证据、未汇报增量、可点击 sourceRefs 示范局势书、规范 .docx 国策、双年代 SVG 地图与可见档案", async () => {
+	it("具备三群证据、未汇报增量、可点击 sourceRefs 示范局势书、规范 .docx 国策、双年代 SVG 地图与干净档案", async () => {
 		const service = new WenyouService();
-		const overview = await service.getOverview(DEMO_DIR, "gm");
+		const overview = await service.getOverview(DEMO_DIR);
 
 		expect(overview.initialized).toBe(true);
 		expect(overview.worldTitle).toContain("沧澜纪元");
@@ -41,12 +41,12 @@ describe("开箱演示推演夹具 fixtures/demo-campaign 完整性验证", () =
 		// 局势书与所有 sourceRefs 均可点击回查
 		expect(overview.briefings.length).toBeGreaterThanOrEqual(1);
 		const briefing = overview.briefings[0]!;
-		expect(briefing.headline.length).toBeLessThanOrEqual(120);
+		expect(briefing.headline.length).toBeGreaterThan(0);
 		expect(briefing.progressItems.length).toBeGreaterThanOrEqual(2);
 		expect(briefing.intelChecks.some((c) => c.reliability === "propaganda")).toBe(true);
 		expect(briefing.intelChecks.some((c) => c.reliability === "gm_fact")).toBe(true);
 		for (const ref of briefing.coveredSourceIds) {
-			const ctx = await service.lookupSource(DEMO_DIR, ref, 10, "gm");
+			const ctx = await service.lookupSource(DEMO_DIR, ref, 10);
 			expect(ctx).not.toBeNull();
 		}
 
@@ -55,15 +55,16 @@ describe("开箱演示推演夹具 fixtures/demo-campaign 完整性验证", () =
 			true,
 		);
 
-		// 国策 .md 与 .docx 均存在且门禁通过、署名安钰
+		// 国策 .md 与 .docx 均存在且不含硬编码个人署名
 		expect(overview.policies.length).toBeGreaterThanOrEqual(1);
 		const policy = overview.policies[0]!;
-		expect(policy.lintReport.passed).toBe(true);
+		expect("lintReport" in policy).toBe(false);
 		expect(policy.docxPath).toBeTruthy();
 		const docxAbs = resolve(DEMO_DIR, policy.docxPath!);
 		expect(existsSync(docxAbs)).toBe(true);
 		const coreXml = readDocxCoreXml(await readFile(docxAbs));
-		expect(coreXml).toContain("<dc:creator>安钰</dc:creator>");
+		expect(coreXml).toContain("<dc:creator></dc:creator>");
+		expect(coreXml).not.toContain("安钰");
 
 		// 两张不同年代高清 SVG 地图可供双屏比对
 		expect(overview.maps.length).toBe(2);
@@ -71,12 +72,14 @@ describe("开箱演示推演夹具 fixtures/demo-campaign 完整性验证", () =
 			true,
 		);
 
-		// 设定与编年史档案就绪，且公开视角泄密预检拦截 private/ 与 00-群聊收集/ 并剥离 :::secret 块
-		expect(overview.canonDocs.length).toBeGreaterThanOrEqual(1);
-		const preflight = await service.exportPreflight(DEMO_DIR, "public");
-		expect(preflight.blockedPrivateFiles.some((f) => f.includes("gm-secret-notes.md"))).toBe(true);
-		expect(preflight.strippedSecretBlockCount).toBeGreaterThanOrEqual(2);
-		expect(preflight.bundleJson).not.toContain("芦苇荡暗藏南楚水师斥候");
-		expect(preflight.bundleJson).not.toContain("精铁三千斤");
+		// 设定与编年史档案就绪且不含 :::secret / visibility 元数据
+		expect(overview.canonDocs.length).toBeGreaterThanOrEqual(3);
+		for (const doc of overview.canonDocs) {
+			expect(doc.kind === "setting" || doc.kind === "chronicle").toBe(true);
+			const readRes = await service.readCanonDoc(DEMO_DIR, doc.relPath);
+			expect(readRes.content).not.toContain(":::secret");
+		}
+		await expect(service.readCanonDoc(DEMO_DIR, "private/gm-secret-notes.md")).rejects.toThrow("private/");
+		await expect(service.readCanonDoc(DEMO_DIR, "00-群聊收集/主群_group-main-1001.txt")).rejects.toThrow("00-群聊收集");
 	});
 });

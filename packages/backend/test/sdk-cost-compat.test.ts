@@ -39,7 +39,11 @@ describe("SDK 实报费用", () => {
 		const cwd = join(root, "project"),
 			agentDir = join(root, "agent");
 		mkdirSync(cwd);
-		mkdirSync(agentDir);
+		mkdirSync(join(agentDir, "agents"), { recursive: true });
+		writeFileSync(
+			join(agentDir, "agents", "worker.md"),
+			"---\nname: worker\ndescription: Test worker\ntools: read\n---\nYou are worker.",
+		);
 		writeFileSync(
 			join(agentDir, "settings.json"),
 			JSON.stringify({ cacheWarming: "off", compaction: { enabled: false }, retry: { enabled: false } }),
