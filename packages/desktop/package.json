@@ -1,9 +1,9 @@
 {
 	"name": "@percho/desktop",
-	"version": "0.2.4",
+	"version": "0.2.5",
 	"private": true,
-	"description": "Desktop GUI for the Pi coding agent",
-	"author": "Jaxton07",
+	"description": "司命 · 文游 Pro (Wenyou Pro) Desktop Workbench",
+	"author": "安钰 (Based on Percho MIT)",
 	"license": "MIT",
 	"type": "module",
 	"main": "./out/main/index.js",

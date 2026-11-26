@@ -2,12 +2,12 @@ appId: io.github.anyu.wenyou-pro
 productName: Wenyou Pro
 copyright: "Copyright © 2026 安钰 (Based on Percho MIT)"
 extraMetadata:
-  version: 0.2.4
+  version: 0.2.5
   releaseChannel: stable
   productName: Wenyou Pro
   disableAutoUpdate: true
 directories:
-  output: ../../dist/wenyou-pro-0.2.4-win-x64/raw
+  output: ../../dist/wenyou-pro-0.2.5-win-x64/raw
 files:
   - out/**
   - package.json

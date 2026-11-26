@@ -19,6 +19,32 @@ const PAGE_SIZE = 4096;
 const SALT_SIZE = 16;
 const RESERVE = 48;
 
+function resolvePythonBin(): string {
+	const candidates: string[] = [];
+	if (process.platform === "win32") {
+		const bundled = join(ASSETS_DIR, "python", "python.exe");
+		if (existsSync(bundled)) {
+			candidates.push(bundled);
+		}
+		candidates.push("python", "python3");
+	} else {
+		candidates.push("python3", "python");
+	}
+
+	for (const bin of candidates) {
+		const probe = spawnSync(bin, ["-B", "-c", "import sqlite3; print(sqlite3.sqlite_version)"], {
+			encoding: "utf8",
+			env: { ...process.env, PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8" },
+		});
+		if (probe.status === 0) {
+			return bin;
+		}
+	}
+	throw new Error("No working Python 3 runtime with sqlite3 found for wenyou-ntqq-sync tests");
+}
+
+const PYTHON_BIN = resolvePythonBin();
+
 const tempDirs: string[] = [];
 
 function makeTempDir(prefix: string): string {
@@ -159,8 +185,9 @@ g.close()
 		...m,
 		blobHex: encodeNtqqTextBlob(m.text).toString("hex"),
 	}));
-	const res = spawnSync("python", ["-B", "-c", pyScript, plainMsg, plainGroup, JSON.stringify(encoded)], {
+	const res = spawnSync(PYTHON_BIN, ["-B", "-c", pyScript, plainMsg, plainGroup, JSON.stringify(encoded)], {
 		encoding: "utf8",
+		env: { ...process.env, PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8" },
 	});
 	if (res.status !== 0) {
 		throw new Error(`Python fixture build failed: ${res.stderr || res.stdout}`);
@@ -473,7 +500,7 @@ try:
 finally:
     conn.close()
 `;
-		const pyRes = spawnSync("python", ["-B", "-c", pyCheck, ASSETS_DIR, latestPlainMsg], {
+		const pyRes = spawnSync(PYTHON_BIN, ["-B", "-c", pyCheck, ASSETS_DIR, latestPlainMsg], {
 			encoding: "utf8",
 			env: { ...process.env, PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8" },
 		});
@@ -684,7 +711,10 @@ finally:
 		expect(linuxCandidates.map((c) => c.bin)).toEqual(["python3", "python"]);
 
 		// 2. 端到端实测：PATH 为空时仍能通过 darwinPythonPaths 命中真实 Python 可执行文件
-		const pyExeRes = spawnSync("python", ["-B", "-c", "import sys; print(sys.executable)"], { encoding: "utf8" });
+		const pyExeRes = spawnSync(PYTHON_BIN, ["-B", "-c", "import sys; print(sys.executable)"], {
+			encoding: "utf8",
+			env: { ...process.env, PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8" },
+		});
 		expect(pyExeRes.status).toBe(0);
 		const realPythonExe = pyExeRes.stdout.trim();
 		expect(existsSync(realPythonExe)).toBe(true);

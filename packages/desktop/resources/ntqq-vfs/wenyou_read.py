@@ -8,9 +8,11 @@
 
 约定:
   - 明文库由 assets/qq_decrypt.js 解密得到；本脚本只读，不做解密。
-  - 列名是数字，SQL 中必须加引号："40050"=时间(秒,CST)、"40027"=有索引群号、
-    "40030"=接收群号（本人发出消息为 0）、"40033"=发送者UID、"40800"=protobuf；
-    有 40027 列时以 40027 为准（避免漏掉 40030=0 的本人发言），rowid 仅作同秒游标参考。
+  - 列名是数字，SQL 中必须加引号："40050"=时间(秒,CST)、"40030"=接收群号、
+    "40033"=发送者UID、"40800"=protobuf；"40027" 是有索引的权威群号列。
+    本机 PC 端发出消息为 40027=群号、40030=0、40033=发送者；系统灰条为 40030=0 且 40033=0。
+    查询借用 40027 索引，放行 40030=群号以及 40030∈{0,NULL} 且有有效发送者的本机消息，
+    同时继续过滤系统灰条与跨群脏行；rowid 仅作同秒游标参考。
   - 优先走 群号+时间 查询；数据库损坏时自动退回 rowid 分页扫描。
   - 最终把一行 __RESULT__ + JSON 打到 stdout，日志全部走 stderr。
 """
@@ -129,52 +131,61 @@ def atomic_write_jsonl(path, records):
 
 def _table_columns(conn, table):
     try:
-        return {row[1] for row in conn.execute(f'PRAGMA table_info("{table}")')}
+        cur = conn.execute(f'PRAGMA table_info("{table}")')
+        rows = cur.fetchall() if hasattr(cur, "fetchall") else list(cur)
+        return {str(row[1]) for row in rows}
     except Exception:
         return set()
 
 
-def _group_select_expr(conn, table):
-    """返回可同时命中他人消息与本人发出消息（40030=0）的群号表达式。"""
-    columns = _table_columns(conn, table)
+def _has_real_sender(uid):
+    if uid is None:
+        return False
+    s = str(uid).strip()
+    return bool(s) and s != "0"
+
+
+def _group_select_expr(columns):
     if INDEXED_GCOL in columns and GCOL in columns:
-        return f'COALESCE(NULLIF("{INDEXED_GCOL}", 0), "{GCOL}")'
+        return f'COALESCE(NULLIF("{GCOL}", 0), "{INDEXED_GCOL}")'
     if INDEXED_GCOL in columns:
         return f'"{INDEXED_GCOL}"'
     return f'"{GCOL}"'
 
 
-def is_system_gray_bar(raw_40030, raw_40033):
-    """识别 NTQQ 系统灰条（40030 为 0/NULL 且 40033 为 0/NULL/空字符串）。
+def _row_matches_group(gid_val, mirror_val, uid, group, has_indexed_gcol):
+    if has_indexed_gcol:
+        if mirror_val != group:
+            return False
+        if gid_val == group:
+            return True
+        return (gid_val is None or gid_val == 0 or gid_val == "0") and _has_real_sender(uid)
+    return gid_val == group
 
-    本机 PC 端发言虽然 40030=0，但 40033 为非空非零 UID，完整保留。
+
+def group_predicate(conn, table, group, columns=None):
+    """优先借用 NTQQ 的 40027 群号索引，并兼容本机 PC 端发出消息（40027=群号、40030=0、40033=发送者）。
+
+    - 40030=群号：接收/漫游消息，直接放行；
+    - 40030=0 或 NULL 且 40033 非空非零：本机 PC 端发出消息，放行；
+    - 40030=0 且 40033=0/空：系统灰条（拍一拍/撤回等），继续过滤；
+    - 40030 为其他非零群号：跨群错配脏行，拒绝；
+    - 旧版/测试库没有 40027 时自动退回原查询，不牺牲兼容性。
     """
-    c30_empty = raw_40030 is None or str(raw_40030).strip() in ("", "0")
-    c33_empty = raw_40033 is None or str(raw_40033).strip() in ("", "0")
-    return c30_empty and c33_empty
-
-
-def _non_gray_bar_predicate(conn, table):
-    columns = _table_columns(conn, table)
-    if GCOL in columns and SCOL in columns:
-        return (
-            f'NOT ((COALESCE("{GCOL}", 0) = 0) AND '
-            f'("{SCOL}" IS NULL OR TRIM(CAST("{SCOL}" AS TEXT)) IN (\'\', \'0\')))'
-        )
-    return None
-
-
-def _raw_40030_select_expr(conn, table):
-    columns = _table_columns(conn, table)
-    return f'"{GCOL}"' if GCOL in columns else "NULL"
-
-
-def group_predicate(conn, table, group):
-    """优先使用 NTQQ 的 40027 群号索引列（本人发出消息 40030=0 但 40027 仍为真实群号）。
-
-    旧版/测试库没有 40027 时自动退回 40030 查询，不牺牲兼容性。
-    """
-    columns = _table_columns(conn, table)
+    if columns is None:
+        columns = _table_columns(conn, table)
+    if INDEXED_GCOL in columns and GCOL in columns:
+        if SCOL in columns:
+            return (
+                f'"{INDEXED_GCOL}"=? AND ('
+                f'"{GCOL}"=? OR ('
+                f'("{GCOL}"=0 OR "{GCOL}" IS NULL) '
+                f'AND "{SCOL}" IS NOT NULL '
+                f'AND TRIM(CAST("{SCOL}" AS TEXT)) NOT IN (\'0\', \'\')'
+                f'))',
+                (group, group),
+            )
+        return f'"{INDEXED_GCOL}"=? AND ("{GCOL}"=? OR "{GCOL}"=0 OR "{GCOL}" IS NULL)', (group, group)
     if INDEXED_GCOL in columns:
         return f'"{INDEXED_GCOL}"=?', (group,)
     return f'"{GCOL}"=?', (group,)
@@ -250,11 +261,10 @@ def fast_query(conn, table, group, since_ts, since_rowid, max_rows, until_ts=0):
     若指定 until_ts > 0，增加 `time <= until_ts` 约束。
     """
     since_rowid = int(since_rowid) if since_rowid else 0
-    group_sql, group_params = group_predicate(conn, table, group)
+    columns = _table_columns(conn, table)
+    group_sql, group_params = group_predicate(conn, table, group, columns=columns)
+    g_expr = _group_select_expr(columns)
     conds = [group_sql]
-    gray_sql = _non_gray_bar_predicate(conn, table)
-    if gray_sql:
-        conds.append(gray_sql)
     params = list(group_params)
     if since_rowid:
         conds.append(f'(("{TCOL}">?) OR ("{TCOL}"=? AND rowid>?))')
@@ -266,7 +276,7 @@ def fast_query(conn, table, group, since_ts, since_rowid, max_rows, until_ts=0):
         conds.append(f'"{TCOL}"<=?')
         params.append(until_ts)
     where_clause = " AND ".join(conds)
-    sql = (f'SELECT rowid, "{TCOL}", "{GCOL}", "{SCOL}", "{BCOL}" '
+    sql = (f'SELECT rowid, "{TCOL}", {g_expr}, "{SCOL}", "{BCOL}" '
            f'FROM {table} WHERE {where_clause} '
            f'ORDER BY "{TCOL}", rowid LIMIT ?')
     params.append(max_rows)
@@ -280,11 +290,10 @@ def fast_query_desc(conn, table, group, until_ts=0, until_rowid=0, since_ts=0, l
     若仅指定 until_ts：`time <= until_ts`。
     若指定 since_ts：`time > since_ts`。
     """
-    group_sql, group_params = group_predicate(conn, table, group)
+    columns = _table_columns(conn, table)
+    group_sql, group_params = group_predicate(conn, table, group, columns=columns)
+    g_expr = _group_select_expr(columns)
     conds = [group_sql, f'"{TCOL}" IS NOT NULL']
-    gray_sql = _non_gray_bar_predicate(conn, table)
-    if gray_sql:
-        conds.append(gray_sql)
     params = list(group_params)
     until_rowid = int(until_rowid) if until_rowid else 0
     if until_rowid:
@@ -297,7 +306,7 @@ def fast_query_desc(conn, table, group, until_ts=0, until_rowid=0, since_ts=0, l
         conds.append(f'"{TCOL}">?')
         params.append(since_ts)
     where_clause = " AND ".join(conds)
-    sql = (f'SELECT rowid, "{TCOL}", "{GCOL}", "{SCOL}", "{BCOL}" '
+    sql = (f'SELECT rowid, "{TCOL}", {g_expr}, "{SCOL}", "{BCOL}" '
            f'FROM {table} WHERE {where_clause} '
            f'ORDER BY "{TCOL}" DESC, rowid DESC LIMIT ?')
     params.append(limit)
@@ -305,41 +314,50 @@ def fast_query_desc(conn, table, group, until_ts=0, until_rowid=0, since_ts=0, l
 
 
 def paged_query(conn, table, group, since_ts, since_rowid, max_rows, until_ts=0):
-    """rowid 分页 + 自动跳过损坏页；兼容双号段 rowid，剔除系统灰条。
+    """rowid 分页 + 自动跳过损坏页；只保留目标群、since_ts 之后（同秒按 rowid）的消息。
 
-    当 since_ts > 0 时从 last=0 全表扫描，避免低号段新发消息因 rowid < since_rowid 被跳漏，
-    并用固定容量最大堆维护 (ts, rowid) 最小的 max_rows 条，最终按 (ts, rowid) 升序返回。
-    仅当 since_ts == 0 且指定了 since_rowid 时才从 since_rowid 起扫。
+    本机发出消息的 rowid 与接收消息可能分处不同高位号段，始终从 last=0 分页扫描，
+    用固定容量最大堆维护满足条件的 (ts, rowid) 最小 max_rows 条，最终按 (ts, rowid) 升序返回。
     """
+    if max_rows <= 0:
+        return []
     since_ts = int(since_ts) if since_ts else 0
     since_rowid = int(since_rowid) if since_rowid else 0
-    g_expr = _group_select_expr(conn, table)
-    raw30_expr = _raw_40030_select_expr(conn, table)
-    last = 0 if since_ts > 0 else since_rowid
+    columns = _table_columns(conn, table)
+    has_indexed_gcol = INDEXED_GCOL in columns
+    select_cols = (
+        f'rowid, "{TCOL}", "{GCOL}", "{SCOL}", "{BCOL}", "{INDEXED_GCOL}"'
+        if has_indexed_gcol
+        else f'rowid, "{TCOL}", "{GCOL}", "{SCOL}", "{BCOL}"'
+    )
+    # 本机发出消息的 rowid 与接收消息分处不同高位号段，不能假设未来消息的 rowid 一定大于 since_rowid。
+    last = 0
     batch = 2000
     guard = 0
     fail_streak = 0
-    # 最大堆（存 (-ts, -rowid, row5)）保留全表满足条件的最小 max_rows 条，内存恒定 O(max_rows)
+    seq = 0
+    # 最大堆（存 (-ts, -rowid, seq, row5)）保留全表满足条件的最小 max_rows 条，内存恒定 O(max_rows)
     heap = []
     while True:
-        if since_ts == 0 and len(heap) >= max_rows:
-            break
         guard += 1
         if guard > 4_000_000:
             log("分页扫描超过保护上限，停止")
             break
         try:
             rows = conn.execute(
-                f'SELECT rowid, "{TCOL}", {g_expr}, "{SCOL}", "{BCOL}", {raw30_expr} '
+                f"SELECT {select_cols} "
                 f"FROM {table} WHERE rowid > ? ORDER BY rowid LIMIT ?",
                 (last, batch),
             ).fetchall()
         except Exception:
             safe_rollback(conn)
             fail_streak += 1
-            if fail_streak >= 5000 and not heap:
-                raise sqlite3.DatabaseError(
-                    f"明文库不可读：连续 {fail_streak} 次读页失败且无任何产出，已中止扫描")
+            if fail_streak >= 5000:
+                if not heap:
+                    raise sqlite3.DatabaseError(
+                        f"明文库不可读：连续 {fail_streak} 次读页失败且无任何产出，已中止扫描")
+                log(f"分页扫描连续 {fail_streak} 次读页失败，保留已收集 {len(heap)} 条结果并中止")
+                break
             if batch == 1:
                 last += 1
             else:
@@ -350,34 +368,50 @@ def paged_query(conn, table, group, since_ts, since_rowid, max_rows, until_ts=0)
             break
         last = rows[-1][0]
         for row in rows:
-            if row[2] != group or row[1] is None:
-                continue
-            if is_system_gray_bar(row[5], row[3]):
+            mirror_val = row[5] if has_indexed_gcol else None
+            if row[1] is None or not _row_matches_group(row[2], mirror_val, row[3], group, has_indexed_gcol):
                 continue
             ts = row[1]
             rid = row[0]
             if until_ts and ts > until_ts:
                 continue
-            if ts > since_ts or (ts == since_ts and rid > since_rowid):
-                item = (-ts, -rid, (rid, ts, row[2], row[3], row[4]))
+            if since_rowid:
+                matched = ts > since_ts or (ts == since_ts and rid > since_rowid)
+            elif since_ts:
+                matched = ts > since_ts
+            else:
+                matched = True
+            if matched:
+                seq += 1
+                item = (-ts, -rid, seq, (rid, ts, group, row[3], row[4]))
                 if len(heap) < max_rows:
                     heapq.heappush(heap, item)
                 elif item > heap[0]:
                     heapq.heapreplace(heap, item)
-                if since_ts == 0 and len(heap) >= max_rows:
-                    break
         batch = min(2000, batch * 2)
-    out = [entry[2] for entry in heap]
+    out = [entry[3] for entry in heap]
     out.sort(key=lambda r: (r[1], r[0]))
     return out
 
 
 def paged_query_desc(conn, table, group, until_ts=0, until_rowid=0, since_ts=0, limit=PEEK_ROWS_LIMIT):
-    """反向 rowid 分页 + 自动跳过损坏页；返回按 (ts, rowid) 降序排列的至多 limit 条匹配行。"""
-    out = []
-    g_expr = _group_select_expr(conn, table)
-    raw30_expr = _raw_40030_select_expr(conn, table)
+    """反向 rowid 分页 + 自动跳过损坏页；返回按 (ts, rowid) 降序排列的至多 limit 条匹配行。
+
+    本机发出消息的 rowid 与接收消息可能分处不同高位号段，始终扫描全表并用固定容量最小堆
+    维护 (ts, rowid) 最大的 limit 条，避免高号段旧消息提前占满配额而截断低号段新消息。
+    """
+    if limit <= 0:
+        return []
+    since_ts = int(since_ts) if since_ts else 0
+    until_ts = int(until_ts) if until_ts else 0
     until_rowid = int(until_rowid) if until_rowid else 0
+    columns = _table_columns(conn, table)
+    has_indexed_gcol = INDEXED_GCOL in columns
+    select_cols = (
+        f'rowid, "{TCOL}", "{GCOL}", "{SCOL}", "{BCOL}", "{INDEXED_GCOL}"'
+        if has_indexed_gcol
+        else f'rowid, "{TCOL}", "{GCOL}", "{SCOL}", "{BCOL}"'
+    )
     last = None
     try:
         cur = conn.execute(f"SELECT MAX(rowid) FROM {table}")
@@ -388,18 +422,21 @@ def paged_query_desc(conn, table, group, until_ts=0, until_rowid=0, since_ts=0, 
         safe_rollback(conn)
         raise sqlite3.DatabaseError(f"无法读取 MAX(rowid)：{exc}") from exc
     if last is None:
-        return out
+        return []
     batch = 2048
     guard = 0
     fail_streak = 0
-    while len(out) < limit and last >= 1:
+    seq = 0
+    # 最小堆（存 (ts, rowid, seq, row5)）保留全表满足条件的最大 limit 条，内存恒定 O(limit)
+    heap = []
+    while last >= 1:
         guard += 1
         if guard > 4_000_000:
             log("反向分页扫描超过保护上限，停止")
             break
         try:
             rows = conn.execute(
-                f'SELECT rowid, "{TCOL}", {g_expr}, "{SCOL}", "{BCOL}", {raw30_expr} '
+                f"SELECT {select_cols} "
                 f"FROM {table} WHERE rowid <= ? ORDER BY rowid DESC LIMIT ?",
                 (last, batch),
             ).fetchall()
@@ -407,10 +444,10 @@ def paged_query_desc(conn, table, group, until_ts=0, until_rowid=0, since_ts=0, 
             safe_rollback(conn)
             fail_streak += 1
             if fail_streak >= 5000:
-                if not out:
+                if not heap:
                     raise sqlite3.DatabaseError(
                         f"明文库不可读：连续 {fail_streak} 次反向读页失败且无任何产出，已中止扫描")
-                log(f"反向分页连续 {fail_streak} 次读页失败，保留已收集 {len(out)} 条结果并中止")
+                log(f"反向分页连续 {fail_streak} 次读页失败，保留已收集 {len(heap)} 条结果并中止")
                 break
             last -= batch
             batch = max(8, batch // 2)
@@ -420,9 +457,8 @@ def paged_query_desc(conn, table, group, until_ts=0, until_rowid=0, since_ts=0, 
             break
         last = rows[-1][0] - 1
         for row in rows:
-            if row[2] != group or row[1] is None:
-                continue
-            if is_system_gray_bar(row[5], row[3]):
+            mirror_val = row[5] if has_indexed_gcol else None
+            if row[1] is None or not _row_matches_group(row[2], mirror_val, row[3], group, has_indexed_gcol):
                 continue
             ts = row[1]
             rid = row[0]
@@ -434,10 +470,14 @@ def paged_query_desc(conn, table, group, until_ts=0, until_rowid=0, since_ts=0, 
             elif until_ts:
                 if ts > until_ts:
                     continue
-            out.append((rid, ts, row[2], row[3], row[4]))
-            if len(out) >= limit:
-                break
+            seq += 1
+            item = (ts, rid, seq, (rid, ts, group, row[3], row[4]))
+            if len(heap) < limit:
+                heapq.heappush(heap, item)
+            elif item > heap[0]:
+                heapq.heapreplace(heap, item)
         batch = min(2048, batch * 2)
+    out = [entry[3] for entry in heap]
     out.sort(key=lambda r: (r[1], r[0]), reverse=True)
     return out
 
@@ -842,25 +882,20 @@ def cmd_check(args):
 
 
 def tail_query(conn, group, n):
-    """返回某群按 (ts, rowid) 升序的最近 n 条消息（剔除系统灰条，兼容双号段 rowid）。"""
-    group_sql, group_params = group_predicate(conn, "group_msg_table", group)
-    conds = [group_sql, f'"{TCOL}" IS NOT NULL']
-    gray_sql = _non_gray_bar_predicate(conn, "group_msg_table")
-    if gray_sql:
-        conds.append(gray_sql)
-    where_clause = " AND ".join(conds)
+    """返回某群按 (ts, rowid) 升序的最近 n 条消息（用于初次建立游标/回看尾巴）。"""
+    if n <= 0:
+        return []
+    columns = _table_columns(conn, "group_msg_table")
+    group_sql, group_params = group_predicate(conn, "group_msg_table", group, columns=columns)
+    g_expr = _group_select_expr(columns)
     try:
         rows = conn.execute(
-            f'SELECT rowid, "{TCOL}", "{GCOL}", "{SCOL}", "{BCOL}" '
-            f'FROM group_msg_table WHERE {where_clause} '
+            f'SELECT rowid, "{TCOL}", {g_expr}, "{SCOL}", "{BCOL}" '
+            f'FROM group_msg_table WHERE {group_sql} AND "{TCOL}" IS NOT NULL '
             f'ORDER BY "{TCOL}" DESC, rowid DESC LIMIT ?', (*group_params, n)).fetchall()
     except Exception:
         safe_rollback(conn)
-        # 倒退：用 rowid 倒序扫后再按 (ts, rowid) 升序重排
-        rows = conn.execute(
-            f'SELECT rowid, "{TCOL}", "{GCOL}", "{SCOL}", "{BCOL}" '
-            f'FROM group_msg_table WHERE {where_clause} '
-            f'ORDER BY rowid DESC LIMIT ?', (*group_params, n)).fetchall()
+        rows = paged_query_desc(conn, "group_msg_table", group, limit=n)
     rows = list(rows)
     rows.sort(key=lambda r: (r[1], r[0]))
     return rows
@@ -1183,21 +1218,30 @@ def cmd_verify(args):
 
 
 def peek_query(conn, group, n):
-    """临时阅读：取某群最近 n 条。优先走索引查询路径，异常时退回反向扫描。"""
+    """临时阅读：取某群最近 n 条。优先走索引查询路径，异常时退回反向扫描（最小堆防双号段截断）。"""
+    if n <= 0:
+        return [], 0
     try:
         rows = tail_query(conn, group, n)
         return rows, 0
     except Exception:
         safe_rollback(conn)
 
-    out = []
-    g_expr = _group_select_expr(conn, "group_msg_table")
-    raw30_expr = _raw_40030_select_expr(conn, "group_msg_table")
+    columns = _table_columns(conn, "group_msg_table")
+    has_indexed_gcol = INDEXED_GCOL in columns
+    select_cols = (
+        f'rowid, "{TCOL}", "{GCOL}", "{SCOL}", "{BCOL}", "{INDEXED_GCOL}"'
+        if has_indexed_gcol
+        else f'rowid, "{TCOL}", "{GCOL}", "{SCOL}", "{BCOL}"'
+    )
     last = None
     batch = 2048
     guard = 0
     skipped = 0
     fail_streak = 0
+    seq = 0
+    # 最小堆（存 (ts, rowid, seq, row5)）保留全表满足条件的最大 n 条，兼容双号段 rowid
+    heap = []
     try:
         cur = conn.execute("SELECT MAX(rowid) FROM group_msg_table")
         row = cur.fetchone()
@@ -1207,15 +1251,15 @@ def peek_query(conn, group, n):
         safe_rollback(conn)
         raise sqlite3.DatabaseError(f"无法读取 MAX(rowid)：{exc}") from exc
     if last is None:
-        return out, 0
-    while len(out) < n and last >= 1:
+        return [], 0
+    while last >= 1:
         guard += 1
         if guard > 200000:
             log("peek 扫描超过保护上限，停止")
             break
         try:
             rows = conn.execute(
-                f'SELECT rowid, "{TCOL}", {g_expr}, "{SCOL}", "{BCOL}", {raw30_expr} '
+                f"SELECT {select_cols} "
                 f"FROM group_msg_table WHERE rowid <= ? ORDER BY rowid DESC LIMIT ?",
                 (last, batch)).fetchall()
         except Exception:
@@ -1223,10 +1267,10 @@ def peek_query(conn, group, n):
             skipped += 1
             fail_streak += 1
             if fail_streak >= 5000:
-                if not out:
+                if not heap:
                     raise sqlite3.DatabaseError(
                         f"明文库不可读：连续 {fail_streak} 次反向读页失败且无任何产出，已中止扫描")
-                log(f"peek 扫描连续 {fail_streak} 次读页失败，保留已收集 {len(out)} 条结果并中止")
+                log(f"peek 扫描连续 {fail_streak} 次读页失败，保留已收集 {len(heap)} 条结果并中止")
                 break
             # 这一批不可读：整体跳过它，前推 last 并减半批次（不逐行磨）
             last -= batch
@@ -1238,11 +1282,18 @@ def peek_query(conn, group, n):
             break
         last = rows[-1][0] - 1
         for row in rows:
-            if row[2] == group and row[1] is not None and not is_system_gray_bar(row[5], row[3]):
-                out.append((row[0], row[1], row[2], row[3], row[4]))
-                if len(out) >= n:
-                    break
+            mirror_val = row[5] if has_indexed_gcol else None
+            if row[1] is not None and _row_matches_group(row[2], mirror_val, row[3], group, has_indexed_gcol):
+                ts = row[1]
+                rid = row[0]
+                seq += 1
+                item = (ts, rid, seq, (rid, ts, group, row[3], row[4]))
+                if len(heap) < n:
+                    heapq.heappush(heap, item)
+                elif item > heap[0]:
+                    heapq.heapreplace(heap, item)
         batch = min(2048, batch * 2)
+    out = [entry[3] for entry in heap]
     out.sort(key=lambda r: (r[1], r[0]))
     return out, skipped
 
