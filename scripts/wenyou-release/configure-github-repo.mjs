@@ -417,14 +417,19 @@ function parseConcurrencySection(lines) {
 	if (!section) {
 		return {
 			present: false,
+			group: null,
 			cancelInProgressRaw: null,
 			cancelInProgress: null,
 		};
 	}
 
+	let groupRaw = null;
 	let cancelRaw = null;
 	if (section.inlineValue.startsWith("{")) {
 		const flow = parseFlowMapping(section.inlineValue);
+		if (flow?.has("group")) {
+			groupRaw = unquoteYamlScalar(flow.get("group"));
+		}
 		if (flow?.has("cancel-in-progress")) {
 			cancelRaw = unquoteYamlScalar(flow.get("cancel-in-progress"));
 		}
@@ -433,15 +438,22 @@ function parseConcurrencySection(lines) {
 		for (const child of section.children) {
 			if (child.indent !== childIndent) continue;
 			const kv = parseKeyValueLine(child.text);
-			if (kv && kv.key === "cancel-in-progress") {
+			if (!kv) continue;
+			if (kv.key === "group") {
+				groupRaw = unquoteYamlScalar(kv.value);
+			} else if (kv.key === "cancel-in-progress") {
 				cancelRaw = unquoteYamlScalar(kv.value);
 			}
 		}
+	} else if (section.inlineValue) {
+		groupRaw = unquoteYamlScalar(section.inlineValue);
 	}
 
+	const group = groupRaw && groupRaw.trim().length > 0 ? groupRaw.trim() : null;
 	const cancelInProgress = cancelRaw === "true" ? true : cancelRaw === "false" ? false : null;
 	return {
 		present: true,
+		group,
 		cancelInProgressRaw: cancelRaw,
 		cancelInProgress,
 	};
@@ -450,7 +462,7 @@ function parseConcurrencySection(lines) {
 function parsePushTagsFromOnSection(lines) {
 	const section = getSectionSlice(lines, "on");
 	if (!section) {
-		return { pushTags: [], hasPushVTagTrigger: false };
+		return { pushTags: [], hasPushTagTrigger: false, hasPushVTagTrigger: false };
 	}
 
 	const pushTags = [];
@@ -507,8 +519,10 @@ function parsePushTagsFromOnSection(lines) {
 					}
 				} else {
 					for (let m = k + 1; m < pushChildren.length; m += 1) {
-						if (pushChildren[m].indent <= pushPropIndent) break;
-						const itemMatch = /^-\s+(.*)$/.exec(pushChildren[m].text);
+						const item = pushChildren[m];
+						if (item.indent < pushPropIndent) break;
+						if (item.indent === pushPropIndent && !/^-\s+/.test(item.text)) break;
+						const itemMatch = /^-\s+(.*)$/.exec(item.text);
 						if (itemMatch) {
 							pushTags.push(unquoteYamlScalar(itemMatch[1]));
 						}
@@ -518,8 +532,10 @@ function parsePushTagsFromOnSection(lines) {
 		}
 	}
 
-	const hasPushVTagTrigger = pushTags.some((tag) => /^v\*/i.test(tag.trim()));
-	return { pushTags, hasPushVTagTrigger };
+	const normalizedTags = pushTags.map((tag) => tag.trim()).filter(Boolean);
+	const hasPushTagTrigger = normalizedTags.length > 0;
+	const hasPushVTagTrigger = normalizedTags.some((tag) => /^(?:v(?:\*|\[)|\*)/i.test(tag));
+	return { pushTags: normalizedTags, hasPushTagTrigger, hasPushVTagTrigger };
 }
 
 function parseJobsSection(lines) {
@@ -787,7 +803,7 @@ export async function verifyRepository(options = {}) {
 		});
 	}
 
-	// 3a. Verify ci.yml concurrency cancel-in-progress: true
+	// 3a. Verify ci.yml concurrency group & cancel-in-progress: true
 	const ciWorkflow = workflowsByName.get("ci.yml") ?? workflowsByName.get("ci.yaml") ?? null;
 	let ciConcurrencyOk = true;
 	if (!ciWorkflow) {
@@ -797,25 +813,35 @@ export async function verifyRepository(options = {}) {
 			file: ".github/workflows/ci.yml",
 			message: "Missing .github/workflows/ci.yml workflow.",
 		});
-	} else if (!ciWorkflow.concurrency.present || ciWorkflow.concurrency.cancelInProgress !== true) {
-		ciConcurrencyOk = false;
-		violations.push({
-			check: "ciConcurrency",
-			file: ciWorkflow.file,
-			message: 'Workflow ci.yml must enable top-level concurrency with "cancel-in-progress: true".',
-		});
+	} else {
+		if (!ciWorkflow.concurrency.present || !ciWorkflow.concurrency.group) {
+			ciConcurrencyOk = false;
+			violations.push({
+				check: "ciConcurrency",
+				file: ciWorkflow.file,
+				message: 'Workflow ci.yml must define a non-empty top-level concurrency "group".',
+			});
+		}
+		if (!ciWorkflow.concurrency.present || ciWorkflow.concurrency.cancelInProgress !== true) {
+			ciConcurrencyOk = false;
+			violations.push({
+				check: "ciConcurrency",
+				file: ciWorkflow.file,
+				message: 'Workflow ci.yml must enable top-level concurrency with "cancel-in-progress: true".',
+			});
+		}
 	}
 
-	// 3b. Verify release.yml does not auto-trigger on push tags ["v*"]
+	// 3b. Verify release.yml does not auto-trigger on any push tags
 	const releaseWorkflow =
 		workflowsByName.get("release.yml") ?? workflowsByName.get("release.yaml") ?? null;
 	let releaseTriggerOk = true;
-	if (releaseWorkflow?.on.hasPushVTagTrigger) {
+	if (releaseWorkflow?.on.hasPushTagTrigger) {
 		releaseTriggerOk = false;
 		violations.push({
 			check: "releaseTrigger",
 			file: releaseWorkflow.file,
-			message: 'Legacy release.yml must NOT auto-trigger on push tags matching "v*".',
+			message: `Legacy release.yml must NOT auto-trigger on push tags (found: ${releaseWorkflow.on.pushTags.join(", ")}).`,
 		});
 	}
 
@@ -877,12 +903,15 @@ export async function verifyRepository(options = {}) {
 			ciConcurrency: {
 				ok: ciConcurrencyOk,
 				file: ciWorkflow?.file ?? ".github/workflows/ci.yml",
+				group: ciWorkflow?.concurrency.group ?? null,
 				cancelInProgress: ciWorkflow?.concurrency.cancelInProgress ?? null,
 			},
 			releaseTrigger: {
 				ok: releaseTriggerOk,
 				file: releaseWorkflow?.file ?? ".github/workflows/release.yml",
 				present: releaseWorkflow !== null,
+				pushTags: releaseWorkflow?.on.pushTags ?? [],
+				hasPushTagTrigger: releaseWorkflow?.on.hasPushTagTrigger ?? false,
 				hasPushVTagTrigger: releaseWorkflow?.on.hasPushVTagTrigger ?? false,
 			},
 			electronBuilder: {
@@ -926,6 +955,8 @@ export function createGhApiRunner(options = {}) {
 				stdio: ["pipe", "pipe", "pipe"],
 				windowsHide: true,
 			});
+			// Swallow EPIPE/EOF if child exits early before reading stdin.
+			child.stdin.on("error", () => {});
 
 			let stdout = "";
 			let stderr = "";

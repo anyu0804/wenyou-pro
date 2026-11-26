@@ -29,6 +29,11 @@ jobs:
           node-version: 22
           cache: npm
 
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
       - name: Run repository anti-doxxing and local path gate
         run: npm run check:paths
 
@@ -56,5 +61,5 @@ jobs:
       - name: Run wenyou-release unit tests
         run: node --test scripts/wenyou-release/*.test.mjs
 
-      - name: Run Vitest suite
-        run: npx vitest run
+      - name: Run workspace unit tests (Vitest)
+        run: npm run test --workspaces --if-present

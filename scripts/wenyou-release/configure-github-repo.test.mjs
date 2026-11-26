@@ -13,6 +13,7 @@ import {
 	buildAntiLockoutRulesetPayload,
 	buildDryRunPlan,
 	buildGhApiArgs,
+	createGhApiRunner,
 	DEFAULT_REPO,
 	parseConfigureArgs,
 	REPO_ADMIN_ROLE_ACTOR_ID,
@@ -335,9 +336,9 @@ describe("configure-github-repo --verify static anti-lockout gate", () => {
 		);
 	});
 
-	test("also catches block-sequence push tags (- \"v*\") in release.yml", async (t) => {
-		const tempRoot = await createTempDir(t);
-		await writeRepoFixture(tempRoot, {
+	test("also catches block-sequence push tags (- \"v*\"), zero-indent sequences, and any push.tags pattern in release.yml", async (t) => {
+		const indentedRoot = await createTempDir(t);
+		await writeRepoFixture(indentedRoot, {
 			".github/workflows/release.yml": [
 				"name: Release",
 				"on:",
@@ -352,9 +353,103 @@ describe("configure-github-repo --verify static anti-lockout gate", () => {
 				"      - run: echo ok",
 			].join("\n"),
 		});
-		const report = await verifyRepository({ rootDir: tempRoot });
-		assert.equal(report.ok, false);
-		assert.equal(report.checks.releaseTrigger.hasPushVTagTrigger, true);
+		const indentedReport = await verifyRepository({ rootDir: indentedRoot });
+		assert.equal(indentedReport.ok, false);
+		assert.equal(indentedReport.checks.releaseTrigger.hasPushTagTrigger, true);
+		assert.equal(indentedReport.checks.releaseTrigger.hasPushVTagTrigger, true);
+
+		// Valid YAML allows sequence items at the exact same indent as `tags:`
+		const zeroIndentRoot = await createTempDir(t);
+		await writeRepoFixture(zeroIndentRoot, {
+			".github/workflows/release.yml": [
+				"name: Release",
+				"on:",
+				"  push:",
+				"    tags:",
+				'    - "v*"',
+				"    branches:",
+				"    - main",
+				"jobs:",
+				"  prepare:",
+				"    runs-on: ubuntu-latest",
+				"    timeout-minutes: 15",
+				"    steps:",
+				"      - run: echo ok",
+			].join("\n"),
+		});
+		const zeroIndentReport = await verifyRepository({ rootDir: zeroIndentRoot });
+		assert.equal(zeroIndentReport.ok, false);
+		assert.equal(zeroIndentReport.checks.releaseTrigger.hasPushTagTrigger, true);
+		assert.deepEqual(zeroIndentReport.checks.releaseTrigger.pushTags, ["v*"]);
+
+		// Any push.tags pattern (e.g. v[0-9]*, *, release-*) must be blocked on archived release.yml
+		for (const tagExpr of ['["v[0-9]*"]', '["*"]', '["release-*"]']) {
+			const patternRoot = await createTempDir(t);
+			await writeRepoFixture(patternRoot, {
+				".github/workflows/release.yml": [
+					"name: Release",
+					"on:",
+					"  push:",
+					`    tags: ${tagExpr}`,
+					"jobs:",
+					"  prepare:",
+					"    runs-on: ubuntu-latest",
+					"    timeout-minutes: 15",
+					"    steps:",
+					"      - run: echo ok",
+				].join("\n"),
+			});
+			const patternReport = await verifyRepository({ rootDir: patternRoot });
+			assert.equal(patternReport.ok, false, `Expected push.tags ${tagExpr} to be rejected`);
+			assert.equal(patternReport.checks.releaseTrigger.ok, false);
+			assert.equal(patternReport.checks.releaseTrigger.hasPushTagTrigger, true);
+		}
+	});
+
+	test("blocks ci.yml concurrency missing a non-empty group even when cancel-in-progress is true", async (t) => {
+		const missingGroupRoot = await createTempDir(t);
+		await writeRepoFixture(missingGroupRoot, {
+			".github/workflows/ci.yml": [
+				"name: CI",
+				"on: push",
+				"concurrency:",
+				"  cancel-in-progress: true",
+				"jobs:",
+				"  verify:",
+				"    runs-on: ubuntu-latest",
+				"    timeout-minutes: 25",
+				"    steps:",
+				"      - run: echo ok",
+			].join("\n"),
+		});
+		const missingGroupReport = await verifyRepository({ rootDir: missingGroupRoot });
+		assert.equal(missingGroupReport.ok, false);
+		assert.equal(missingGroupReport.checks.ciConcurrency.ok, false);
+		assert.equal(missingGroupReport.checks.ciConcurrency.group, null);
+		assert.ok(
+			missingGroupReport.violations.some(
+				(v) => v.check === "ciConcurrency" && /non-empty.*group/i.test(v.message),
+			),
+		);
+
+		const emptyGroupRoot = await createTempDir(t);
+		await writeRepoFixture(emptyGroupRoot, {
+			".github/workflows/ci.yml": [
+				"name: CI",
+				"on: push",
+				'concurrency: { group: "   ", cancel-in-progress: true }',
+				"jobs:",
+				"  verify:",
+				"    runs-on: ubuntu-latest",
+				"    timeout-minutes: 25",
+				"    steps:",
+				"      - run: echo ok",
+			].join("\n"),
+		});
+		const emptyGroupReport = await verifyRepository({ rootDir: emptyGroupRoot });
+		assert.equal(emptyGroupReport.ok, false);
+		assert.equal(emptyGroupReport.checks.ciConcurrency.ok, false);
+		assert.equal(emptyGroupReport.checks.ciConcurrency.group, null);
 	});
 });
 
@@ -565,5 +660,29 @@ describe("configure-github-repo --apply idempotent create & update branches with
 				"-",
 			],
 		);
+	});
+
+	test("handles early child process exit without uncaught stdin EPIPE/EOF error", async () => {
+		// Spawning node with non-existent "api" arg exits immediately with non-zero code without reading stdin.
+		const runner = createGhApiRunner({ ghBin: process.execPath, timeoutMs: 5000 });
+		let uncaughtError = null;
+		const onUncaught = (err) => {
+			uncaughtError = err;
+		};
+		process.on("uncaughtException", onUncaught);
+		try {
+			await assert.rejects(
+				runner({
+					method: "PUT",
+					endpoint: "repos/anyu0804/wenyou-pro/rulesets",
+					body: { padding: "x".repeat(256 * 1024) },
+				}),
+				/failed with exit code/,
+			);
+			await new Promise((resolveDelay) => setTimeout(resolveDelay, 50));
+			assert.equal(uncaughtError, null, "stdin write to early-exiting child must not emit uncaught error");
+		} finally {
+			process.off("uncaughtException", onUncaught);
+		}
 	});
 });
