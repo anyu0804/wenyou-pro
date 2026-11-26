@@ -1,11 +1,24 @@
 # 开发导航
 
-本页只帮助定位，不是必读的源码目录。按任务选择入口和专题，不需要遍历所有文档。
+> 全仓权威目录地图见 [../DIRECTORY_INDEX.md](../DIRECTORY_INDEX.md)；安全门禁、沙盘隔离与真机验收标准见 [../ACCEPTANCE.md](../ACCEPTANCE.md)。
 
-## 专题
+本页帮助开发者按任务快速定位文档与源码入口，无需通读全仓。
+
+## 文游 Pro 核心专题
 
 | 需要了解 | 文档 |
-|---|---|
+| --- | --- |
+| 全仓目录总览、四大包源码索引、发布工具链与 Vault 权限矩阵 | [全仓目录索引](../DIRECTORY_INDEX.md) |
+| 特权协议、视角强钳制、沙盘防串档、地图契约与跨平台验收清单 | [安全与沙盘验收标准](../ACCEPTANCE.md) |
+| 独立文游 Agent 工作台立项背景、L0/L1/L2 记忆与总体架构设计 | [立项与架构方案](独立文游Agent工作台立项与架构方案.md) |
+| 上游 Percho 底座勘察、包结构映射与文游工作台改造路线图 | [底座源码勘察与改造地图](Percho底座源码勘察与文游改造地图.md) |
+| 国内国策推演文游玩家/GM 痛点调研与分阶段功能演进 | [需求调研与功能演进](国内国策推演文游需求调研与功能演进.md) |
+| 内置 Pixi 动态推演沙盘 51 文件模块地图与渲染契约 | [Pixi 沙盘模块地图](../packages/pixi-sandbox/ARCHITECTURE.md) |
+
+## 底座工程专题
+
+| 需要了解 | 文档 |
+| --- | --- |
 | 包边界、IPC、会话数据与状态所有权 | [架构](architecture.md) |
 | 界面风格、字号、浮层、共享组件 | [UI 规范](ui.md) |
 | CDP、截图、交互验收、测试实例管理 | [UI 调试](ui-debugging.md) |
@@ -20,12 +33,30 @@
 | Windows 更新取证、恢复 | [Windows 更新](WINDOWS-UPDATES.md) |
 | 按症状选择排查方向 | [排障入口](PITFALLS.md) |
 
-## 代码入口
+## 文游工作台代码入口
+
+以下路径相对仓库根目录，聚焦司命 · 文游 Pro 专属领域能力：
+
+| 想改什么 | 从哪里开始 |
+| --- | --- |
+| 文游跨进程领域契约与 IPC 通道 | [packages/shared/src/wenyou.ts](../packages/shared/src/wenyou.ts)、[packages/shared/src/ipc-channels.ts](../packages/shared/src/ipc-channels.ts) |
+| Vault 初始化、简报台账、正史提案审批与导出预检 | [packages/backend/src/wenyou/service.ts](../packages/backend/src/wenyou/service.ts)、[packages/backend/src/wenyou/secret-blocks.ts](../packages/backend/src/wenyou/secret-blocks.ts) |
+| `wenyou_*` 工具集、`maxViewer` 物理钳制与正史防直改钩子 | [packages/backend/src/wenyou/extension.ts](../packages/backend/src/wenyou/extension.ts) |
+| 手写国策静态门禁与原生编号 `.docx` 生成器 | [packages/backend/src/wenyou/policy-lint.ts](../packages/backend/src/wenyou/policy-lint.ts)、[packages/backend/src/wenyou/docx-builder.ts](../packages/backend/src/wenyou/docx-builder.ts) |
+| FMG `.map` / 沙盘快照解析、兵力汇总与双期态势对比 | [packages/backend/src/wenyou/map-state.ts](../packages/backend/src/wenyou/map-state.ts) |
+| 离线群聊入库、L0 双游标证据库与本机 NTQQ 同步调度 | [packages/backend/src/wenyou/qq-ingest.ts](../packages/backend/src/wenyou/qq-ingest.ts)、[packages/backend/src/wenyou/ntqq-sync.ts](../packages/backend/src/wenyou/ntqq-sync.ts) |
+| 跨平台零依赖 NTQQ 只读 VFS 与随包文游技能 | [packages/desktop/resources/ntqq-vfs/](../packages/desktop/resources/ntqq-vfs)、[packages/desktop/resources/wenyou-skills/](../packages/desktop/resources/wenyou-skills) |
+| `wenyou-asset://` & `wenyou-sandbox://` 协议、世界目录与原生 IPC | [packages/desktop/src/main/wenyou-protocol.ts](../packages/desktop/src/main/wenyou-protocol.ts)、[packages/desktop/src/main/wenyou-sandbox-probe.ts](../packages/desktop/src/main/wenyou-sandbox-probe.ts)、[packages/desktop/src/main/wenyou-world-dir.ts](../packages/desktop/src/main/wenyou-world-dir.ts)、[packages/desktop/src/main/ipc/wenyou.ts](../packages/desktop/src/main/ipc/wenyou.ts) |
+| 右侧文游画布、简报/国策/审批/图集面板与事件桥接 | [packages/desktop/src/renderer/src/components/wenyou/](../packages/desktop/src/renderer/src/components/wenyou)、[packages/desktop/src/renderer/src/stores/wenyou-canvas.ts](../packages/desktop/src/renderer/src/stores/wenyou-canvas.ts)、[packages/desktop/src/renderer/src/hooks/use-wenyou-bridge.ts](../packages/desktop/src/renderer/src/hooks/use-wenyou-bridge.ts) |
+| 内置 Pixi 动态推演沙盘（桥接、战区隔离、涂刷、战役与野战） | [packages/pixi-sandbox/src/bridge.ts](../packages/pixi-sandbox/src/bridge.ts)、[packages/pixi-sandbox/src/theater-cache.ts](../packages/pixi-sandbox/src/theater-cache.ts)、[packages/pixi-sandbox/src/map-loader.ts](../packages/pixi-sandbox/src/map-loader.ts)、[packages/pixi-sandbox/ARCHITECTURE.md](../packages/pixi-sandbox/ARCHITECTURE.md) |
+| 防开盒路径门禁、云端防锁死配置、跨平台打包、验包与快捷方式同步 | [scripts/wenyou-release/scan-repo-paths.mjs](../scripts/wenyou-release/scan-repo-paths.mjs)、[scripts/wenyou-release/configure-github-repo.mjs](../scripts/wenyou-release/configure-github-repo.mjs)、[scripts/wenyou-release/build-installer.mjs](../scripts/wenyou-release/build-installer.mjs)、[scripts/wenyou-release/verify-package.mjs](../scripts/wenyou-release/verify-package.mjs)、[scripts/wenyou-release/generate-wenyou-icons.mjs](../scripts/wenyou-release/generate-wenyou-icons.mjs)、[scripts/wenyou-release/sync-shortcut.mjs](../scripts/wenyou-release/sync-shortcut.mjs) |
+
+## 底座通用代码入口
 
 以下路径相对各包的 `src/`；renderer 路径相对 `packages/desktop/src/renderer/src/`。先从入口跟调用链，不在此维护完整导出清单。
 
 | 想改什么 | 从哪里开始 |
-|---|---|
+| --- | --- |
 | 跨进程 API、事件和共享类型 | shared `ipc-channels.ts`、`ipc.ts`；desktop `main/ipc/`、`preload/index.ts` |
 | 会话创建、打开、关闭、分叉、撤回、重试 | backend `pi-backend.ts` → `session/`；renderer `stores/sessions.ts` |
 | 导航、并发装载、历史就绪 | renderer `stores/session-navigation.ts`、`session-loading.ts`、`session-history.ts` |
@@ -47,7 +78,7 @@
 | 设置页及按域加载 | renderer `components/settings/`、`stores/settings.ts`；新增分类入口 `SettingsDialog.tsx` |
 | UI 插件运行时与发布契约 | renderer `plugins/`；desktop `main/ui-plugins/`、`resources/ui-plugins/SPEC.md` |
 | 主题、字号、基础样式、文案 | renderer `styles/`、`stores/theme.ts`、`lib/typography.ts`、`i18n/`；字号档位在 shared `typography.ts` |
-| 窗口、退出、尺寸恢复、开发数据隔离 | desktop `main/window.ts`、`window-bounds.ts`、`dev-agent-dir.ts` |
+| 窗口、退出、尺寸恢复、开发数据隔离 | desktop `main/window.ts`、`window-bounds.ts`、`dev-agent-dir.ts`、`app-identity.ts` |
 | 自动更新和诊断 | desktop `main/updater.ts`、`update-policy.ts`、`update-diagnostics.ts`、`build/update-diagnostics.nsh` |
 | SSH 独立服务与环境路由 | backend `runtime/`；desktop `main/remote-connection.ts`、`environment-router.ts`；renderer `environment-api.ts`、`components/remote/` |
 | 跨设备互联 | shared `lan.ts`；backend `lan/`；desktop `main/lan.ts`、`src/lan-web/` |
@@ -55,12 +86,13 @@
 
 ## 验证工具
 
-自动检查用根目录 `typecheck` / `test` / `lint`。专项脚本都在 `scripts/`，**具体参数、安全前提和断言以脚本文件头为准**，不在索引复制。
+自动检查用根目录 `check:paths` / `repo:guard` / `typecheck` / `test` / `lint`。专项脚本都在 `scripts/`，**具体参数、安全前提和断言以脚本文件头为准**，不在索引复制。
 
+- 文游安全与发版门禁：`scripts/wenyou-release/scan-repo-paths.mjs`、`configure-github-repo.mjs`、`verify-package.mjs`、`build-installer.mjs`、`sync-shortcut.mjs`。
 - SDK 与后端：`smoke-sdk.mts`、`smoke-backend.mts`、`smoke-error-events.mts`、`smoke-subagent.mts`、`smoke-extension-dialogs.mts`。
 - 状态重放：`replay-trace.mts`、`repro-full.mjs`；上下文调参：`replay-evaporation.mts`、`replay-compaction-bound.mts`。
 - UI/CDP：`cdp-eval.mjs`、`cdp-shot.mjs`；按功能查找 `check-*`、`verify-*`、`shoot-*`。
 
 ## 临时资料
 
-`.local/` 不入库：`design/` 为设计稿，`agent-work/` 为临时 spec/plan/channel。正式发版规则只维护在上面的发版流程中，不依赖本机临时资料。不要在这里登记各阶段产物。
+`.local/` 不入库：`design/` 为设计稿，`agent-work/` 为临时 spec/plan/channel。正式发版与验收规则只维护在 [../ACCEPTANCE.md](../ACCEPTANCE.md)、[../DIRECTORY_INDEX.md](../DIRECTORY_INDEX.md) 及上面的专题文档中，不依赖本机临时资料。
