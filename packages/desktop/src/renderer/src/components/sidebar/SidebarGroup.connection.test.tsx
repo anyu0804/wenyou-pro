@@ -134,7 +134,7 @@ it("keeps a cached empty search visible after disconnecting", async () => {
 		),
 	);
 	expectOnlyOffline();
-	expect(button("sidebar.catalogConnect")).toBeDefined();
+	expect(button("sidebar.catalogConnect")).toBeUndefined();
 });
 
 it("offline initially does not query or show partial, retry or loading", async () => {
@@ -143,7 +143,7 @@ it("offline initially does not query or show partial, retry or loading", async (
 	expectOnlyOffline();
 });
 
-it("retains cached rows and cursor, disables more and opens the connection panel without connecting", async () => {
+it("retains cached rows and cursor, disables more and omits dead remote connect trigger", async () => {
 	await cache("cached", "next", true);
 	await render();
 	expectOnlyOffline();
@@ -154,11 +154,8 @@ it("retains cached rows and cursor, disables more and opens the connection panel
 		]?.nextCursor,
 	).toBe("next");
 	expect(container.querySelector<HTMLButtonElement>("[data-sidebar-show-more]")?.disabled).toBe(true);
-	const connect = button("sidebar.catalogConnect");
-	expect(connect).toBeDefined();
-	await act(() => connect?.click());
-	expect(useRemoteConnectionStore.getState().open).toBe(true);
-	expect(useRemoteConnectionStore.getState().targetEnvironment).toEqual(environment);
+	expect(button("sidebar.catalogConnect")).toBeUndefined();
+	expect(useRemoteConnectionStore.getState().open).toBe(false);
 	expect(api.remoteConnect).not.toHaveBeenCalled();
 	expect(api.querySessionCatalog).not.toHaveBeenCalled();
 });

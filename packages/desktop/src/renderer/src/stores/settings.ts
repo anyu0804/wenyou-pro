@@ -1,7 +1,6 @@
 import type {
 	CustomProviderInput,
 	CustomProviderUpdateInput,
-	LanStatus,
 	LoadedExtension,
 	LoadedSkill,
 	ModelPrefs,
@@ -24,7 +23,6 @@ import {
 	withProviderModelsHidden,
 } from "@percho/shared";
 import { create, useStore } from "zustand";
-import { getPi } from "../api";
 import { getExecutionApi } from "../environment-api";
 import { useEnvironment } from "../environment-context";
 import { useSessionsStore } from "./sessions";
@@ -62,9 +60,6 @@ interface SettingsStore {
 	codemodeEnabled: boolean | null;
 	codemodeOnly: boolean | null;
 	codemodeSaving: boolean;
-	/** 局域网观察服务运行状态（null = 未加载）。 */
-	lanStatus: LanStatus | null;
-	lanSaving: boolean;
 	/** 当前活跃会话已加载的 skills（null = 未加载/无会话） */
 	skills: LoadedSkill[] | null;
 	skillDiagnostics: ResourceDiagnosticInfo[];
@@ -103,9 +98,6 @@ interface SettingsStore {
 	setChannelWatchEnabled: (enabled: boolean) => Promise<void>;
 	setCodemodeEnabled: (enabled: boolean) => Promise<void>;
 	setCodemodeOnly: (only: boolean) => Promise<void>;
-	refreshLanStatus: () => Promise<void>;
-	setLanEnabled: (enabled: boolean) => Promise<void>;
-	setLanRemoteControl: (enabled: boolean) => Promise<void>;
 }
 
 /** 目录请求来源（产出快照的那次请求；仅用于诊断与断言） */
@@ -403,8 +395,6 @@ function createSettingsStore(environment: EnvironmentRef) {
 					void loadLoadedResources();
 					break;
 				case "lan":
-					void get().refreshLanStatus();
-					break;
 				case "remote":
 				case "appearance":
 				case "mcp":
@@ -419,11 +409,6 @@ function createSettingsStore(environment: EnvironmentRef) {
 			// （仅派生 enabled=false 逃生舱态供 chip 禁用提示；开关 UI 已撒，spec permission-mode D7）
 			void loadPermissionGate();
 			loadGeneral();
-			// Full-refresh's historical silent LAN read must not take over the catalog error field.
-			void getPi()
-				.lanGetStatus()
-				.then((lanStatus) => set({ lanStatus }))
-				.catch(() => {});
 			await loadModelsData("local");
 			// 已加载资源：顺序排在目录之后（沿用改造前顺序）；目录失败也照取
 			await loadLoadedResources();
@@ -442,8 +427,6 @@ function createSettingsStore(environment: EnvironmentRef) {
 			codemodeEnabled: null,
 			codemodeOnly: null,
 			codemodeSaving: false,
-			lanStatus: null,
-			lanSaving: false,
 			skills: null,
 			skillDiagnostics: [],
 			extensions: null,
@@ -534,34 +517,6 @@ function createSettingsStore(environment: EnvironmentRef) {
 				} finally {
 					++codemodeRevision;
 					set({ codemodeSaving: false });
-				}
-			},
-
-			refreshLanStatus: async () => {
-				try {
-					set({ lanStatus: await getPi().lanGetStatus() });
-				} catch (error) {
-					set({ error: errorMessage(error) });
-				}
-			},
-
-			setLanEnabled: async (enabled) => {
-				set({ lanSaving: true });
-				try {
-					const lanStatus = await getPi().lanSetEnabled({ enabled });
-					set({ lanStatus, lanSaving: false });
-				} catch (error) {
-					set({ lanSaving: false, error: error instanceof Error ? error.message : String(error) });
-				}
-			},
-
-			setLanRemoteControl: async (enabled) => {
-				set({ lanSaving: true });
-				try {
-					const lanStatus = await getPi().lanSetRemoteControl({ enabled });
-					set({ lanStatus, lanSaving: false });
-				} catch (error) {
-					set({ lanSaving: false, error: error instanceof Error ? error.message : String(error) });
 				}
 			},
 

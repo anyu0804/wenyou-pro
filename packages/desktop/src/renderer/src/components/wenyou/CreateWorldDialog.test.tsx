@@ -142,7 +142,7 @@ function makeOverview(cwd: string, worldTitle: string): WenyouWorkspaceOverview 
 		policies: [],
 		maps: [],
 		canonDocs: [],
-	} as WenyouWorkspaceOverview;
+	};
 }
 
 function setInputValue(input: HTMLInputElement, value: string): void {

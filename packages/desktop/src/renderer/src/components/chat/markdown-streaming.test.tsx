@@ -111,4 +111,48 @@ describe("无 Monaco/Shiki 依赖下的表格与纯文本代码块回退", () =>
 		expect(container.textContent).toContain("第二行命令");
 		expect(container.querySelector(".shiki")).toBeNull();
 	});
+
+	it("mermaid / d2 / infographic 图表块在裁剪依赖后走纯文本源码回退且零运行时报错", async () => {
+		const spyErr = vi.spyOn(console, "error").mockImplementation(() => {});
+		const md = [
+			"```mermaid",
+			"graph TD",
+			"  A[北周] --> B[河西]",
+			"```",
+			"",
+			"```d2",
+			"长安 -> 洛阳: 粮道",
+			"```",
+			"",
+			"```infographic",
+			"title: 兵力对比",
+			"```",
+		].join("\n");
+		await renderMessage(md, false);
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(500);
+		});
+
+		const fallbacks = [...container.querySelectorAll("pre[data-diagram-fallback]")];
+		expect(fallbacks.map((el) => el.getAttribute("data-diagram-fallback"))).toEqual([
+			"mermaid",
+			"d2",
+			"infographic",
+		]);
+		expect(container.textContent).toContain("A[北周] --> B[河西]");
+		expect(container.textContent).toContain("长安 -> 洛阳: 粮道");
+		expect(container.textContent).toContain("title: 兵力对比");
+		expect(container.textContent).not.toMatch(/not a function|not a constructor/i);
+		expect(spyErr).not.toHaveBeenCalled();
+	});
+
+	it("行内与块级公式在无 KaTeX 时回退展示原始公式且不崩溃", async () => {
+		const md = "兵力比 $E = mc^2$ 满足：\n\n$$\n\\sum_{i=1}^{n} x_i\n$$";
+		await renderMessage(md, false);
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(500);
+		});
+		expect(container.textContent).toContain("E = mc^2");
+		expect(container.textContent).toContain("\\sum_{i=1}^{n} x_i");
+	});
 });

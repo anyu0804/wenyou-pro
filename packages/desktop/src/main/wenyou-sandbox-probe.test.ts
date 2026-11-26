@@ -108,4 +108,16 @@ describe("wenyou-sandbox-probe", () => {
 		expect(result.latencyMs).toBe(0);
 		expect(result.error).toContain("http://");
 	});
+
+	it("probeLocalSandbox 在底层 requestFn 同步抛错时稳定返回不可达结果而非 reject", async () => {
+		const throwingRequest = (() => {
+			throw new Error("ERR_INVALID_SYNC_OPTIONS");
+		}) as unknown as Parameters<typeof probeLocalSandbox>[2];
+
+		const result = await probeLocalSandbox("http://192.168.1.25:4173/", 500, throwingRequest);
+		expect(result.reachable).toBe(false);
+		expect(result.url).toBe("http://192.168.1.25:4173/");
+		expect(result.latencyMs).toBeGreaterThanOrEqual(0);
+		expect(result.error).toBe("ERR_INVALID_SYNC_OPTIONS");
+	});
 });

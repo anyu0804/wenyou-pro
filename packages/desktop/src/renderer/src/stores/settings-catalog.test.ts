@@ -130,13 +130,13 @@ describe("V03 settings consumer matrix (ticket 11 target)", () => {
 		for (const mock of [
 			api.getPermissionConfig,
 			api.getChannelWatchConfig,
-			api.lanGetStatus,
 			api.getModelPrefs,
 			api.listProviders,
 			api.listSubagents,
 		]) {
 			expect(mock).toHaveBeenCalledTimes(1);
 		}
+		expect(api.lanGetStatus).not.toHaveBeenCalled();
 		expect(api.getLoadedResources).not.toHaveBeenCalled();
 		expect(coldCalls()).toEqual([false]);
 		sessionsState.activeSessionId = "active";
@@ -186,7 +186,7 @@ describe("D10 consumer and mutation responsibilities", () => {
 			[api.getModelPrefs, full || category === "models"],
 			[api.listSubagents, full || category === "models"],
 			[api.getLoadedResources, full || category === "skills" || category === "extensions"],
-			[api.lanGetStatus, full || category === "lan"],
+			[api.lanGetStatus, false],
 		] as const)
 			expect(mock).toHaveBeenCalledTimes(enabled ? 1 : 0);
 		expect(api.getPermissionConfig).toHaveBeenCalledOnce();
@@ -274,13 +274,13 @@ describe("D10 consumer and mutation responsibilities", () => {
 				expect(mock).not.toHaveBeenCalled();
 		},
 	);
-	it("full refresh retains silent LAN read while LAN panel owns its visible error", async () => {
+	it("full refresh never invokes removed LAN status IPC and reports catalog errors cleanly", async () => {
 		api.listProviders.mockRejectedValue(Error("catalog denied"));
-		api.lanGetStatus.mockRejectedValue(Error("lan denied"));
 		await store.getState().refresh();
 		expect(store.getState().error).toBe("catalog denied");
+		expect(api.lanGetStatus).not.toHaveBeenCalled();
 		store.getState().openWith("lan");
-		await vi.waitFor(() => expect(store.getState().error).toBe("lan denied"));
+		expect(api.lanGetStatus).not.toHaveBeenCalled();
 	});
 	it("actual package install/remove and login success delegate the domain mutation entry, without broad refresh", async () => {
 		api.listProviders.mockResolvedValue([]);

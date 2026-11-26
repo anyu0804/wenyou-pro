@@ -1,5 +1,9 @@
 import { environmentEntityRef } from "@percho/shared";
-import MarkdownRender, { type SmoothMarkdownStreamOptions } from "markstream-react";
+import MarkdownRender, {
+	type MarkstreamCustomComponent,
+	setCustomComponents,
+	type SmoothMarkdownStreamOptions,
+} from "markstream-react";
 import "markstream-react/index.css";
 import { type ComponentProps, type MouseEvent, useEffect, useMemo, useRef, useState } from "react";
 import { getPi } from "../../api";
@@ -35,6 +39,34 @@ const CODE_BLOCK_PROPS_BASE = {
 /** 减速动效偏好：关闭 pacing，直接输出 */
 const REDUCED_MOTION =
 	typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+/**
+ * 图表代码块纯文本回退：mermaid / d2 / infographic 运行时包已裁剪，经 empty-stub 别名后
+ * 若交由 markstream-react 默认渲染器会触发动态 import 解析出 `{}` 并报 render/constructor 异常；
+ * 注册轻量 `<pre><code>` 兜底组件直接保留可读源码。
+ */
+function PlainDiagramCodeBlock({
+	node,
+}: {
+	node?: { code?: string; raw?: string; language?: string };
+}) {
+	const lang = (node?.language ?? "").trim().toLowerCase();
+	const code = node?.code ?? node?.raw ?? "";
+	return (
+		<pre
+			data-diagram-fallback={lang || "diagram"}
+			className="my-2 overflow-x-auto rounded-lg border border-border bg-surface/60 px-3 py-2 font-mono text-ui-12 leading-relaxed text-ink"
+		>
+			<code className={lang ? `language-${lang}` : undefined}>{code}</code>
+		</pre>
+	);
+}
+
+setCustomComponents({
+	mermaid: PlainDiagramCodeBlock as MarkstreamCustomComponent,
+	d2: PlainDiagramCodeBlock as MarkstreamCustomComponent,
+	infographic: PlainDiagramCodeBlock as MarkstreamCustomComponent,
+});
 
 /** 首次直出已有正文，让库先 reset 到当前内容；挂载后只对新增 delta 启用 pacing。 */
 function MarkdownContent({ smoothStreaming, ...props }: ComponentProps<typeof MarkdownRender>) {

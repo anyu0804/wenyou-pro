@@ -14,7 +14,6 @@ const api = vi.hoisted(() => ({
 	getPermissionConfig: vi.fn(),
 	getChannelWatchConfig: vi.fn(),
 	getCodemodeConfig: vi.fn(() => Promise.resolve({ enabled: true })),
-	lanGetStatus: vi.fn(),
 	loadModels: vi.fn(),
 }));
 vi.mock("../api", () => ({
@@ -50,7 +49,6 @@ beforeEach(async () => {
 	api.listSubagents.mockResolvedValue([]);
 	api.getPermissionConfig.mockResolvedValue({ enabled: true });
 	api.getChannelWatchConfig.mockResolvedValue({ enabled: true });
-	api.lanGetStatus.mockResolvedValue(null);
 	api.loadModels.mockResolvedValue(undefined);
 	store = (await import("./settings")).useSettingsStore;
 	store.setState({ modelPrefs: empty() });

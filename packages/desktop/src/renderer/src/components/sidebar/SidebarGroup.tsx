@@ -190,7 +190,6 @@ export function SidebarGroup({
 							paging
 								? {
 										offline: !online,
-										onConnect: () => useRemoteConnectionStore.getState().setOpen(true, environment),
 										loading: online && (!page || page.loading),
 										loadingStartedAt: page?.loadingStartedAt,
 										scan: page?.scan === undefined ? catalog.projects?.scan : page.scan,
