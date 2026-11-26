@@ -18,8 +18,6 @@ import {
 } from "react";
 import { useT } from "../../i18n";
 import { useEdgeFade } from "../../lib/use-edge-fade";
-import { Slot } from "../../plugins/Slot";
-import { UI_SLOTS } from "../../plugins/slots";
 import { historyOpenEpoch, reloadSessionHistory } from "../../stores/session-history";
 import {
 	loadHistoryThrough,
@@ -43,7 +41,6 @@ import { type RowKind, RowPositions } from "./row-positions";
 import { SelectionToolbar } from "./SelectionToolbar";
 import { SubagentRunCard } from "./SubagentRunCard";
 import { scrollIntentIsCurrent } from "./scroll-intent";
-import { TurnDiffChip } from "./TurnDiffChip";
 import { useNativeSelectionRange } from "./use-native-selection-range";
 import { restoreRowAnchor, useRowGeometry } from "./use-row-geometry";
 import { useShownWorking } from "./use-shown-working";
@@ -243,7 +240,7 @@ export function MessageList() {
 					turnTimings,
 					enteringTurn,
 				},
-			),
+			).filter((row) => row.kind !== "turnDiff"),
 		[
 			transcript.messages,
 			streaming,
@@ -643,16 +640,7 @@ export function MessageList() {
 
 	const renderRow = (row: ChatRow): ReactNode => {
 		if (row.kind === "turnDiff") {
-			return (
-				<div className={row.running || row.afterMetaGroup ? undefined : "-mt-4"}>
-					<TurnDiffChip
-						changes={row.changes}
-						timing={row.timing}
-						running={row.running}
-						entering={row.entering}
-					/>
-				</div>
-			);
+			return null;
 		}
 		if (row.kind === "metaGroup") {
 			return (
@@ -667,7 +655,7 @@ export function MessageList() {
 			);
 		}
 		if (row.kind === "streamingSubagents") {
-			return <Slot name={UI_SLOTS.SubagentCard} props={{ runs: row.runs }} fallback={SubagentRunCard} />;
+			return <SubagentRunCard runs={row.runs} />;
 		}
 		return (
 			<MessageItem

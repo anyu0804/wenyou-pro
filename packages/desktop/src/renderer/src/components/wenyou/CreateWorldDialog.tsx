@@ -137,9 +137,7 @@ function CreateWorldDialogBody({ onClose }: { onClose: () => void }) {
 
 	const updateRole = (groupId: string, role: GroupRole) => {
 		setBindings((prev) =>
-			prev.map((b) =>
-				b.groupId === groupId ? { ...b, role, visibility: role === "cabinet" ? "gm" : "public" } : b,
-			),
+			prev.map((b) => (b.groupId === groupId ? { ...b, role } : b)),
 		);
 	};
 

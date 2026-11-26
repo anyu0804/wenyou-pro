@@ -206,8 +206,12 @@ function compileFixture(body: string) {
 			noEmit: true,
 			allowImportingTsExtensions: true,
 		});
+		const normalizedFile = file.replace(/\\/g, "/");
 		return ts.getPreEmitDiagnostics(program).map((diagnostic) => ({
-			file: diagnostic.file?.fileName === file ? "fixture" : diagnostic.file?.fileName,
+			file:
+				diagnostic.file?.fileName.replace(/\\/g, "/") === normalizedFile
+					? "fixture"
+					: diagnostic.file?.fileName,
 			line:
 				diagnostic.file && diagnostic.start !== undefined
 					? diagnostic.file.getLineAndCharacterOfPosition(diagnostic.start).line + 1

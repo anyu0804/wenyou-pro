@@ -9,7 +9,6 @@ const piMock = vi.hoisted(() => ({
 	setCodemodeOnly: vi.fn(() => Promise.resolve()),
 	setCodemodeEnabled: vi.fn(() => Promise.resolve()),
 	setChannelWatchEnabled: vi.fn(() => Promise.resolve()),
-	lanGetStatus: vi.fn(() => Promise.resolve(null)),
 	listProviders: vi.fn(() => Promise.resolve([])),
 	getModelPrefs: vi.fn(() => Promise.resolve({ hiddenModels: {}, subagentModels: {} })),
 	listSubagents: vi.fn(() => Promise.resolve([])),

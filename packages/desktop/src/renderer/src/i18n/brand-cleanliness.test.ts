@@ -13,12 +13,7 @@ const AUDITED_FILES = [
 	"src/renderer/src/lib/diagnostics.ts",
 	"src/main/renderer-watchdog.ts",
 	"src/main/ipc/app.ts",
-	"src/main/lan.ts",
-	"src/lan-web/index.html",
-	"src/lan-web/src/i18n.ts",
 	"src/renderer/src/components/settings/AboutPanel.tsx",
-	"resources/ui-plugins/skills/percho-ui-plugin/SKILL.md",
-	"resources/ui-plugins/SPEC.md",
 ] as const;
 
 const ALLOWED_PATTERNS: RegExp[] = [
@@ -190,7 +185,7 @@ describe("brand cleanliness regression guard", () => {
 		expect(appIpcContent).toContain('const REPO_URL = "https://github.com/Jaxton07/percho";');
 	});
 
-	it("updates key brand titles, diagnostics, PWA manifest, and AboutPanel inline scroll-brush SVG", () => {
+	it("updates key brand titles, diagnostics, and AboutPanel inline scroll-brush SVG", () => {
 		const startupContent = readFileSync(
 			resolve(DESKTOP_ROOT, "src/renderer/src/components/startup/StorageStartup.tsx"),
 			"utf8",
@@ -201,9 +196,6 @@ describe("brand cleanliness regression guard", () => {
 		);
 		const watchdogContent = readFileSync(resolve(DESKTOP_ROOT, "src/main/renderer-watchdog.ts"), "utf8");
 		const appIpcContent = readFileSync(resolve(DESKTOP_ROOT, "src/main/ipc/app.ts"), "utf8");
-		const lanContent = readFileSync(resolve(DESKTOP_ROOT, "src/main/lan.ts"), "utf8");
-		const lanHtmlContent = readFileSync(resolve(DESKTOP_ROOT, "src/lan-web/index.html"), "utf8");
-		const lanI18nContent = readFileSync(resolve(DESKTOP_ROOT, "src/lan-web/src/i18n.ts"), "utf8");
 		const aboutContent = readFileSync(
 			resolve(DESKTOP_ROOT, "src/renderer/src/components/settings/AboutPanel.tsx"),
 			"utf8",
@@ -213,11 +205,6 @@ describe("brand cleanliness regression guard", () => {
 		expect(diagnosticsContent).toContain('"司命 · 文游 Pro 诊断信息"');
 		expect(watchdogContent).toContain('title: "司命 · 文游 Pro"');
 		expect(appIpcContent).toContain("wenyou-pro-update-diagnostics-");
-		expect(lanContent).toContain('name: "Wenyou Pro Remote"');
-		expect(lanContent).toContain('short_name: "Wenyou Pro"');
-		expect(lanHtmlContent).toContain("<title>Wenyou Pro Remote</title>");
-		expect(lanI18nContent).toContain('"司命 · 文游 Pro · 跨设备互联"');
-		expect(lanI18nContent).toContain('"Wenyou Pro · Cross-device"');
 		expect(aboutContent).toContain('"司命 · 文游 Pro"');
 		expect(aboutContent).toContain("#c83e37");
 		expect(aboutContent).toContain("<svg");
@@ -229,22 +216,5 @@ describe("brand cleanliness regression guard", () => {
 		);
 		expect(diagText.split("\n")[0]).toBe("司命 · 文游 Pro 诊断信息");
 		expect(diagText).not.toMatch(/percho/i);
-
-		const skillContent = readFileSync(
-			resolve(DESKTOP_ROOT, "resources/ui-plugins/skills/percho-ui-plugin/SKILL.md"),
-			"utf8",
-		);
-		const specContent = readFileSync(resolve(DESKTOP_ROOT, "resources/ui-plugins/SPEC.md"), "utf8");
-		expect(skillContent).toContain("name: percho-ui-plugin");
-		expect(skillContent).toContain("司命 · 文游 Pro");
-		expect(skillContent).toContain("~/.wenyou-pro/ui-plugins/");
-		expect(skillContent).toContain("window.PerchoUI");
-		expect(skillContent).toContain("@percho/plugin-api");
-		expect(skillContent).toContain("percho-ui.d.ts");
-		expect(specContent).toContain("# 司命 · 文游 Pro（Wenyou Pro）UI 插件开发规范（SPEC）");
-		expect(specContent).toContain("~/.wenyou-pro/ui-plugins/");
-		expect(specContent).toContain("window.PerchoUI");
-		expect(specContent).toContain("@percho/plugin-api");
-		expect(specContent).toContain("percho-ui.d.ts");
 	});
 });

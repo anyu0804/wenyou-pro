@@ -7,10 +7,7 @@ import { EmptyState } from "./components/chat/EmptyState";
 import { MessageList } from "./components/chat/MessageList";
 import { SubagentBackButton } from "./components/chat/SubagentBackButton";
 import { TodoPanel } from "./components/chat/TodoPanel";
-import { DiffSidebar } from "./components/diff/DiffSidebar";
 import { WelcomeOnboardingDialog } from "./components/onboarding/WelcomeOnboardingDialog";
-import { RemoteAttentionBanner } from "./components/remote/RemoteAttentionBanner";
-import { RemoteConnectionDialog } from "./components/remote/RemoteConnectionDialog";
 import { DockSlot } from "./components/session/DockSlot";
 import { SessionMediaMaintenanceDialog } from "./components/session/SessionMediaMaintenanceDialog";
 import { SessionRail } from "./components/session/SessionRail";
@@ -28,10 +25,6 @@ import { useI18nStore } from "./i18n";
 import { selectActiveCwd } from "./lib/active-cwd";
 import { initDailyDir } from "./lib/daily";
 import { useSessionGc } from "./lib/use-session-gc";
-import { initUiPlugins } from "./plugins/loader";
-import { RegionHost } from "./plugins/RegionHost";
-import { Slot } from "./plugins/Slot";
-import { UI_REGIONS, UI_SLOTS } from "./plugins/slots";
 import { finishSplash } from "./splash";
 import { initAppQuit } from "./stores/app-quit";
 import {
@@ -41,7 +34,6 @@ import {
 } from "./stores/channel-subscriptions";
 import { startEnvironmentUiPersistence } from "./stores/environment-ui-restore";
 import { useInteractionStore } from "./stores/interactions";
-import { initRemoteConnectionBridge } from "./stores/remote-connection";
 import { restoreSessionWorkspace } from "./stores/session-workspace-restore";
 import { useSessionsStore } from "./stores/sessions";
 import { useHasParentRelation } from "./stores/subagent-return";
@@ -62,7 +54,7 @@ export default function App() {
 	const activeSessionId = useSessionsStore((s) => s.activeSessionId);
 	// 子代理检视页才挂返回入口：无关系时连左上定位容器都不出现（不留占位）
 	const hasParentRelation = useHasParentRelation(activeSessionId);
-	/** Todo 槽位的 `display: contents` 宿主：CornerStack 靠它测量渲染根底边（插件原绝对定位不受影响） */
+	/** Todo 宿主：`display: contents` 不产生盒子，只给 CornerStack 一个可 observe 的挂载点 */
 	const todoSlotHostRef = useRef<HTMLDivElement | null>(null);
 	// 频道订阅快照（spec D1）：**先建立事件订阅**（声明在前 ⇒ 同一提交内先执行），再按活动会话取一次快照；
 	// reload/启动恢复靠这条查询自恢复，不依赖曾收到事件
@@ -73,7 +65,7 @@ export default function App() {
 		return invalidateChannelSubscriptionQueries;
 	}, [activeSessionId]);
 	// 订阅收敛为原始值（selector 返回 boolean → 仅在值翻转时重渲染）：App 子树（TabBar/MessageList/
-	// TodoPanel/DiffSidebar/…）无 memo，若订阅 transcript 对象会随每条流式 delta 全量级联重渲染
+	// TodoPanel/…）无 memo，若订阅 transcript 对象会随每条流式 delta 全量级联重渲染
 	const showEmpty = useTranscriptStore((s) => {
 		const entry = activeSessionId ? s.bySession[activeSessionId] : undefined;
 		return !entry || (entry.messages.length === 0 && !entry.streaming);
@@ -97,10 +89,8 @@ export default function App() {
 	useSessionEventBridge({ onTrustRequest: pushTrustRequest });
 	useWenyouBridge();
 
-	// 一次性 bootstrap：开屏就绪信号 + 更新状态 + UI 插件加载
 	// 会话内存策略（K=3 热会话 + 受保护不卸）：全局挂一次，策略细节在 lib/session-gc.ts
 	useSessionGc();
-	useEffect(() => initRemoteConnectionBridge(), []);
 	useEffect(() => {
 		const sync = () => {
 			void getPi()
@@ -114,13 +104,8 @@ export default function App() {
 	useEffect(() => {
 		// 上次项目目录：启动即预填（用户不用重选项目）。**只带 cwd，不恢复任何会话**——
 		// v10 启动仍是纯空会话页，历史全在左栏。偏好已在 main.tsx render 前 init 完毕，这里同步可用。
-		// 单例 draft：开屏就建好唯一那份（cwd = lastCwd，模型等 loadModels 回填），
-		// 这样「空态输入框 / 项目选择器 / 发送」从一开始就有同一份配置真相
 		const lastCwd = useUiPreferencesStore.getState().lastCwd;
 		useSessionsStore.getState().activateNewSessionDraft(lastCwd ?? undefined);
-		// 开屏就绪信号：首批数据（模型列表）settle 后收场（finishSplash 幂等）。
-		// v10：**不再恢复上次打开的会话**（启动纯空 = 新会话页，与 pi 原生 / Codex 一致）；
-		// 历史全在左栏，点一下才按需加载
 		void Promise.allSettled([useSessionsStore.getState().loadModels(LOCAL_ENVIRONMENT)]).then(() =>
 			finishSplash(),
 		);
@@ -131,8 +116,6 @@ export default function App() {
 		initAppQuit();
 		// 日常空间目录缓存（pill/轨道/侧栏的空间归属判定依赖；失败静默，入口退化为不显示）
 		void initDailyDir();
-		// UI 插件加载链路（总开关关时只订阅事件，零开销）
-		void initUiPlugins();
 	}, []);
 
 	useEffect(() => initTaskNotificationNavigation(), []);
@@ -152,11 +135,7 @@ export default function App() {
 					<div className="app-bg-scrim" style={{ opacity: bgDim }} />
 				</>
 			)}
-			{/* 背景贡献层：与自定义背景图同层同规则（z-0，界面默认不透明时不可见），内容列（z-10）之前 */}
-			<RegionHost region={UI_REGIONS.AppBackground} />
 			<div className="relative z-10 flex h-full flex-col">
-				{/* 顶栏常驻（v9）：它承担窗口拖动 / 左栏开合 / 变更侧栏入口，不再整条隐藏；
-				   设置里的开关只控制「是否显示置顶会话胶囊」（见 SessionTabBar） */}
 				<SessionTabBar />
 				<div className="relative flex min-h-0 flex-1">
 					<Sidebar />
@@ -167,41 +146,28 @@ export default function App() {
 						data-session-page=""
 						data-session-id={activeSessionId ?? ""}
 					>
-						{/* 会话轨道当前暂停展示，组件内由统一可用性标记控制，代码与旧偏好保留。
-						    挂载点仍在 main + DockSlot 的父容器，恢复后不受输入框高度影响。 */}
 						<SessionRail />
-						{/* 右侧 DiffSidebar 是独立浮层，不参与中间聊天列宽度与布局动画。 */}
 						<main className="relative min-h-0 flex-1">
 							{showEmpty ? <EmptyState /> : <MessageList />}
-							{/* Todo 槽位宿主：display:contents 不产生盒子（插件/默认 Todo 的原绝对定位不受影响），
-							    只给 CornerStack 一个可 observe 的挂载点（它去测量渲染根的实际底边） */}
 							<div ref={todoSlotHostRef} style={{ display: "contents" }}>
-								<Slot name={UI_SLOTS.TodoPanel} props={{}} fallback={TodoPanel} />
+								<TodoPanel />
 							</div>
-							{/* 右上角：频道胶囊 + top-right 贡献共用一个堆叠（CornerStack），一起避开 Todo 实际底边；
-							    top-left 用 leading 插返回父会话入口，与左上区域贡献共用同一定位容器 */}
 							<CornerStack slotHostRef={todoSlotHostRef} />
-							<RegionHost
-								region={UI_REGIONS.CornerTopLeft}
-								leading={hasParentRelation ? <SubagentBackButton /> : undefined}
-							/>
-							<RegionHost region={UI_REGIONS.CornerBottomLeft} />
-							<RegionHost region={UI_REGIONS.CornerBottomRight} />
+							{hasParentRelation && (
+								<div className="pointer-events-none absolute top-2 left-4 z-20 flex flex-col gap-2">
+									<SubagentBackButton />
+								</div>
+							)}
 						</main>
 						<DockSlot sessionId={activeSessionId} hideComposer={showEmpty} />
 					</div>
 					<WenyouCanvas />
-					<DiffSidebar />
 				</div>
 			</div>
-			{/* 悬浮贡献层：内容列之后、设置弹窗之前（z-20 < z-40，插件层永在弹窗之下） */}
-			<RegionHost region={UI_REGIONS.AppOverlay} />
 			<SettingsDialog />
 			<WelcomeOnboardingDialog />
 			<CreateWorldDialog />
 			<SessionMediaMaintenanceDialog />
-			<RemoteConnectionDialog />
-			<RemoteAttentionBanner />
 			<TrustDialog requests={visibleTrustRequests} onRespond={respondTrust} />
 			<Toaster />
 		</div>

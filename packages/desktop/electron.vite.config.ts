@@ -3,6 +3,8 @@ import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import { defineConfig, externalizeDepsPlugin } from "electron-vite";
 
+const emptyStub = resolve(__dirname, "src/renderer/src/empty-stub.ts");
+
 export default defineConfig({
 	main: {
 		plugins: [externalizeDepsPlugin({ exclude: ["@percho/backend", "@percho/shared"] })],
@@ -45,9 +47,24 @@ export default defineConfig({
 	},
 	renderer: {
 		resolve: {
-			alias: {
-				"@percho/shared": resolve(__dirname, "../shared/src/index.ts"),
-				"@renderer": resolve(__dirname, "src/renderer/src"),
+			alias: [
+				{ find: /^stream-monaco$/, replacement: emptyStub },
+				{ find: /^monaco-editor(?:\/.*)?$/, replacement: emptyStub },
+				{ find: /^mermaid$/, replacement: emptyStub },
+				{ find: /^katex(?:\/.*)?$/, replacement: emptyStub },
+				{ find: /^shiki(?:\/.*)?$/, replacement: emptyStub },
+				{ find: /^@antv\/infographic$/, replacement: emptyStub },
+				{ find: /^@terrastruct\/d2$/, replacement: emptyStub },
+				{ find: "@percho/shared", replacement: resolve(__dirname, "../shared/src/index.ts") },
+				{ find: "@renderer", replacement: resolve(__dirname, "src/renderer/src") },
+			],
+		},
+		build: {
+			rollupOptions: {
+				onwarn(warning, warn) {
+					if (warning.code === "INVALID_ANNOTATION") return;
+					warn(warning);
+				},
 			},
 		},
 		plugins: [react(), tailwindcss()],

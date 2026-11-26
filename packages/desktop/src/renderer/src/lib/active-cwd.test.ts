@@ -36,8 +36,6 @@ describe("current directory is pure and preserves null/unknown compatibility", (
 			"session/SessionTabBar",
 			"composer/Composer",
 			"session/ProjectBranchPicker",
-			"diff/DiffSidebar",
-			"chat/TurnDiffChip",
 			"settings/mcp/McpPanel",
 		]) {
 			const text = readFileSync(new URL(`../components/${file}.tsx`, import.meta.url), "utf8");

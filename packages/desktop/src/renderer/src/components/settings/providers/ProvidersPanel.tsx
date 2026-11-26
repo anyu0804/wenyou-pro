@@ -6,7 +6,6 @@ import { RefreshIcon } from "../../icons";
 import { CustomProviderForm } from "./CustomProviderForm";
 import { LoginDialog } from "./LoginDialog";
 import { IconAction, ProviderRow } from "./ProviderRow";
-import { RemoteAuthHelp } from "./RemoteAuthHelp";
 import { SubagentPanel } from "./SubagentPanel";
 
 type ModelSettingsTab = "providers" | "subagents";
@@ -31,7 +30,6 @@ export function ProvidersPanel() {
 
 	return (
 		<div>
-			<RemoteAuthHelp />
 			<div className="mb-3 flex w-fit gap-1 border-b border-border">
 				{(["providers", "subagents"] as const).map((id) => (
 					<button

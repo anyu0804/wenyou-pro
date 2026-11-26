@@ -1,32 +1,7 @@
-import type { EvidenceMessageKind } from "@percho/shared";
 import { useEffect, useRef, useState } from "react";
 import { useWenyouCanvasStore } from "../../stores/wenyou-canvas";
 import { CheckIcon, CloseIcon, CopyIcon } from "../icons";
 import { formatShortTime } from "./wenyou-helpers";
-
-const KIND_META: Record<EvidenceMessageKind, { label: string; badgeClass: string }> = {
-	gm_ruling: {
-		label: "GM 裁定",
-		badgeClass:
-			"border-emerald-500/30 bg-emerald-500/12 text-emerald-700 dark:text-emerald-300",
-	},
-	dice_roll: {
-		label: "掷骰判定",
-		badgeClass: "border-violet-500/30 bg-violet-500/12 text-violet-700 dark:text-violet-300",
-	},
-	diplomacy: {
-		label: "外交照会",
-		badgeClass: "border-sky-500/30 bg-sky-500/12 text-sky-700 dark:text-sky-300",
-	},
-	ooc: {
-		label: "OOC 场外",
-		badgeClass: "border-zinc-500/30 bg-zinc-500/12 text-zinc-600 dark:text-zinc-300",
-	},
-	chat: {
-		label: "群聊",
-		badgeClass: "border-border bg-hover text-ink-dim",
-	},
-};
 
 const WINDOW_PRESETS = [10, 30, 100, 300, 1000] as const;
 
@@ -177,7 +152,6 @@ export function SourceContextDrawer() {
 						{drawer.data.messages.map((msg, idx) => {
 							const isTarget =
 								idx === drawer.data?.targetIndex || msg.sourceId === drawer.data?.targetSourceId;
-							const meta = KIND_META[msg.kind] ?? KIND_META.chat;
 							return (
 								<div
 									key={msg.sourceId}
@@ -192,11 +166,6 @@ export function SourceContextDrawer() {
 										<div className="flex min-w-0 items-center gap-1.5">
 											<span className="truncate text-ui-12 font-semibold text-ink">
 												{msg.sender}
-											</span>
-											<span
-												className={`rounded-full border px-1.5 py-0.5 text-ui-10 font-medium ${meta.badgeClass}`}
-											>
-												{meta.label}
 											</span>
 											{isTarget && (
 												<span className="rounded-full bg-accent px-1.5 py-0.5 text-ui-10 font-medium text-on-accent">

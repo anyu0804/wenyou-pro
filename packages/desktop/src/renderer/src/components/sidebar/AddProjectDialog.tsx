@@ -1,7 +1,6 @@
 import { createPortal } from "react-dom";
 import { useT } from "../../i18n";
 import { useProjectsStore } from "../../stores/projects";
-import { useRemoteConnectionStore } from "../../stores/remote-connection";
 import { useWenyouCanvasStore } from "../../stores/wenyou-canvas";
 import { Button } from "../ui/Button";
 
@@ -45,14 +44,6 @@ export function AddProjectDialog({
 							}}
 						>
 							{t("remote.localProject")}
-						</Button>
-						<Button
-							onClick={() => {
-								onClose();
-								useRemoteConnectionStore.getState().setOpen(true);
-							}}
-						>
-							{t("remote.remoteProject")}
 						</Button>
 					</div>
 				</div>

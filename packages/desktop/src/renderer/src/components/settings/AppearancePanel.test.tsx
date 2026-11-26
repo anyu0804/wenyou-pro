@@ -15,7 +15,6 @@ vi.mock("../../lib/session-rail-availability", async (importOriginal) => {
 });
 vi.mock("../../api", () => ({ getPi: () => api }));
 vi.mock("../../i18n", () => ({ useT: () => (key: string) => key }));
-vi.mock("./UiPluginsSection", () => ({ UiPluginsSection: () => null }));
 
 import { useSessionWorkspaceStore } from "../../stores/session-workspace";
 import { useUiPreferencesStore } from "../../stores/ui-preferences";
@@ -48,6 +47,7 @@ it("旧轨道偏好开启时仍隐藏入口，其他外观设置和工作区保�
 	await act(async () => root.render(<AppearancePanel />));
 
 	expect(host.textContent).not.toContain("settings.sessionRail");
+	expect(host.textContent).not.toContain("settings.appearance.tabUiPlugins");
 	expect(host.querySelectorAll('[role="switch"]')).toHaveLength(2);
 	expect(host.textContent).toContain("settings.topBar");
 	expect(host.textContent).toContain("settings.centerOrb");
