@@ -26,14 +26,14 @@ If you are in China and the Electron binary download stalls, set `ELECTRON_MIRRO
 ```bash
 npm run check:paths   # 防开盒与本机路径脱敏门禁（严禁出现真实姓名、OS 用户名或本机盘符绝对路径）
 npm run repo:guard    # 云端防锁死规则与工作流静态门禁（configure-github-repo.mjs --verify）
-npm run lint          # Biome 格式化与静态检查
+npm run lint          # 本地 Biome 格式化与代码风格检查（CI 不自动执行，提交前请在本地自检）
 npm run typecheck     # 全工作区 TypeScript 类型检查
-npm run test          # 发布门禁与工作区单元测试
+npm run test          # 发布门禁与全工作区单元测试
 ```
 
 When modifying `packages/pixi-sandbox/`, also run `npm --prefix packages/pixi-sandbox run test` and `npm --prefix packages/pixi-sandbox run build:desktop`.
 
-4. Open a PR against `main` in [`anyu0804/wenyou-pro`](https://github.com/anyu0804/wenyou-pro/pulls). `Wenyou Pro CI` (`.github/workflows/ci.yml`) runs the same checks and must be green before merge.
+4. Open a PR against `main` in [`anyu0804/wenyou-pro`](https://github.com/anyu0804/wenyou-pro/pulls). `Wenyou Pro CI` (`.github/workflows/ci.yml`) runs the automated gate suite — path sanitization (`check:paths`), cloud anti-lockout verification (`repo:guard`), `pixi-sandbox` unit tests and desktop build, workspace TypeScript `typecheck`, release & `wenyou-release` script tests (`test:release` + `scripts/wenyou-release/*.test.mjs`), and workspace unit tests (`npm run test --workspaces --if-present`) — and must be green before merge (`npm run lint` remains a local code-style check command).
 5. PRs are merged with squash merge — please write a clear Conventional Commit PR title, since it becomes the squashed commit message.
 
 ## Commit messages
