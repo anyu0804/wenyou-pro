@@ -244,10 +244,7 @@ export function SessionTabBar() {
 	const toggleDiffSidebar = useUiStore((s) => s.toggleDiffSidebar);
 	const wenyouOpen = useWenyouCanvasStore((s) => s.open);
 	const toggleWenyouOpen = useWenyouCanvasStore((s) => s.toggleOpen);
-	const wenyouBadgeCount = useWenyouCanvasStore((s) => {
-		const pending = s.overview?.proposals.filter((p) => p.status === "pending").length ?? 0;
-		return pending + s.unreadCount;
-	});
+	const wenyouBadgeCount = useWenyouCanvasStore((s) => s.unreadCount);
 	const sidebarCollapsed = useUiPreferencesStore((s) => s.sidebarCollapsed);
 	const toggleSidebarCollapsed = useUiPreferencesStore((s) => s.toggleSidebarCollapsed);
 	const [activeId, setActiveId] = useState<string | null>(null);
@@ -456,7 +453,7 @@ export function SessionTabBar() {
 			>
 				<PlusIcon size={18} />
 			</button>
-			{/* 文游工作台分屏开关：Diff 按钮左侧，带待审提案/未读角标 */}
+			{/* 文游工作台分屏开关：Diff 按钮左侧，带未读角标 */}
 			<button
 				type="button"
 				className={`no-drag relative inline-flex shrink-0 items-center gap-1.5 rounded-lg px-2 py-1.5 text-ui-12 font-medium transition-colors ${

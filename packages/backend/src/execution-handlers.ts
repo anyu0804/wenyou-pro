@@ -186,9 +186,6 @@ export function createExecutionHandlers(
 		wenyouReadMapSnapshotRaw: ({ cwd, relPath }) => backend.wenyou.readMapSnapshotRaw(cwd, relPath),
 		wenyouSaveMapSnapshot: ({ cwd, fileName, content }) =>
 			backend.wenyou.saveMapSnapshot(cwd, fileName, content),
-		wenyouListProposals: ({ cwd, viewer }) => backend.wenyou.listProposals(cwd, viewer),
-		wenyouDecideProposal: ({ cwd, proposalId, decision, viewer }) =>
-			backend.wenyou.decideProposal(cwd, proposalId, decision, viewer),
 		wenyouExportPreflight: ({ cwd, targetViewer }) => backend.wenyou.exportPreflight(cwd, targetViewer),
 		wenyouReadCanonDoc: ({ cwd, relPath, viewer }) => backend.wenyou.readCanonDoc(cwd, relPath, viewer),
 	};

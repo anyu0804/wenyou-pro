@@ -735,7 +735,7 @@ export class PiBackend {
 	private readonly extensionNotifyEmitter = new Emitter<ExtensionNotifyEvent>();
 	private readonly extensionEditorTextEmitter = new Emitter<ExtensionEditorTextEvent>();
 	private readonly wenyouCanvasEmitter = new Emitter<WenyouCanvasEvent>();
-	/** Wenyou Pro 领域服务（多群采集/L0-L2记忆/国策门禁+.docx/双屏图集/提案审批） */
+	/** Wenyou Pro 领域服务（多群采集/L0-L2记忆/国策门禁+.docx/双屏图集/档案发包） */
 	readonly wenyou = new WenyouService((event) => this.wenyouCanvasEmitter.emit(event));
 	/** MCP 运行态变化（spec §4.8.1：面板刷新用） */
 	private readonly mcpServersChangedEmitter = new Emitter<McpServersChangedPayload>();

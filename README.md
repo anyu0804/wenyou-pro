@@ -4,7 +4,7 @@
 <h1 align="center">Wenyou Pro (司命 · 文游 Pro)</h1>
 <p align="center">
   Standalone desktop Agent workbench for grand-strategy text roleplay, alternate-history campaigns, and tabletop GMs / advisors.<br>
-  Combines human-in-the-loop canon Diff approval, physical perspective isolation, an offline Pixi tactical sandbox, zero-AI-cliché native <code>.docx</code> policy drafting, and three-tier group-chat memory.
+  Combines autonomous campaign archive maintenance, physical perspective isolation, an offline Pixi tactical sandbox, zero-AI-cliché native <code>.docx</code> policy drafting, and three-tier group-chat memory.
 </p>
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/github/license/anyu0804/wenyou-pro?style=flat-square" alt="License"></a>
@@ -27,14 +27,14 @@ Long-running grand-strategy text roleplay and alternate-history campaigns typica
 
 **Wenyou Pro (司命 · 文游 Pro)** builds upon the open-source [`Jaxton07/percho`](https://github.com/Jaxton07/percho) (MIT) desktop foundation and [`@earendil-works/pi-coding-agent`](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) (Pi SDK), anchoring every campaign in a deterministic local file Vault guarded by hard architectural gates:
 
-- **Human-in-the-Loop Canon Approval ("AI Proposes, Human Decides")**: A `tool_call` interception hook physically blocks `edit`, `write`, and `bash` from modifying canon directories (`01-设定与国力实册/`, `04-编年史与条约/`, `manifest.json`). Every canon mutation must be submitted via `wenyou_propose_canon` as a structured `DiffPatchProposal` and explicitly approved in the visual Diff desk before atomic writeback.
+- **Autonomous Campaign Archive & Vault Maintenance**: In GM mode, the Agent can directly read and update campaign dossiers (`01-设定与国力实册/`, `04-编年史与条约/`, `manifest.json`) while ingesting group chats and decrees, tagging major updates with clickable `[sourceId]` citations and keeping archive browsing and leak-checked bundle export in the right-hand workbench.
 - **Physical `maxViewer` Clamping & `:::secret[...]` Redaction**: Supports `gm`, `public`, and `faction:<id>` perspectives. Non-GM scopes are physically blocked from reading `private/`, `.wenyou/`, `00-群聊收集/`, and restricted intelligence; restricted `:::secret[...]` blocks are stripped end-to-end and verified via `exportPreflight` before exporting player-facing materials.
 - **Built-in Offline Pixi Strategic Sandbox & FMG `.map` Parser**: Served offline via the privileged `wenyou-sandbox://` protocol with workspace-hash-isolated IndexedDB storage so multiple campaign worlds never cross-contaminate. Parses FMG v1.108 / 1.139 / 1.154 `.map` files (including multiline `<svg>` and elevation rows) as well as static image hex-grid theaters; supports state/province brushing synced to burg ownership, ORBAT unit trees with double-count protection, battle deployment, independent field-battle snapshots, and side-by-side / curtain atlas comparison.
 - **Zero-AI-Cliché Handwritten Policy Desk & Native `.docx` Builder**: A deterministic, zero-LLM policy linter blocks Markdown tables, deeply nested bullet lists, boilerplate AI clichés, cross-faction spoilers, and timeline anachronisms. Generates clean, centered-title, natively numbered `.docx` decrees using an in-house zero-dependency OpenXML builder.
 - **Windows Zero-Copy Read-Only NTQQ VFS + macOS/Linux Offline Chat Ingest**:
   - **Windows**: Ships a zero-dependency page-level read-only SQLCipher VFS (accelerated via Win32 CNG `bcrypt.dll`) plus one-click key extraction that **never locks or mutates** QQ's encrypted source databases, handling dual-range `rowid` fallback scans and self-sent messages (`40030=0`);
   - **macOS / Linux**: Drop exported `.txt` / `.json` chat logs into `00-群聊收集/` for offline ingestion (power users with `key_map.json` can also use native CommonCrypto / OpenSSL read-only VFS);
-  - All platforms share the **L0 raw evidence & dual cursors → L1 situation briefings & rolling ledger (`[未定案草案]` draft isolation) → L2 approved canon** three-tier memory architecture with one-click source-context lookup.
+  - All platforms share the **L0 raw evidence & dual cursors → L1 situation briefings & rolling ledger (`[未定案草案]` draft isolation) → L2 world dossiers & chronicles** three-tier memory architecture with one-click source-context lookup.
 - **BYOK / Official CLI Subscriptions / MCP Multi-Channel Engine**: Inherits the full Pi SDK & Percho runtime—BYOK API keys (Anthropic, OpenAI, Gemini, DeepSeek, etc.), custom base-URL relay gateways, in-app OAuth subscription sign-in, MCP server integration, built-in subagents, context evaporation, SSH remote workspaces, and LAN companion viewing. User data is isolated under `~/.wenyou-pro/agent/`.
 
 ---

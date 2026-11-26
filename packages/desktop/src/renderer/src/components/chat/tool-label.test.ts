@@ -30,7 +30,7 @@ describe("工具显示名", () => {
 		expect(displayName("mcp____tool")).toBe("mcp____tool");
 	});
 
-	it("全部 8 个文游工具均映射到友好中文显示名", () => {
+	it("全部已配置译名的文游工具均映射到友好中文显示名", () => {
 		expect(displayName("wenyou_init_campaign")).toBe("初始化文游工作区");
 		expect(displayName("wenyou_pull_qq")).toBe("拉取多群增量消息");
 		expect(displayName("wenyou_lookup_source")).toBe("回查群聊原始上下文");
@@ -38,6 +38,5 @@ describe("工具显示名", () => {
 		expect(displayName("wenyou_publish_briefing")).toBe("发布三段式局势书");
 		expect(displayName("wenyou_write_policy_docx")).toBe("生成国策与 Word 文档");
 		expect(displayName("wenyou_open_maps")).toBe("打开战略舆图比对");
-		expect(displayName("wenyou_propose_canon")).toBe("提交正史修改提案");
 	});
 });

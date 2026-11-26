@@ -19,13 +19,6 @@ export interface WenyouExtensionOptions {
 	cwd: string;
 }
 
-const CANON_WRITE_PROTECTED_PREFIXES = [
-	"01-设定与国力实册",
-	"04-编年史与条约",
-	"chronicle",
-	"wiki",
-] as const;
-
 const POLICY_WRITE_PROTECTED_PREFIX = "03-国策与文书";
 const BRIEFING_RESTRICTED_PREFIX = "02-局势简报与台账";
 
@@ -36,40 +29,15 @@ const NON_GM_READ_BLOCKED_PREFIXES = [
 	BRIEFING_RESTRICTED_PREFIX,
 ] as const;
 
-const BASH_PROTECTED_PATH_TOKENS = [
-	"private",
-	".wenyou",
-	"01-设定与国力实册",
-	"03-国策与文书",
-	"04-编年史与条约",
-	"chronicle",
-	"wiki",
-	"manifest.json",
-] as const;
-
-const BASH_NON_GM_BLOCKED_TOKENS = [
-	"private",
-	".wenyou",
-	"00-群聊收集",
-	"02-局势简报与台账",
-] as const;
+const BASH_PROTECTED_PATH_TOKENS = ["private", ".wenyou"] as const;
 
 const BASH_WRITE_OP_RE =
 	/(?:^|[;&|]\s*|[\s(])(?:rm|rmdir|del|erase|mv|move|cp|copy|touch|truncate|chmod|chown|mkdir|tee|dd|install|patch|ln|mklink|Set-Content|Add-Content|Out-File|Remove-Item|Move-Item|Copy-Item|New-Item|Clear-Content)\b|\bsed\s+[^\n]*-i\b|\bperl\s+[^\n]*-i\b|\bpython\d?\b[^\n]*-c\b|\bnode\b[^\n]*-e\b|[12&]?>{1,2}\s*\S/i;
-
-const BASH_READ_DOC_OP_RE =
-	/(?:^|[;&|]\s*|[\s(])(?:cat|head|tail|less|more|grep|rg|ag|ack|find|ls|dir|type|Get-Content|Select-String|Get-ChildItem|awk|sed|python\d?|node)\b/i;
 
 function matchesDirOrPrefix(normRel: string, prefix: string): boolean {
 	const lower = normRel.toLowerCase();
 	const p = prefix.toLowerCase();
 	return lower === p || lower.startsWith(`${p}/`);
-}
-
-function isCanonProtectedRel(normRel: string): boolean {
-	const lower = normRel.toLowerCase();
-	if (lower === "manifest.json") return true;
-	return CANON_WRITE_PROTECTED_PREFIXES.some((p) => matchesDirOrPrefix(normRel, p));
 }
 
 function isPolicyProtectedRel(normRel: string): boolean {
@@ -299,11 +267,16 @@ const writePolicyDocxParams = Type.Object({
 	title: Type.String({ minLength: 1, description: "国策或文书标题，如「景平六年春北周整军理财疏」" }),
 	content: Type.String({
 		minLength: 20,
-		description: "纯手写体自然段国策正文：严禁 Markdown 表格、严禁多层嵌套清单、严禁 AI 公文套话",
+		description: "国策正文（起草己方国策建议采用纯手写自然段，不带表格/嵌套清单/AI套话；原样归档群友国策可配合 force=true）",
 	}),
 	actor: Type.Optional(Type.String({ description: "上疏/执行阵营或国家名" })),
 	turnLabel: Type.Optional(Type.String({ description: "所属轮次/年代" })),
 	serialNo: Type.Optional(Type.String({ description: "可选编号（如 002），留空自动递增" })),
+	force: Type.Optional(
+		Type.Boolean({
+			description: "可选：为 true 时忽略静态门禁告警强制写出 .md 与 .docx（用于原样归档群友国策或用户明确允许的格式）",
+		}),
+	),
 });
 
 const openMapsParams = Type.Object({
@@ -338,21 +311,10 @@ const inspectMapParams = Type.Object({
 	),
 });
 
-const proposeCanonParams = Type.Object({
-	targetPath: Type.String({
-		minLength: 4,
-		description: "目标正史路径（仅限 01-设定与国力实册/、04-编年史与条约/、chronicle/ 或 wiki/ 下的 .md）",
-	}),
-	summary: Type.String({ minLength: 1, description: "本次正史变更摘要" }),
-	afterContent: Type.String({ minLength: 1, description: "提案修改后的完整 Markdown 正文（含 frontmatter）" }),
-	sourceRefs: Type.Optional(Type.Array(Type.String(), { description: "支撑该变更的群聊 sourceId 证据列表" })),
-	warnings: Type.Optional(Type.Array(Type.String(), { description: "需主持人工核对的风险提示" })),
-});
-
 /**
  * Wenyou Pro 核心内联扩展：
- * - 注册 9 个文游专职工具（采集/回查/记忆/局势书/国策.docx门禁/双屏地图/地图快照核账/正史提案）
- * - 通过 tool_call 钩子实施正史/国策物理写保护与非 GM 视角物理读隔离
+ * - 注册 8 个文游专职工具（采集/回查/记忆/局势书/国策.docx生成/双屏地图/地图快照核账/初始化）
+ * - 通过 tool_call 钩子实施非 GM 视角物理读写隔离与内部目录（.wenyou/、private/）防误删保护；GM 视角可直接读写设定、编年史与国策归档
  * - 在文游工作区内通过 context_with_system 动态注入精简战役态势头
  */
 export function makeWenyouExtension(options: WenyouExtensionOptions): InlineExtension {
@@ -371,7 +333,7 @@ export function makeWenyouExtension(options: WenyouExtensionOptions): InlineExte
 				activeSessionId = undefined;
 			});
 
-			// 物理门控：正史/国策写保护（所有视角含 GM）+ 非 GM 读隔离与暗线块保护
+			// 物理门控：非 GM 视角读写与暗线隔离 + GM 内部状态目录（.wenyou/、private/）bash 防误删
 			pi.on("tool_call", async (event, ctx) => {
 				const workDir = ctx.cwd || cwd;
 				if (!(await service.isCampaignWorkspace(workDir))) return;
@@ -380,37 +342,35 @@ export function makeWenyouExtension(options: WenyouExtensionOptions): InlineExte
 				const input = (event.input ?? {}) as Record<string, unknown>;
 				const effectiveViewer = await service.getEffectiveViewer(workDir);
 
-				// 1. 内置写工具（edit / write）：所有视角禁止直改正史、manifest.json 与国策目录
+				// 1. 内置写工具（edit / write）：GM 视角自由读写设定、编年史与国策归档；非 GM 禁止写入受限目录或覆写不可见/含暗线档案
 				if (toolName === "edit" || toolName === "write") {
+					if (effectiveViewer.kind === "gm") return;
 					const paths = extractToolPaths(toolName, input);
 					for (const rawPath of paths) {
-						const { inside, rels } = await resolveWorkspaceRelCandidates(workDir, rawPath);
+						const { inside, rels, absPath } = await resolveWorkspaceRelCandidates(workDir, rawPath);
 						if (!inside) continue;
 						for (const normRel of rels) {
-							if (isCanonProtectedRel(normRel)) {
-								return {
-									block: true,
-									reason: `【正史写保护】禁止使用内置 ${toolName} 直接修改正史档案或 manifest.json（${normRel}）；请改调 wenyou_propose_canon 提交变更提案等待人类审批落盘。`,
-								};
-							}
-							if (isPolicyProtectedRel(normRel)) {
-								return {
-									block: true,
-									reason: `【国策门禁保护】禁止使用内置 ${toolName} 直接写入 ${normRel}；请改调 wenyou_write_policy_docx 经过静态门禁校验并生成规范 .docx。`,
-								};
-							}
-							if (effectiveViewer.kind !== "gm" && isNonGmBlockedDir(normRel)) {
+							if (isNonGmBlockedDir(normRel)) {
 								return {
 									block: true,
 									reason: `【视角写隔离】非 GM 视角禁止写入受限目录（${normRel}）。`,
 								};
+							}
+							if (existsSync(absPath)) {
+								const readBlock = await checkNonGmFileReadBlock(workDir, absPath, normRel, effectiveViewer);
+								if (readBlock) {
+									return {
+										block: true,
+										reason: `【视角写隔离】当前视角无权直接覆写不可见或含暗线的档案（${normRel}）。`,
+									};
+								}
 							}
 						}
 					}
 					return;
 				}
 
-				// 2. bash 命令拦截：写保护（所有视角）+ 读隔离（非 GM Fail-Closed）
+				// 2. bash 命令拦截：非 GM 物理沙箱 + GM 仅保护内部证据库与密区（.wenyou/、private/）不被 bash 误改删
 				if (toolName === "bash") {
 					const command = typeof input.command === "string" ? input.command : "";
 					if (!command.trim()) return;
@@ -422,11 +382,10 @@ export function makeWenyouExtension(options: WenyouExtensionOptions): InlineExte
 						};
 					}
 					const hitProtected = commandMentionsAnyToken(command, BASH_PROTECTED_PATH_TOKENS);
-					const hasGlobWrite = /[*?[]/.test(command) && BASH_WRITE_OP_RE.test(command);
-					if ((hitProtected && BASH_WRITE_OP_RE.test(command)) || hasGlobWrite) {
+					if (hitProtected && BASH_WRITE_OP_RE.test(command)) {
 						return {
 							block: true,
-							reason: `【文游物理门控】禁止通过 bash 对受保护目录/文件（${hitProtected ?? "通配符目标"}）执行写入、重定向或删除操作；改写正史请用 wenyou_propose_canon，写国策请用 wenyou_write_policy_docx。`,
+							reason: `【内部目录保护】禁止通过 bash 对内部受保护目录（${hitProtected}）执行写入、重定向或删除操作，防止损坏 L0 证据库或私有笔记。`,
 						};
 					}
 					return;
@@ -482,7 +441,7 @@ export function makeWenyouExtension(options: WenyouExtensionOptions): InlineExte
 					label: "初始化文游工作区",
 					annotations: { readOnlyHint: false, idempotentHint: true },
 					description:
-						"在当前项目目录初始化标准 Wenyou Pro 文游战役目录结构（00-群聊收集 至 05-沙盘与图集、private/proposals、.wenyou 及 manifest.json）。",
+						"在当前项目目录初始化标准 Wenyou Pro 文游战役目录结构（00-群聊收集 至 05-沙盘与图集、private、.wenyou 及 manifest.json）。",
 					promptSnippet: "wenyou_init_campaign({worldTitle?, currentEra?})",
 					parameters: initCampaignParams,
 					execute: async (_id, params, _sig, _upd, ctx) => {
@@ -496,7 +455,7 @@ export function makeWenyouExtension(options: WenyouExtensionOptions): InlineExte
 							content: [
 								{
 									type: "text",
-									text: `已初始化文游工作区「${overview.worldTitle}」（轮次：${overview.currentEra ?? "未定"}），标准目录 00~05 与 private/proposals 已就绪。`,
+									text: `已初始化文游工作区「${overview.worldTitle}」（轮次：${overview.currentEra ?? "未定"}），标准目录 00~05 与工作区元数据已就绪。`,
 								},
 							],
 							details: { wenyouAction: "init_campaign", worldTitle: overview.worldTitle },
@@ -698,24 +657,54 @@ export function makeWenyouExtension(options: WenyouExtensionOptions): InlineExte
 						}
 
 						if (overview.rollingLedger.length > 0) {
-							sections.push("\n## 跨群滚动台账（L1）");
-							for (const entry of overview.rollingLedger.slice(-30)) {
+							const shownLedger = overview.rollingLedger.slice(-30);
+							const ledgerHeader =
+								overview.rollingLedger.length > shownLedger.length
+									? `\n## 跨群滚动台账（L1，展示最近 ${shownLedger.length}/${overview.rollingLedger.length} 条）`
+									: `\n## 跨群滚动台账（L1，共 ${overview.rollingLedger.length} 条）`;
+							sections.push(ledgerHeader);
+							for (const entry of shownLedger) {
 								const refs = entry.sourceRefs.length ? ` [${entry.sourceRefs.join(", ")}]` : "";
 								sections.push(`- ${entry.tag}${entry.faction ? `(${entry.faction})` : ""} ${entry.summary}${refs}`);
 							}
 						}
 
-						if (params.includeSettings !== false) {
-							const settingDocs = overview.canonDocs.filter((d) => d.kind === "setting").slice(0, 6);
-							if (settingDocs.length > 0) {
-								sections.push("\n## 01-设定与国力实册基线");
-								for (const doc of settingDocs) {
-									try {
-										const safeDoc = await service.readCanonDoc(workDir, doc.relPath, viewer);
-										sections.push(`### ${doc.title} (${doc.relPath})\n${safeDoc.content.slice(0, 2000)}`);
-									} catch {
-										// skip inaccessible doc under current viewer
-									}
+						const settingDocsAll = overview.canonDocs.filter((d) => d.kind === "setting");
+						const chronicleDocsAll = overview.canonDocs.filter((d) => d.kind !== "setting");
+						const MAX_INLINE_SETTINGS = 12;
+						const MAX_DOC_CHARS = 2500;
+
+						if (params.includeSettings !== false && settingDocsAll.length > 0) {
+							const inlineDocs = settingDocsAll.slice(0, MAX_INLINE_SETTINGS);
+							sections.push(
+								`\n## 01-设定与国力实册基线（已展开 ${inlineDocs.length}/${settingDocsAll.length} 篇）`,
+							);
+							for (const doc of inlineDocs) {
+								try {
+									const safeDoc = await service.readCanonDoc(workDir, doc.relPath, viewer);
+									const truncated = safeDoc.content.length > MAX_DOC_CHARS;
+									const excerpt = truncated
+										? `${safeDoc.content.slice(0, MAX_DOC_CHARS)}\n…（已截断，原文共 ${safeDoc.content.length} 字；如需全文请用 read 读取 ${doc.relPath}）`
+										: safeDoc.content;
+									sections.push(`### ${doc.title} (${doc.relPath})\n${excerpt}`);
+								} catch {
+									// skip inaccessible doc under current viewer
+								}
+							}
+						}
+
+						if (overview.canonDocs.length > 0) {
+							const unexpandedSettings =
+								params.includeSettings === false
+									? settingDocsAll
+									: settingDocsAll.slice(MAX_INLINE_SETTINGS);
+							if (unexpandedSettings.length > 0 || chronicleDocsAll.length > 0) {
+								sections.push(`\n## 全量设定与编年史档案索引（共 ${overview.canonDocs.length} 篇，按需用 read 精读）`);
+								for (const doc of unexpandedSettings) {
+									sections.push(`- [未展开实册] ${doc.title} (${doc.relPath})`);
+								}
+								for (const doc of chronicleDocsAll) {
+									sections.push(`- [编年史/条约] ${doc.title} (${doc.relPath})`);
 								}
 							}
 						}
@@ -781,8 +770,8 @@ export function makeWenyouExtension(options: WenyouExtensionOptions): InlineExte
 					label: "校验并生成国策 DOCX",
 					annotations: { readOnlyHint: false },
 					description:
-						"对国策正文执行确定性静态门禁（拦截 Markdown 表格、多层嵌套清单、AI 套话、跨阵营透题与时间线穿帮）。若未通过则拒绝落盘并返回修改指令，请立即在当前轮重写后重试；通过则同时写入 03-国策与文书/*.md 与规范 .docx 并打开右侧「国策书案」面板。",
-					promptSnippet: "wenyou_write_policy_docx({title, content, actor?, turnLabel?, serialNo?})",
+						"对国策正文执行静态风格体检并生成 03-国策与文书/*.md 与规范 .docx，同时打开右侧「国策书案」面板。默认拦截 Markdown 表格、多层嵌套清单与高频 AI 套话；如需原样归档群友国策或用户明确要求保留格式，可传 force=true 强制落盘。",
+					promptSnippet: "wenyou_write_policy_docx({title, content, actor?, turnLabel?, serialNo?, force?})",
 					parameters: writePolicyDocxParams,
 					execute: async (_id, params, _sig, _upd, ctx) => {
 						const workDir = ctx.cwd || cwd;
@@ -794,6 +783,7 @@ export function makeWenyouExtension(options: WenyouExtensionOptions): InlineExte
 							actor: params.actor,
 							turnLabel: params.turnLabel,
 							serialNo: params.serialNo,
+							force: params.force,
 							viewer,
 							sessionId: activeSessionId,
 						});
@@ -802,7 +792,7 @@ export function makeWenyouExtension(options: WenyouExtensionOptions): InlineExte
 								content: [
 									{
 										type: "text",
-										text: res.error ?? "国策门禁未通过，请修改后重新调用 wenyou_write_policy_docx。",
+										text: `${res.error ?? "国策门禁未通过，请修改后重新调用 wenyou_write_policy_docx。"}\n（若是原样归档群友国策或用户明确允许当前格式，可传 force: true 强制生成，或直接写入 03-国策与文书/）`,
 									},
 								],
 								details: {
@@ -811,11 +801,17 @@ export function makeWenyouExtension(options: WenyouExtensionOptions): InlineExte
 								},
 							};
 						}
+						const forcedNote =
+							!res.lintReport.passed && params.force
+								? `（已按 force=true 忽略 ${res.lintReport.issues.length} 项门禁提示强制写出）`
+								: res.lintReport.issues.length > 0
+									? `（已通过，附 ${res.lintReport.issues.length} 条风格提醒）`
+									: "国策门禁全部通过！";
 						return {
 							content: [
 								{
 									type: "text",
-									text: `国策门禁全部通过！已写出：\n- Markdown：${res.artifact.markdownPath}\n- Word 文书：${res.artifact.docxPath}（宋体五号 10.5pt、首行缩进 2 字符、1.25 倍行距、居中 15pt 标题）\n右侧「国策书案」画布已自动更新。`,
+									text: `${forcedNote}已写出：\n- Markdown：${res.artifact.markdownPath}\n- Word 文书：${res.artifact.docxPath}（宋体五号 10.5pt、首行缩进 2 字符、1.25 倍行距、居中 15pt 标题）\n右侧「国策书案」画布已自动更新。`,
 								},
 							],
 							details: {
@@ -823,6 +819,7 @@ export function makeWenyouExtension(options: WenyouExtensionOptions): InlineExte
 								artifactId: res.artifact.id,
 								markdownPath: res.artifact.markdownPath,
 								docxPath: res.artifact.docxPath,
+								forced: Boolean(params.force && !res.lintReport.passed),
 							},
 						};
 					},
@@ -1083,46 +1080,6 @@ export function makeWenyouExtension(options: WenyouExtensionOptions): InlineExte
 				}),
 			);
 
-			// 9. wenyou_propose_canon
-			pi.registerTool(
-				defineTool({
-					name: "wenyou_propose_canon",
-					label: "提交正史变更提案",
-					annotations: { readOnlyHint: false },
-					description:
-						"遵循「模型只有提案权、人类握紧落锤权」原则：将对 01-设定与国力实册/ 或 04-编年史与条约/ 的新增或修改提交为待审提案写入 private/proposals/，并在右侧画布弹出 Diff 审批台等待人类批准。",
-					promptSnippet: "wenyou_propose_canon({targetPath, summary, afterContent, sourceRefs?, warnings?})",
-					parameters: proposeCanonParams,
-					execute: async (_id, params, _sig, _upd, ctx) => {
-						const workDir = ctx.cwd || cwd;
-						const viewer = await service.getEffectiveViewer(workDir);
-						const proposal = await service.proposeCanon({
-							cwd: workDir,
-							targetPath: params.targetPath,
-							summary: params.summary,
-							afterContent: params.afterContent,
-							sourceRefs: params.sourceRefs,
-							warnings: params.warnings,
-							viewer,
-							sessionId: activeSessionId,
-						});
-						return {
-							content: [
-								{
-									type: "text",
-									text: `正史变更提案已创建：${proposal.proposalId}（目标：${proposal.targetPath}，操作：${proposal.operation}）。已通知右侧画布等待主持批准落盘，当前正史文件未被直接篡改。`,
-								},
-							],
-							details: {
-								wenyouAction: "propose_canon",
-								proposalId: proposal.proposalId,
-								targetPath: proposal.targetPath,
-							},
-						};
-					},
-				}),
-			);
-
 			// 动态文游态势感知注入（仅当工作区为文游战役目录时生效；严格按当前生效视角裁剪）
 			pi.on("context_with_system", async (event, ctx) => {
 				try {
@@ -1135,9 +1092,9 @@ export function makeWenyouExtension(options: WenyouExtensionOptions): InlineExte
 					]);
 					const latest = overview.briefings[0];
 					const note = [
-						`[Wenyou Pro · 司命战役工作区态] 世界：${overview.worldTitle}｜轮次：${overview.currentEra ?? "未定"}｜已入库群聊：${overview.totalEvidenceCount} 条｜待汇报新消息：${overview.unreportedCount} 条｜待审正史提案：${overview.proposals.filter((p) => p.status === "pending").length} 份｜图集：${overview.maps.length} 张｜地图快照：${snapshots.length} 份。`,
+						`[Wenyou Pro · 司命战役工作区态] 世界：${overview.worldTitle}｜轮次：${overview.currentEra ?? "未定"}｜已入库群聊：${overview.totalEvidenceCount} 条｜待汇报新消息：${overview.unreportedCount} 条｜设定与正史档案：${overview.canonDocs.length} 篇｜图集：${overview.maps.length} 张｜地图快照：${snapshots.length} 份。`,
 						latest ? `最新局势简报（${latest.id} / ${latest.turnLabel}）：${latest.headline}` : "尚无当前视角可见的局势简报。",
-						"纪律：1) 汇报局势前先调 wenyou_pull_qq 与 wenyou_read_memory，严禁混同敌方宣传与 GM 裁定事实，关键论断附 [sourceId]；2) 写国策必须走 wenyou_write_policy_docx 过门禁，禁表格、禁嵌套列表、禁 AI 套话；3) 改写正史/实册须经 wenyou_propose_canon 提提案，不得越权直改；4) 审涉海、接壤、行军方位或战报疆域变动前，须先调 wenyou_inspect_map 核对真实城邦坐标、海港与邻国，严禁架空臆造地理。",
+						"纪律：1) 汇报局势前先调 wenyou_pull_qq 与 wenyou_read_memory，严禁混同敌方宣传与 GM 裁定事实，关键论断附 [sourceId]；2) 起草己方 Word 国策优先走 wenyou_write_policy_docx（禁表格/嵌套列表/AI 套话），归档群友原版国策或特殊格式可直接写 03-国策与文书/ 或传 force=true；3) 整理世界设定、国力实册与编年史时，可直接读写更新 01-设定与国力实册/ 与 04-编年史与条约/ 并注明 [sourceId] 溯源；4) 审涉海、接壤、行军方位或战报疆域变动前，须先调 wenyou_inspect_map 核对真实城邦坐标、海港与邻国，严禁架空臆造地理。",
 					].join("\n");
 					return {
 						messages: [

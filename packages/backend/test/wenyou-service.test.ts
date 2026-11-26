@@ -19,7 +19,7 @@ afterEach(async () => {
 });
 
 describe("WenyouService 端到端领域闭环", () => {
-	it("完整覆盖建库、多群增量采集防重报、sourceId 上下文回查、局势书推进游标、国策门禁+.docx、提案审批与泄密预检", async () => {
+	it("完整覆盖建库、多群增量采集防重报、sourceId 上下文回查、局势书推进游标、国策门禁+.docx、档案落盘与泄密预检", async () => {
 		const root = await mkdtemp(join(tmpdir(), "wenyou-service-"));
 		tempDirs.push(root);
 		const events: WenyouCanvasEvent[] = [];
@@ -120,20 +120,18 @@ describe("WenyouService 端到端领域闭环", () => {
 		expect(existsSync(join(root, goodPolicy.artifact!.docxPath!))).toBe(true);
 		expect(events.some((e) => e.kind === "policy_written")).toBe(true);
 
-		// 6. 正史提案与 GM 批准原子落盘（非 GM 拒绝）
-		const prop = await service.proposeCanon({
-			cwd: root,
-			targetPath: "04-编年史与条约/002-清源守备记.md",
-			summary: "新增清源守备正史",
-			afterContent:
-				"---\nid: ch-002\ntitle: 清源守备记\nvisibility: public\n---\n\n正文公开。\n\n:::secret[gm]\n裁判私密内容绝不可外泄\n:::\n",
-			sourceRefs: ["dice-r1"],
-		});
-		expect(existsSync(join(root, prop.targetPath))).toBe(false);
-		await expect(service.decideProposal(root, prop.proposalId, "approved", "public")).rejects.toThrow("仅 GM");
-		const approved = await service.decideProposal(root, prop.proposalId, "approved", "gm");
-		expect(approved.status).toBe("approved");
-		expect(existsSync(join(root, prop.targetPath))).toBe(true);
+		// 6. 直接写入编年史档案并验证概览索引与按视角读取裁剪
+		const canonRelPath = "04-编年史与条约/002-清源守备记.md";
+		await writeFile(
+			join(root, canonRelPath),
+			"---\nid: ch-002\ntitle: 清源守备记\nvisibility: public\n---\n\n正文公开。\n\n:::secret[gm]\n裁判私密内容绝不可外泄\n:::\n",
+			"utf8",
+		);
+		const overviewWithCanon = await service.getOverview(root, "gm");
+		expect(overviewWithCanon.canonDocs.some((d) => d.relPath === canonRelPath)).toBe(true);
+		const pubCanonRead = await service.readCanonDoc(root, canonRelPath, "public");
+		expect(pubCanonRead.strippedSecretBlocks).toBe(1);
+		expect(pubCanonRead.content).not.toContain("裁判私密内容绝不可外泄");
 
 		// 7. 泄密预检拦截 private/ 与 00-群聊收集/ 并剥离 :::secret[gm]
 		await writeFile(join(root, "private", "secret.md"), "机密", "utf8");
@@ -142,7 +140,7 @@ describe("WenyouService 端到端领域闭环", () => {
 		expect(preflight.blockedPrivateFiles.some((f) => f.startsWith("00-群聊收集/"))).toBe(true);
 		expect(preflight.strippedSecretBlockCount).toBe(1);
 		expect(preflight.bundleJson).not.toContain("裁判私密内容绝不可外泄");
-		expect(await readFile(join(root, prop.targetPath), "utf8")).toContain("裁判私密内容绝不可外泄");
+		expect(await readFile(join(root, canonRelPath), "utf8")).toContain("裁判私密内容绝不可外泄");
 	});
 
 	it("长程回溯突破旧 50 条上限、支持 earliest 追最早原话与时间线补抓不污染未汇报游标", async () => {
@@ -338,7 +336,7 @@ describe("WenyouService 端到端领域闭环", () => {
 		await expect(service.readCanonDoc(root, "private/note.md", "faction:north-zhou")).rejects.toThrow("无权");
 	});
 
-	it("serialNo 路径穿越拒绝、writePolicyDocx 自动补齐上下文拦截跨阵营/时间线穿帮，及 decideProposal 路径复检", async () => {
+	it("serialNo 路径穿越拒绝与 writePolicyDocx 自动补齐上下文拦截跨阵营/时间线穿帮", async () => {
 		const root = await mkdtemp(join(tmpdir(), "wenyou-policy-sec-"));
 		tempDirs.push(root);
 		const service = new WenyouService();
@@ -389,19 +387,6 @@ describe("WenyouService 端到端领域闭环", () => {
 		expect(leakedRes.ok).toBe(false);
 		expect(leakedRes.lintReport.issues.map((i) => i.code)).toContain("CROSS_FACTION_LEAK");
 		expect(leakedRes.lintReport.issues.map((i) => i.code)).toContain("TIMELINE_ANACHRONISM");
-
-		// 3. decideProposal 批准前复检被篡改的 targetPath（禁止跳出 4 个允许前缀或非 .md）
-		const prop = await service.proposeCanon({
-			cwd: root,
-			targetPath: "04-编年史与条约/001-正常.md",
-			summary: "测试提案",
-			afterContent: "# 正常",
-		});
-		const propFile = join(root, "private", "proposals", `${prop.proposalId}.json`);
-		const tampered = JSON.parse(await readFile(propFile, "utf8")) as Record<string, unknown>;
-		tampered.targetPath = "manifest.json";
-		await writeFile(propFile, JSON.stringify(tampered, null, 2), "utf8");
-		await expect(service.decideProposal(root, prop.proposalId, "approved", "gm")).rejects.toThrow("不合法");
 	});
 
 	it("publishBriefing 删旧不撞号、游标单调不倒退与未指定 coveredSourceIds 不卡死未报队列", async () => {

@@ -4,7 +4,7 @@
 <h1 align="center">司命 · 文游 Pro（Wenyou Pro）</h1>
 <p align="center">
   面向国策推演、历史架空与跑团主持 / 参谋的独立桌面 Agent 工作台。<br>
-  将正史审批门控、物理视角隔离、内置离线 Pixi 动态沙盘、手写风原生国策书案与多群三层记忆融为一体。
+  将多群抓取建档、物理视角隔离、内置离线 Pixi 动态沙盘、手写风原生国策书案与三层记忆融为一体。
 </p>
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/github/license/anyu0804/wenyou-pro?style=flat-square" alt="License"></a>
@@ -27,7 +27,7 @@
 
 **司命 · 文游 Pro（Wenyou Pro）** 在 [`Jaxton07/percho`](https://github.com/Jaxton07/percho)（MIT 开源底座）与 [`@earendil-works/pi-coding-agent`](https://www.npmjs.com/package/@earendil-works/pi-coding-agent)（Pi SDK）之上深度重构，以本地文件 Vault 为确定性真相源，把 AI 严格关进文游规则与双盲隔离的笼子里：
 
-- **「模型只有提案权、人类握落锤权」Diff 审批台**：通过 `tool_call` 底层物理拦截，禁止 Agent 用 `edit`/`write`/`bash` 直接修改 `01-设定与国力实册/`、`04-编年史与条约/` 与 `manifest.json`。一切正史变更必须经 `wenyou_propose_canon` 生成结构化 `DiffPatchProposal`，由主持人在右侧审批台审阅行级差异后批准原子落盘。
+- **抓群直建档案与设定/编年史自动维护**：在默认 GM 视角下，Agent 拉取群聊与国策记录后可直接读写更新 `01-设定与国力实册/`、`04-编年史与条约/` 与 `manifest.json`，关键史实附带可点击 `[sourceId]` 溯源，右侧画布随时速览档案并支持按视角一键导出离线图史包。
 - **`maxViewer` 物理视角钳制与 `:::secret[...]` 暗线裁剪**：支持 `gm` / `public` / `faction:<id>` 多重视角，非 GM 视角物理阻断读取 `private/`、`.wenyou/`、`00-群聊收集/` 与未授权密档；全链路自动剥离受限 `:::secret[...]` 暗线块，并在对外导出前执行防泄密预检（`exportPreflight`）。
 - **内置离线 Pixi 动态推演沙盘与 FMG `.map` 解析**：通过 `wenyou-sandbox://` 特权协议零外网直载 Pixi.js 8 沙盘，按工作区哈希物理隔离 IndexedDB 彻底杜绝多世界串档；兼容 FMG v1.108 / 1.139 / 1.154 `.map`（含多行 `<svg>` 与高程行）及静态图片六角格建区，支持政权/省份涂刷联动城池归属、ORBAT 编队树、兵力防双算统计、团级战役展开与独立野战窗口、以及双期态势图单图/双屏/卷帘对比。
 - **手写体裁零 AI 味原生编号 `.docx` 国策书案**：内置零 LLM 依赖的确定性国策静态门禁，硬拦截 Markdown 表格、多层嵌套清单、高频 AI 公文套话，并对跨阵营透题与时间线穿帮预警；通过原生 OpenXML 生成器直接输出居中标题、平实自然段与原生编号的 `.docx` 正式书案。

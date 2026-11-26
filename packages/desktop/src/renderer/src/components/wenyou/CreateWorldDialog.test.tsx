@@ -146,7 +146,6 @@ function makeOverview(cwd: string, worldTitle: string): WenyouWorkspaceOverview 
 		rollingLedger: [],
 		policies: [],
 		maps: [],
-		proposals: [],
 		canonDocs: [],
 	};
 }

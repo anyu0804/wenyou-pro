@@ -74,18 +74,19 @@ const BUILTIN_WENYOU_AGENTS: readonly SubagentDefinition[] = [
 	},
 	{
 		name: "chronicle-historian",
-		description: "正史编纂与旧账审计史官：交叉核对编年史、群聊铁证与沙盘疆域变化，提交待审正史修订提案。",
+		description: "正史编纂与旧账审计史官：交叉核对编年史、群聊铁证与沙盘疆域变化，直接整理维护设定与编年史档案。",
 		tools: [
 			"wenyou_read_memory",
 			"wenyou_lookup_source",
 			"wenyou_inspect_map",
-			"wenyou_propose_canon",
 			"read",
+			"write",
+			"edit",
 			"ls",
 		],
 		thinking: "high",
 		systemPrompt:
-			"你是 Wenyou Pro 的史官与旧账审计员（chronicle-historian）。职责：调用 wenyou_read_memory、wenyou_lookup_source 与 wenyou_inspect_map 交叉核查时间线穿帮、城邦易手与兵力账目矛盾；严守「模型只有提案权、人类握紧落锤权」，一切对 01-设定与国力实册/ 或 04-编年史与条约/ 的修改必须通过 wenyou_propose_canon 提交带完整 sourceRefs 的待审提案，绝不直接覆写正史。",
+			"你是 Wenyou Pro 的史官与旧账审计员（chronicle-historian）。职责：调用 wenyou_read_memory、wenyou_lookup_source 与 wenyou_inspect_map 交叉核查时间线穿帮、城邦易手与兵力账目矛盾，直接整理并更新 01-设定与国力实册/ 与 04-编年史与条约/ 档案，关键事实与变动附完整 [sourceId] 证据溯源，禁止编造群聊与沙盘中不存在的设定。",
 		source: "builtin",
 	},
 	{

@@ -27,7 +27,7 @@ const TABS: Array<{ id: WenyouCanvasTab; label: string }> = [
 	{ id: "briefing", label: "局势书与台账" },
 	{ id: "policy-desk", label: "国策书案" },
 	{ id: "atlas-compare", label: "地图与沙盘" },
-	{ id: "archive-export", label: "提案与发包" },
+	{ id: "archive-export", label: "档案与发包" },
 ];
 
 /** 左缘 8px 隐形拖拽把手（镜像 SidebarResizeHandle，具备多路径松手兜底防粘滞） */
@@ -311,7 +311,6 @@ export function WenyouCanvas() {
 	}, [containerWidth, maximized, width]);
 
 	const factions = useMemo(() => extractAvailableFactions(overview), [overview]);
-	const pendingProposals = overview?.proposals.filter((p) => p.status === "pending").length ?? 0;
 	const currentScopeValue = formatViewerScope(viewerScope);
 
 	if (!open) return null;
@@ -430,11 +429,9 @@ export function WenyouCanvas() {
 				{TABS.map((tab) => {
 					const active = activeTab === tab.id;
 					const badge =
-						tab.id === "archive-export" && pendingProposals > 0
-							? pendingProposals
-							: tab.id === "briefing" && (overview?.unreportedCount ?? 0) > 0
-								? overview?.unreportedCount
-								: 0;
+						tab.id === "briefing" && (overview?.unreportedCount ?? 0) > 0
+							? overview?.unreportedCount
+							: 0;
 					return (
 						<button
 							key={tab.id}
@@ -448,13 +445,7 @@ export function WenyouCanvas() {
 						>
 							<span>{tab.label}</span>
 							{badge ? (
-								<span
-									className={`rounded-full px-1.5 font-mono text-ui-10 font-semibold ${
-										tab.id === "archive-export"
-											? "bg-amber-500/20 text-amber-700 dark:text-amber-300"
-											: "bg-accent/15 text-accent"
-									}`}
-								>
+								<span className="rounded-full bg-accent/15 px-1.5 font-mono text-ui-10 font-semibold text-accent">
 									{badge}
 								</span>
 							) : null}

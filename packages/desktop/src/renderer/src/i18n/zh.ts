@@ -608,7 +608,6 @@ export const zh = {
 			wenyou_publish_briefing: "发布三段式局势书",
 			wenyou_write_policy_docx: "生成国策与 Word 文档",
 			wenyou_open_maps: "打开战略舆图比对",
-			wenyou_propose_canon: "提交正史修改提案",
 		},
 	},
 	todo: {

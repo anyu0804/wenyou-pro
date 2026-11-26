@@ -28,7 +28,11 @@ const CLICHE_PATTERNS: readonly { readonly label: string; readonly regex: RegExp
 	{ label: "组合拳", regex: /组合拳/ },
 	{ label: "赋能", regex: /赋能/ },
 	{ label: "抓手", regex: /抓手/ },
-	{ label: "政论排比尾巴（既……又……）", regex: /既[^。；！？\n]{2,24}又[^。；！？\n]{2,24}[。！？]/ },
+];
+
+/** 仅作温和风格提醒、不阻断落盘的句式（避免误杀“既守城又屯田。”等正常中文表述） */
+const STYLE_WARNING_PATTERNS: readonly { readonly label: string; readonly regex: RegExp }[] = [
+	{ label: "句尾排比提醒（既……又……）", regex: /既[^。；！？\n]{2,24}又[^。；！？\n]{2,24}[。！？]/ },
 ];
 
 const TABLE_DIVIDER_RE = /^[ \t]*\|?(?:[ \t]*:?-+:?[ \t]*\|)+[ \t]*:?-+:?[ \t]*\|?[ \t]*$/m;
@@ -81,7 +85,7 @@ export function lintPolicyDraft(draftText: string, ctx: PolicyLintContext = {}):
 		});
 	}
 
-	// 3. AI 公文套话拦截
+	// 3. AI 公文套话拦截 + 句式温和提醒
 	for (const item of CLICHE_PATTERNS) {
 		const match = cleanText.match(item.regex);
 		if (match && match.index !== undefined) {
@@ -89,6 +93,17 @@ export function lintPolicyDraft(draftText: string, ctx: PolicyLintContext = {}):
 				code: "CLICHE_PHRASE",
 				severity: "error",
 				message: `检测到 AI 公文/模板套话「${item.label}」，请改为具体人事、钱粮、军政举措的平实手写口吻`,
+				excerpt: buildExcerpt(cleanText, match.index, match[0].length),
+			});
+		}
+	}
+	for (const item of STYLE_WARNING_PATTERNS) {
+		const match = cleanText.match(item.regex);
+		if (match && match.index !== undefined) {
+			issues.push({
+				code: "CLICHE_PHRASE",
+				severity: "warning",
+				message: `检测到「${item.label}」，如属政论空话尾巴可顺手改写（正常陈述可忽略，不阻断生成）`,
 				excerpt: buildExcerpt(cleanText, match.index, match[0].length),
 			});
 		}

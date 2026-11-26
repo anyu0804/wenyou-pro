@@ -629,7 +629,6 @@ export const en: Messages = {
 			wenyou_publish_briefing: "Publish situation briefing",
 			wenyou_write_policy_docx: "Generate policy .docx",
 			wenyou_open_maps: "Open map comparison",
-			wenyou_propose_canon: "Propose canon patch",
 		},
 	},
 	todo: {

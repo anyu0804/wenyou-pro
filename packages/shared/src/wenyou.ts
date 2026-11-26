@@ -10,7 +10,6 @@ export const WENYOU_STANDARD_DIRS = [
 	"04-编年史与条约",
 	"05-沙盘与图集",
 	"private",
-	"private/proposals",
 	".wenyou",
 ] as const;
 
@@ -555,24 +554,6 @@ export type WenyouBridgeSandboxMessage =
 			};
 	  };
 
-export type ProposalStatus = "pending" | "approved" | "rejected";
-export type PatchOperation = "create" | "update";
-
-export interface DiffPatchProposal {
-	proposalId: string;
-	createdAt: string;
-	targetPath: string;
-	operation: PatchOperation;
-	summary: string;
-	beforeContent?: string;
-	afterContent: string;
-	sourceRefs: string[];
-	warnings: string[];
-	status: ProposalStatus;
-	viewer: ViewerScope;
-	decidedAt?: string;
-}
-
 export interface WenyouCanonDocSummary {
 	relPath: string;
 	title: string;
@@ -700,7 +681,6 @@ export interface WenyouWorkspaceOverview {
 	rollingLedger: RollingLedgerEntry[];
 	policies: PolicyArtifact[];
 	maps: MapAssetItem[];
-	proposals: DiffPatchProposal[];
 	canonDocs: WenyouCanonDocSummary[];
 }
 
@@ -727,5 +707,4 @@ export type WenyouCanvasEvent =
 			pixiUrl?: string;
 			sessionId?: string;
 	  }
-	| { kind: "proposal_created"; cwd: string; proposal: DiffPatchProposal; sessionId?: string }
 	| { kind: "workspace_changed"; cwd: string; reason: string; sessionId?: string };

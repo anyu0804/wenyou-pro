@@ -53,4 +53,4 @@ export {
 	type SecretBlockStripResult,
 	stripRestrictedMarkdownBlocks,
 } from "./secret-blocks";
-export { type ProposeCanonInput, type PublishBriefingInput, WenyouService } from "./service";
+export { type PublishBriefingInput, WenyouService } from "./service";

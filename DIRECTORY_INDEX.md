@@ -62,7 +62,7 @@ packages/
 | --- | --- |
 | [packages/shared/src/ipc-channels.ts](packages/shared/src/ipc-channels.ts) | 单源 IPC invoke 通道契约表（D5）：统一定义所有方法名、通道串、入参校验规则与返回类型 |
 | [packages/shared/src/ipc.ts](packages/shared/src/ipc.ts) | 聚合导出 `PiApi`、`EnvironmentHandlers` 与主进程→渲染进程单向事件接口 |
-| [packages/shared/src/wenyou.ts](packages/shared/src/wenyou.ts) | 文游核心跨进程领域类型与纯解析工具：`WENYOU_STANDARD_DIRS`、`ViewerScope`、`clampViewerScope`、`DiffPatchProposal`、`SituationBriefing`、`PolicyArtifact`、`PolicyLintReport`、`MapInspectResult`、`NtqqStatusSnapshot`、`WenyouCanvasEvent` 等 |
+| [packages/shared/src/wenyou.ts](packages/shared/src/wenyou.ts) | 文游核心跨进程领域类型与纯解析工具：`WENYOU_STANDARD_DIRS`、`ViewerScope`、`clampViewerScope`、`SituationBriefing`、`PolicyArtifact`、`PolicyLintReport`、`MapInspectResult`、`NtqqStatusSnapshot`、`WenyouCanvasEvent` 等 |
 | [packages/shared/src/transcript/](packages/shared/src/transcript) | Transcript 纯函数状态机与轮次派生：`reducer.ts`、`chat-rows.ts`、`mapping.ts`、`turn-files.ts`、`turn-timings.ts`、`llm-errors.ts`、`parse-patch.ts`、`meta-summary.ts` |
 | [packages/shared/src/model-visibility.ts](packages/shared/src/model-visibility.ts) | 模型可见性过滤、Provider 列表归一化与模型展示策略 |
 | [packages/shared/src/settings.ts](packages/shared/src/settings.ts) / [packages/shared/src/session.ts](packages/shared/src/session.ts) | 设置项、会话元数据、历史分页与交互请求类型契约 |
@@ -88,8 +88,8 @@ packages/
 | 文件 | 职责说明 |
 | --- | --- |
 | [packages/backend/src/wenyou/index.ts](packages/backend/src/wenyou/index.ts) | 文游后端模块统一导出入口 |
-| [packages/backend/src/wenyou/service.ts](packages/backend/src/wenyou/service.ts) | **Vault 管理与落盘中枢**：战役目录初始化、工作区概览聚合、L1 局势简报与跨群台账发布、国策生成落盘、`DiffPatchProposal` 创建与审批原子落盘（落盘前复验正史目录前缀与父目录 `realpath`）、视角切换（`setViewerScope`）及导出防泄密预检（`exportPreflight`） |
-| [packages/backend/src/wenyou/extension.ts](packages/backend/src/wenyou/extension.ts) | **Agent 扩展与物理安全拦截钩子**：注册 9 个 `wenyou_*` 工具（`wenyou_init_campaign`、`wenyou_pull_qq`、`wenyou_lookup_source`、`wenyou_read_memory`、`wenyou_publish_briefing`、`wenyou_write_policy_docx`、`wenyou_open_maps`、`wenyou_inspect_map`、`wenyou_propose_canon`）；通过 `tool_call` 钩子强钳制 `maxViewer` 视角、物理阻断非 GM 读取 `private/` / `.wenyou/` / `00-群聊收集/` / `02-局势简报与台账/`，并阻断 `edit`/`write`/`bash` 直改正史目录、`manifest.json` 与 `03-国策与文书/` |
+| [packages/backend/src/wenyou/service.ts](packages/backend/src/wenyou/service.ts) | **Vault 管理与落盘中枢**：战役目录初始化、工作区概览聚合、L1 局势简报与跨群台账发布、国策生成落盘、设定与编年史档案索引/裁剪读取、视角切换（`setViewerScope`）及导出防泄密预检（`exportPreflight`） |
+| [packages/backend/src/wenyou/extension.ts](packages/backend/src/wenyou/extension.ts) | **Agent 扩展与视角安全拦截钩子**：注册 8 个 `wenyou_*` 工具（`wenyou_init_campaign`、`wenyou_pull_qq`、`wenyou_lookup_source`、`wenyou_read_memory`、`wenyou_publish_briefing`、`wenyou_write_policy_docx`、`wenyou_open_maps`、`wenyou_inspect_map`）；通过 `tool_call` 钩子强钳制 `maxViewer` 视角、物理阻断非 GM 读写 `private/` / `.wenyou/` / `00-群聊收集/` / `02-局势简报与台账/` 及含暗线密档，并在 GM 视角允许直接读写 `01-设定与国力实册/`、`03-国策与文书/`、`04-编年史与条约/` 与 `manifest.json` |
 | [packages/backend/src/wenyou/secret-blocks.ts](packages/backend/src/wenyou/secret-blocks.ts) | **`:::secret[...]` 暗线裁剪与路径护栏**：按 `ViewerScope` 裁剪受限密文块、Frontmatter 解析、工作区相对路径规范化与 `realpath` 防逃逸校验 |
 | [packages/backend/src/wenyou/policy-lint.ts](packages/backend/src/wenyou/policy-lint.ts) | **确定性国策静态门禁（零 LLM 依赖）**：硬拦截 Markdown 表格、二级及以上嵌套清单与高频 AI 公文套话，并对跨阵营透题与时间线穿帮发出预警 |
 | [packages/backend/src/wenyou/docx-builder.ts](packages/backend/src/wenyou/docx-builder.ts) | **纯手写风国策 `.docx` 生成器**：零外部依赖纯 TypeScript 实现 CRC32/ZIP 与 OpenXML 文档组装，输出居中标题、自然段与原生编号的 `.docx` 国策书案（默认作者署名「安钰」） |
@@ -101,8 +101,8 @@ packages/
 
 | 测试文件 | 覆盖范围 |
 | --- | --- |
-| [packages/backend/test/wenyou-service.test.ts](packages/backend/test/wenyou-service.test.ts) | Vault 概览、L0/L1/L2 记忆读写、正史提案审批落盘与导出防泄密预检 |
-| [packages/backend/test/wenyou-extension.test.ts](packages/backend/test/wenyou-extension.test.ts) | `tool_call` 正史防直改、`maxViewer` 物理视角钳制与 `:::secret[...]` 剥离 |
+| [packages/backend/test/wenyou-service.test.ts](packages/backend/test/wenyou-service.test.ts) | Vault 概览、L0/L1/L2 记忆读写、档案视角裁剪与导出防泄密预检 |
+| [packages/backend/test/wenyou-extension.test.ts](packages/backend/test/wenyou-extension.test.ts) | `tool_call` 国策门禁、GM 设定/编年史直写放行、`maxViewer` 物理视角钳制与 `:::secret[...]` 剥离 |
 | [packages/backend/test/wenyou-docx.test.ts](packages/backend/test/wenyou-docx.test.ts) | OpenXML ZIP 结构、原生编号、UTF-8 中文正文与默认署名「安钰」验证 |
 | [packages/backend/test/wenyou-policy-lint.test.ts](packages/backend/test/wenyou-policy-lint.test.ts) | 禁用表格、嵌套列表、AI 套话与跨阵营/时间线静态门禁回归 |
 | [packages/backend/test/wenyou-map-state.test.ts](packages/backend/test/wenyou-map-state.test.ts) | 多行 SVG FMG `.map` 解析、编制兵力防双算与双期态势对比 |
@@ -134,14 +134,14 @@ packages/
 | [packages/desktop/src/renderer/src/components/wenyou/WenyouCanvas.tsx](packages/desktop/src/renderer/src/components/wenyou/WenyouCanvas.tsx) | 右侧可拖拽宽度文游工作台主画布：页签切换、顶栏视角控制器（GM / 公开 / 阵营）与世界状态同步 |
 | [packages/desktop/src/renderer/src/components/wenyou/BriefingPanel.tsx](packages/desktop/src/renderer/src/components/wenyou/BriefingPanel.tsx) | 局势简报与跨群滚动台账面板：区分已定案裁定与 `[未定案草案]`，支持一键追溯原文证据 |
 | [packages/desktop/src/renderer/src/components/wenyou/PolicyDeskPanel.tsx](packages/desktop/src/renderer/src/components/wenyou/PolicyDeskPanel.tsx) | 国策书案工坊：实时静态门禁体检（禁用表格/嵌套/AI 套话/透题/穿帮）与手写风 `.docx` 一键导出 |
-| [packages/desktop/src/renderer/src/components/wenyou/ProposalsExportPanel.tsx](packages/desktop/src/renderer/src/components/wenyou/ProposalsExportPanel.tsx) | 正史 Diff 审批台与双盲导出面板：逐条审核/落锤/驳回 Agent 提案、执行导出防泄密预检并导出离线编年史 HTML |
+| [packages/desktop/src/renderer/src/components/wenyou/ProposalsExportPanel.tsx](packages/desktop/src/renderer/src/components/wenyou/ProposalsExportPanel.tsx) | 档案速览与双盲导出面板：按当前视角查阅设定与编年史（实时剥离暗线）、执行导出防泄密预检并导出离线编年史 HTML/JSON |
 | [packages/desktop/src/renderer/src/components/wenyou/AtlasComparePanel.tsx](packages/desktop/src/renderer/src/components/wenyou/AtlasComparePanel.tsx) | 沙盘与图集面板：以 `?workspace=<cwd>` 物理隔离嵌入内置 Pixi 沙盘、双向同步 `sync_context` 与工程存档，并提供双期态势图单图/双屏/卷帘对比 |
 | [packages/desktop/src/renderer/src/components/wenyou/SourceContextDrawer.tsx](packages/desktop/src/renderer/src/components/wenyou/SourceContextDrawer.tsx) | L0 群聊原始证据溯源抽屉：定位 GM 裁定、掷骰记录与发言前后文 |
 | [packages/desktop/src/renderer/src/components/wenyou/CreateWorldDialog.tsx](packages/desktop/src/renderer/src/components/wenyou/CreateWorldDialog.tsx) | 新建文游世界向导弹窗（目录选择、初始世界创建与可选群绑定，单测见 [CreateWorldDialog.test.tsx](packages/desktop/src/renderer/src/components/wenyou/CreateWorldDialog.test.tsx)） |
 | [packages/desktop/src/renderer/src/components/wenyou/NtqqGroupBindDialog.tsx](packages/desktop/src/renderer/src/components/wenyou/NtqqGroupBindDialog.tsx) | 本机 NTQQ 密钥状态管理、多群角色绑定（主群/骰子群/内阁密群/外交群）与增量同步弹窗 |
 | [packages/desktop/src/renderer/src/components/wenyou/atlas-viewport.ts](packages/desktop/src/renderer/src/components/wenyou/atlas-viewport.ts) | 高清图集视口缩放（50%–500%）与双图比例检测纯函数（单测见 [atlas-viewport.test.ts](packages/desktop/src/renderer/src/components/wenyou/atlas-viewport.test.ts)） |
 | [packages/desktop/src/renderer/src/components/wenyou/world-bootstrap.ts](packages/desktop/src/renderer/src/components/wenyou/world-bootstrap.ts) | 战役世界引导初始化、项目注册与首轮任务触发封装 |
-| [packages/desktop/src/renderer/src/components/wenyou/wenyou-helpers.ts](packages/desktop/src/renderer/src/components/wenyou/wenyou-helpers.ts) | 工作区路径解包、行级 Diff 计算与离线编年史 HTML 生成工具 |
+| [packages/desktop/src/renderer/src/components/wenyou/wenyou-helpers.ts](packages/desktop/src/renderer/src/components/wenyou/wenyou-helpers.ts) | 工作区路径解包、视角阵营提取与离线编年史 HTML 生成工具 |
 | [packages/desktop/src/renderer/src/stores/wenyou-canvas.ts](packages/desktop/src/renderer/src/stores/wenyou-canvas.ts) | 文游画布 Zustand 状态库：管理活跃世界概览、视角隔离状态、事件联动与切世界状态清空 |
 | [packages/desktop/src/renderer/src/hooks/use-wenyou-bridge.ts](packages/desktop/src/renderer/src/hooks/use-wenyou-bridge.ts) | App 根层实时事件桥接 Hook：监听后端 `wenyou_*` 工具事件并自动驱动画布展开与聚焦 |
 | [packages/desktop/src/renderer/src/i18n/brand-cleanliness.test.ts](packages/desktop/src/renderer/src/i18n/brand-cleanliness.test.ts) | 品牌洁净度回归门禁：确保用户可见文案统一为「司命 · 文游 Pro」同时完整保留 `Jaxton07/percho` MIT 致谢 |
@@ -233,7 +233,7 @@ packages/
 ├── 03-国策与文书/              # 手写体裁国策 .md 与原生编号 .docx 书案
 ├── 04-编年史与条约/            # [L2 正史] 大事编年史与正式条约文本（旧夹具对应 chronicle/）
 ├── 05-沙盘与图集/              # 态势图（SVG/PNG）、FMG .map 与沙盘工程快照（active-sandbox.json）
-├── private/                  # [GM 绝对密区] GM 暗线笔记与待审正史提案队列（private/proposals/）
+├── private/                  # [GM 绝对密区] GM 暗线笔记与私有草稿
 └── .wenyou/                  # [L0 证据库] 原始消息归档（evidence.jsonl）与多群双游标（cursors.json）
 ```
 
@@ -242,11 +242,11 @@ packages/
 | Vault 路径 | 记忆层 | Agent 写入权限 | 非 GM 视角读取权限 | 特权协议 `wenyou-asset://vault` |
 | --- | --- | --- | --- | --- |
 | `00-群聊收集/` | 原始导入区 | 仅限用户/导入同步写入 | **物理阻断**（`tool_call` 拦截） | 允许已授权工作区图片（仅限图片白名单扩展名） |
-| `01-设定与国力实册/`（及 `wiki/`） | **L2 正史** | **物理禁止直改**；强制走 `wenyou_propose_canon` → 人类审批落盘 | 按 Frontmatter `visibility` 与 `:::secret[...]` 裁剪后只读 | 仅公开/受控资产 |
+| `01-设定与国力实册/`（及 `wiki/`） | **L2 设定实册** | GM 视角可直接读写维护；非 GM 视角禁止覆写不可见或含暗线文档 | 按 Frontmatter `visibility` 与 `:::secret[...]` 裁剪后只读 | 仅公开/受控资产 |
 | `02-局势简报与台账/` | **L1 局势** | 经 `wenyou_publish_briefing` 受控发布（未定案草案强制标 `[未定案草案]`） | **物理阻断直读**；仅经 `wenyou_read_memory` 按视角剥离暗线后返回 | 不适用 |
-| `03-国策与文书/` | 国策产物 | **物理禁止直写**；强制经 `wenyou_write_policy_docx` 过静态门禁后生成 `.md` + `.docx` | 按阵营/公开视角隔离过滤 | 不适用（导出走主进程 `.docx` 对话框校验） |
-| `04-编年史与条约/`（及 `chronicle/`） | **L2 正史** | **物理禁止直改**；强制走 `wenyou_propose_canon` → 人类审批落盘 | 按 `visibility` 与 `:::secret[...]` 裁剪后只读 | 不适用 |
+| `03-国策与文书/` | 国策产物 | GM 视角可直接归档写入；起草己方 Word 文书推荐经 `wenyou_write_policy_docx` 生成 `.md` + `.docx`（支持 `force: true` 保留原稿格式） | 按阵营/公开视角隔离过滤 | 不适用（导出走主进程 `.docx` 对话框校验） |
+| `04-编年史与条约/`（及 `chronicle/`） | **L2 编年史** | GM 视角可直接读写维护；非 GM 视角禁止覆写不可见或含暗线文档 | 按 `visibility` 与 `:::secret[...]` 裁剪后只读 | 不适用 |
 | `05-沙盘与图集/` | 沙盘与图集 | 通过沙盘桥接或地图快照工具原子保存 | 仅展示当前视角允许的态势图与战区 | **白名单放行**（严格校验工作区与图片 MIME） |
-| `private/`（含 `private/proposals/`） | **GM 密区** | 仅内部提案队列写入 | **彻底物理阻断** | **硬拒绝（403）** |
+| `private/` | **GM 密区** | 仅 GM 视角可读写（防 bash 误删保护） | **彻底物理阻断** | **硬拒绝（403）** |
 | `.wenyou/`（及 `sources/evidence.jsonl`） | **L0 证据** | 仅 `wenyou_pull_qq` / NTQQ 同步追加写入，不篡改原文 | **彻底物理阻断直读**（按视角受控检索） | **硬拒绝（403）** |
-| `manifest.json` | 世界契约 | **物理禁止 Agent 直改** | 只读元信息（`maxViewer` 物理钳制上限） | 不适用 |
+| `manifest.json` | 世界契约 | GM 视角可直接更新维护 | 只读元信息（`maxViewer` 物理钳制上限） | 不适用 |

@@ -2,15 +2,15 @@
 
 > 整理：安钰｜覆盖范围：`packages/shared`、`packages/pixi-sandbox`、`packages/desktop`、`packages/backend`、`packages/desktop/resources/ntqq-vfs`
 
-## 1. 特权协议、视角强钳制与正史物理门控验收
+## 1. 特权协议、视角强钳制与国策门禁验收
 1. **`wenyou-asset://` 工作区白名单与收紧 CORS**（`packages/desktop/src/main/wenyou-protocol.ts` + `index.ts`）：
    - `handleWenyouAssetRequest` 仅放行 `GET` / `HEAD` 且强制 `url.hostname === "vault"`，校验 `cwd` 属于已授权工作区且拒绝任何以 `private` / `.wenyou` 为根或子段的越权路径；
    - `Access-Control-Allow-Origin` 仅针对 `wenyou-sandbox://app`、应用自身渲染源及本机回环开发源精确回显，禁止 `*` 通配，CSP `frame-src` 仅放行 `'self' wenyou-sandbox: http://127.0.0.1:* http://localhost:* http://[::1]:*`。
-2. **「模型只有提案权、人类握落锤权」与 `maxViewer` 物理拦截**（`packages/backend/src/wenyou/extension.ts` + `service.ts`）：
-   - `makeWenyouExtension` 通过 `tool_call` 钩子在文游战役目录内物理阻断内置 `edit` / `write` / `bash` 直接覆写 `01-设定与国力实册/`、`04-编年史与条约/`、`chronicle/`、`wiki/`、`manifest.json`（强制走 `wenyou_propose_canon`）与 `03-国策与文书/`（强制走 `wenyou_write_policy_docx`）；
-   - 非 GM 视角（受 `clampViewerScope` 与 `manifest.json` `maxViewer` 钳制）物理阻断内置工具读取 `private/`、`.wenyou/`、`00-群聊收集/` 及未授权密档；`wenyou_read_memory`、`getOverview` 与 `exportPreflight` 全链路剥离受限 `:::secret[...]` 块并隔离非公开简报与国策。
+2. **视角隔离与内部证据库保护**（`packages/backend/src/wenyou/extension.ts` + `service.ts`）：
+   - GM 视角允许 Agent 直接读写维护 `01-设定与国力实册/`、`03-国策与文书/`、`04-编年史与条约/` 与 `manifest.json`，仅对 `.wenyou/` 与 `private/` 保留 bash 防误删保护；`wenyou_write_policy_docx` 默认校验手写风格并支持 `force: true` 强制落盘；
+   - 非 GM 视角（受 `clampViewerScope` 与 `manifest.json` `maxViewer` 钳制）物理阻断内置工具读取或写入 `private/`、`.wenyou/`、`00-群聊收集/` 及未授权/含暗线密档；`wenyou_read_memory`、`getOverview` 与 `exportPreflight` 全链路剥离受限 `:::secret[...]` 块并隔离非公开简报与国策。
 3. **路径安全与编码门禁**：
-   - `writePolicyDocx` 严格校验清洗 `serialNo` 并核验工作区边界；`decideProposal` 落盘前复验 4 个正史目录前缀与父目录 `realpath`；
+   - `writePolicyDocx` 严格校验清洗 `serialNo` 并核验工作区边界；
    - `ntqq-sync.ts` 子进程注入 `PYTHONUTF8=1` / `PYTHONIOENCODING=utf-8`，中文用户名或中文解压路径下 `detectPythonExecutable` 零乱码；`wenyou_read.py` 与 `wenyou_vfs_sync.py` 兼容双号段 `rowid`、本人发言 `40030=0`（`40003=0`）并过滤 `40030=0 & 40033=0` 系统灰条。
 
 ## 2. 桌面端跨世界隔离、图片入沙盘与双向同步验收

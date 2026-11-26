@@ -65,4 +65,13 @@ describe("确定性国策静态门禁 lintPolicyDraft", () => {
 		expect(report.passed).toBe(true);
 		expect(report.issues).toHaveLength(0);
 	});
+
+	it("普通中文“既……又……”句式仅提示 warning，不阻断国策生成", () => {
+		const draft = "清源城今春既固守城垣又督办屯田，周边三县春粮按额入库，不作轻进。";
+		const report = lintPolicyDraft(draft);
+		expect(report.passed).toBe(true);
+		expect(report.issues).toHaveLength(1);
+		expect(report.issues[0]?.severity).toBe("warning");
+		expect(report.rewriteInstructions).toBeUndefined();
+	});
 });

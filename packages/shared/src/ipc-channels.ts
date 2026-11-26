@@ -92,7 +92,6 @@ import type { UpdateState } from "./update";
 import type { UpdateDiagnosticsInfo } from "./update-diagnostics";
 import type {
 	CampaignNtqqGroupBinding,
-	DiffPatchProposal,
 	MapAssetItem,
 	MapInspectResult,
 	MapSnapshotDiffResult,
@@ -1288,27 +1287,6 @@ export const WENYOU_CHANNELS = {
 		cwd: input.id,
 		fileName: input.id,
 		content: input.text,
-	}),
-	wenyouListProposals: ch(
-		"wenyou:listProposals",
-		"environment",
-		"read",
-	)<{ cwd: string; viewer?: string }, DiffPatchProposal[]>({
-		cwd: input.id,
-		viewer: input.optional(input.text),
-	}),
-	wenyouDecideProposal: ch(
-		"wenyou:decideProposal",
-		"environment",
-		"mutation",
-	)<
-		{ cwd: string; proposalId: string; decision: "approved" | "rejected"; viewer?: string },
-		DiffPatchProposal
-	>({
-		cwd: input.id,
-		proposalId: input.id,
-		decision: input.oneOf("approved", "rejected"),
-		viewer: input.optional(input.text),
 	}),
 	wenyouExportPreflight: ch(
 		"wenyou:exportPreflight",

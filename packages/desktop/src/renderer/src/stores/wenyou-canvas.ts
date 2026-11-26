@@ -108,7 +108,6 @@ let sourceRequestSeq = 0;
 let viewerScopeRequestSeq = 0;
 let initCampaignRequestSeq = 0;
 let pullQqRequestSeq = 0;
-let decideProposalRequestSeq = 0;
 let preflightRequestSeq = 0;
 
 interface WenyouCanvasState {
@@ -140,8 +139,7 @@ interface WenyouCanvasState {
 	syncViewport: boolean;
 	pixiUrl: string;
 
-	// Tab 4: 正史提案与发包
-	selectedProposalId: string | null;
+	// Tab 4: 档案速览与发包
 	preflightTargetViewer: string;
 	preflightResult: WenyouExportPreflightResult | null;
 	preflightLoading: boolean;
@@ -184,8 +182,6 @@ interface WenyouCanvasState {
 	setPixiUrl: (url: string) => void;
 
 	// Tab 4 Actions
-	setSelectedProposalId: (id: string | null) => void;
-	decideProposal: (proposalId: string, decision: "approved" | "rejected") => Promise<void>;
 	setPreflightTargetViewer: (viewer: string) => void;
 	runExportPreflight: (targetViewer?: string) => Promise<WenyouExportPreflightResult | null>;
 
@@ -219,7 +215,6 @@ export const useWenyouCanvasStore = create<WenyouCanvasState>((set, get) => ({
 	syncViewport: true,
 	pixiUrl: readStoredPixiUrl(),
 
-	selectedProposalId: null,
 	preflightTargetViewer: "public",
 	preflightResult: null,
 	preflightLoading: false,
@@ -306,7 +301,6 @@ export const useWenyouCanvasStore = create<WenyouCanvasState>((set, get) => ({
 		viewerScopeRequestSeq += 1;
 		initCampaignRequestSeq += 1;
 		pullQqRequestSeq += 1;
-		decideProposalRequestSeq += 1;
 		preflightRequestSeq += 1;
 		set({
 			cwd,
@@ -318,7 +312,6 @@ export const useWenyouCanvasStore = create<WenyouCanvasState>((set, get) => ({
 			selectedPolicyId: null,
 			leftMapPath: null,
 			rightMapPath: null,
-			selectedProposalId: null,
 			sourceDrawer: EMPTY_SOURCE_DRAWER,
 			lastPullSummary: null,
 			pullingQq: false,
@@ -360,12 +353,6 @@ export const useWenyouCanvasStore = create<WenyouCanvasState>((set, get) => ({
 					state.rightMapPath && overview.maps.some((m) => m.relPath === state.rightMapPath)
 						? state.rightMapPath
 						: (overview.maps[1]?.relPath ?? overview.maps[0]?.relPath ?? null);
-				const pending = overview.proposals.find((p) => p.status === "pending");
-				const selectedProposalId =
-					state.selectedProposalId &&
-					overview.proposals.some((p) => p.proposalId === state.selectedProposalId)
-						? state.selectedProposalId
-						: (pending?.proposalId ?? overview.proposals[0]?.proposalId ?? null);
 				return {
 					overview,
 					viewerScope: overview.viewer,
@@ -375,7 +362,6 @@ export const useWenyouCanvasStore = create<WenyouCanvasState>((set, get) => ({
 					selectedPolicyId,
 					leftMapPath,
 					rightMapPath,
-					selectedProposalId,
 				};
 			});
 		} catch (error) {
@@ -558,40 +544,6 @@ export const useWenyouCanvasStore = create<WenyouCanvasState>((set, get) => ({
 		}
 	},
 
-	setSelectedProposalId: (selectedProposalId) => set({ selectedProposalId }),
-
-	decideProposal: async (proposalId, decision) => {
-		const targetCwd = get().cwd;
-		if (!targetCwd) return;
-		const seq = ++decideProposalRequestSeq;
-		try {
-			const viewer = formatViewerScope(get().viewerScope);
-			const updated = await getExecutionApi(targetCwd).wenyouDecideProposal({
-				cwd: targetCwd,
-				proposalId,
-				decision,
-				viewer,
-			});
-			if (seq !== decideProposalRequestSeq || !sameDirectoryPath(get().cwd, targetCwd)) return;
-			set({ preflightResult: null });
-			pushExtensionToast(
-				"info",
-				decision === "approved"
-					? `已批准并原子合入正史：${updated.targetPath}`
-					: `已驳回正史提案：${updated.targetPath}`,
-				"Wenyou Pro",
-			);
-			await get().refreshOverview(targetCwd, { silent: true });
-		} catch (error) {
-			if (seq !== decideProposalRequestSeq || !sameDirectoryPath(get().cwd, targetCwd)) return;
-			pushExtensionToast(
-				"error",
-				`提案裁决失败：${error instanceof Error ? error.message : String(error)}`,
-				"Wenyou Pro",
-			);
-		}
-	},
-
 	setPreflightTargetViewer: (preflightTargetViewer) => {
 		preflightRequestSeq += 1;
 		set({ preflightTargetViewer, preflightResult: null, preflightLoading: false });
@@ -726,25 +678,6 @@ export const useWenyouCanvasStore = create<WenyouCanvasState>((set, get) => ({
 				void get().refreshOverview(targetCwd, { silent: true });
 				break;
 			}
-
-			case "proposal_created":
-				set((prev) => {
-					const existing = prev.overview?.proposals ?? [];
-					const merged = [
-						event.proposal,
-						...existing.filter((p) => p.proposalId !== event.proposal.proposalId),
-					];
-					return {
-						open: true,
-						unreadCount: 0,
-						cwd: targetCwd,
-						activeTab: "archive-export",
-						selectedProposalId: event.proposal.proposalId,
-						overview: prev.overview ? { ...prev.overview, proposals: merged } : prev.overview,
-					};
-				});
-				void get().refreshOverview(targetCwd, { silent: true });
-				break;
 		}
 	},
 }));

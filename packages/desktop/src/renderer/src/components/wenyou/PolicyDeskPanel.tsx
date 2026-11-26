@@ -231,7 +231,7 @@ export function PolicyDeskPanel() {
 		}
 	};
 
-	const handleGenerateDocxFromDraft = async () => {
+	const handleGenerateDocxFromDraft = async (force = false) => {
 		const targetCwd = cwd;
 		if (!targetCwd || !draftTitle.trim() || !draftText.trim()) {
 			pushExtensionToast("warning", "请先填写国策标题与正文内容", "Wenyou Pro");
@@ -247,14 +247,25 @@ export function PolicyDeskPanel() {
 				viewer: formatViewerScope(viewerScope),
 				...(draftActor.trim() ? { actor: draftActor.trim() } : {}),
 				...(draftTurn.trim() ? { turnLabel: draftTurn.trim() } : {}),
+				...(force ? { force: true } : {}),
 			});
 			if (seq !== writeRequestSeqRef.current || cwdRef.current !== targetCwd) return;
 			setLiveLintReport(res.lintReport);
 			if (!res.ok || !res.artifact) {
-				pushExtensionToast("warning", res.error ?? "门禁未通过，请按提示修订正文后再生成", "Wenyou Pro");
+				pushExtensionToast(
+					"warning",
+					res.error ?? "门禁未通过，可修订正文或点「忽略告警强制生成 .docx」",
+					"Wenyou Pro",
+				);
 				return;
 			}
-			pushExtensionToast("info", `已生成规范国策 Word 文档：${res.artifact.docxPath}`, "Wenyou Pro");
+			pushExtensionToast(
+				"info",
+				force && !res.lintReport.passed
+					? `已忽略门禁告警并生成 Word 文档：${res.artifact.docxPath}`
+					: `已生成规范国策 Word 文档：${res.artifact.docxPath}`,
+				"Wenyou Pro",
+			);
 			setSelectedPolicyId(res.artifact.id);
 			setMode("preview");
 			await refreshOverview(targetCwd, { silent: true });
@@ -506,11 +517,21 @@ export function PolicyDeskPanel() {
 								<button
 									type="button"
 									disabled={writingDocx || !draftTitle.trim() || !draftText.trim()}
-									onClick={() => void handleGenerateDocxFromDraft()}
+									onClick={() => void handleGenerateDocxFromDraft(false)}
 									className="rounded-lg bg-accent px-3 py-1.5 text-ui-12 font-medium text-on-accent transition-opacity hover:opacity-90 disabled:opacity-45"
 								>
 									{writingDocx ? "生成中…" : "定稿并生成 .docx"}
 								</button>
+								{liveLintReport && !liveLintReport.passed && (
+									<button
+										type="button"
+										disabled={writingDocx || !draftTitle.trim() || !draftText.trim()}
+										onClick={() => void handleGenerateDocxFromDraft(true)}
+										className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-1.5 text-ui-12 font-medium text-amber-700 transition-colors hover:bg-amber-500/20 disabled:opacity-45 dark:text-amber-300"
+									>
+										忽略告警强制生成 .docx
+									</button>
+								)}
 							</div>
 						</div>
 

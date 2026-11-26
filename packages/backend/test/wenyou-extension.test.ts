@@ -12,8 +12,8 @@ afterEach(async () => {
 	await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
 
-describe("makeWenyouExtension 9 工具注册与画布事件闭环", () => {
-	it("注册全部 9 个核心文游工具并联动发射画布事件", async () => {
+describe("makeWenyouExtension 8 工具注册与画布事件闭环", () => {
+	it("注册全部 8 个核心文游工具并联动发射画布事件", async () => {
 		const root = await mkdtemp(join(tmpdir(), "wenyou-ext-"));
 		tempDirs.push(root);
 		const events: WenyouCanvasEvent[] = [];
@@ -36,7 +36,6 @@ describe("makeWenyouExtension 9 工具注册与画布事件闭环", () => {
 			"wenyou_inspect_map",
 			"wenyou_lookup_source",
 			"wenyou_open_maps",
-			"wenyou_propose_canon",
 			"wenyou_publish_briefing",
 			"wenyou_pull_qq",
 			"wenyou_read_memory",
@@ -51,7 +50,7 @@ describe("makeWenyouExtension 9 工具注册与画布事件闭环", () => {
 		await writeFile(join(root, "05-沙盘与图集", "t1-map.svg"), "<svg/>", "utf8");
 		await writeFile(join(root, "05-沙盘与图集", "t2-map.svg"), "<svg/>", "utf8");
 
-		// 坏国策被拦截并返回重写指令
+		// 坏国策默认被提示重写，传 force=true 可强制写出（便于原样归档群友国策）
 		const badRes = await tools.get("wenyou_write_policy_docx")!.execute(
 			"c2",
 			{
@@ -63,6 +62,20 @@ describe("makeWenyouExtension 9 工具注册与画布事件闭环", () => {
 			ctx,
 		);
 		expect((badRes.content[0] as { text: string }).text).toContain("国策门禁未通过");
+
+		const forcedRes = await tools.get("wenyou_write_policy_docx")!.execute(
+			"c2b",
+			{
+				title: "群友原稿归档",
+				content: "| 项目 | 数额 |\n| --- | --- |\n| 兵力 | 三万 |\n\n原样归档群友所发国策内容，不做擅自删改。",
+				force: true,
+			},
+			undefined,
+			undefined,
+			ctx,
+		);
+		expect((forcedRes.content[0] as { text: string }).text).toContain("force=true");
+		expect((forcedRes.content[0] as { text: string }).text).toContain("03-国策与文书/");
 
 		// 改写后的干净国策放行并推画布事件
 		const goodRes = await tools.get("wenyou_write_policy_docx")!.execute(
@@ -269,7 +282,7 @@ describe("makeWenyouExtension 9 工具注册与画布事件闭环", () => {
 		});
 	});
 
-	it("tool_call 物理门控：所有视角阻断直改正史/国策，非 GM 视角阻断裸读密档/暗线块并走受控裁剪", async () => {
+	it("tool_call 物理门控：GM 放行直接读写设定/编年史，保留国策门禁与非 GM 视角物理读写隔离", async () => {
 		const root = await mkdtemp(join(tmpdir(), "wenyou-ext-gate-"));
 		tempDirs.push(root);
 		const service = new WenyouService();
@@ -314,15 +327,40 @@ describe("makeWenyouExtension 9 工具注册与画布事件闭环", () => {
 		const fire = (toolName: string, input: Record<string, unknown>) =>
 			toolCallHandler!({ type: "tool_call", toolCallId: "tc", toolName, input }, ctx);
 
-		// 1. GM 视角下仍物理阻断 edit/write 直改正史、manifest.json 与 03-国策与文书/
-		expect((await fire("write", { path: "01-设定与国力实册/北周.md", content: "篡改" }))?.block).toBe(true);
-		expect((await fire("edit", { path: "04-编年史与条约/001.md" }))?.block).toBe(true);
-		expect((await fire("write", { path: "manifest.json", content: "{}" }))?.block).toBe(true);
-		expect((await fire("write", { path: "03-国策与文书/001-绕过门禁.md", content: "绕过" }))?.block).toBe(true);
-		expect((await fire("bash", { command: "echo hack >> 01-设定与国力实册/北周.md" }))?.block).toBe(true);
-		expect((await fire("bash", { command: "rm -rf private/proposals" }))?.block).toBe(true);
+		// 1. GM 视角下放行 edit/write/bash 直接维护设定实册、编年史、国策归档与 manifest.json（含 [sourceId] 与通配符）
+		expect(await fire("write", { path: "01-设定与国力实册/北周.md", content: "更新实册" })).toBeUndefined();
+		expect(await fire("edit", { path: "04-编年史与条约/001.md" })).toBeUndefined();
+		expect(await fire("write", { path: "manifest.json", content: "{}" })).toBeUndefined();
+		expect(await fire("write", { path: "03-国策与文书/001-群友原版国策.md", content: "群友原稿" })).toBeUndefined();
+		expect(await fire("bash", { command: "echo '[qq-1001-1] 更新' >> 01-设定与国力实册/北周.md" })).toBeUndefined();
+		expect(await fire("bash", { command: "cp 01-设定与国力实册/*.md 04-编年史与条约/" })).toBeUndefined();
+		// 仅保留 private/ 与 .wenyou/ 内部目录的 bash 防误删保护
+		expect((await fire("bash", { command: "rm -rf private/gm.md" }))?.block).toBe(true);
+		expect((await fire("bash", { command: "rm -rf .wenyou/cursors.json" }))?.block).toBe(true);
 		// GM 视角读 private 放行
 		expect(await fire("read", { path: "private/gm.md" })).toBeUndefined();
+
+		// 验证 wenyou_read_memory 在超量档案与超长文档下附带全量索引与截断提示
+		for (let idx = 1; idx <= 14; idx += 1) {
+			const pad = String(idx).padStart(2, "0");
+			const longText = idx === 1 ? "甲".repeat(2800) : `国家${pad}基础实册`;
+			await writeFile(
+				join(root, "01-设定与国力实册", `国${pad}.md`),
+				`---\nid: state-${pad}\ntitle: 国家${pad}\nvisibility: public\n---\n\n${longText}`,
+				"utf8",
+			);
+		}
+		await writeFile(
+			join(root, "04-编年史与条约", "001-盟约.md"),
+			"---\nid: ch-001\ntitle: 济水盟约\nvisibility: public\n---\n\n盟约正文。",
+			"utf8",
+		);
+		const gmMemRes = await tools.get("wenyou_read_memory")!.execute("m0", {}, undefined, undefined, ctx);
+		const gmMemText = (gmMemRes.content[0] as { text: string }).text;
+		expect(gmMemText).toContain("已截断，原文共");
+		expect(gmMemText).toContain("全量设定与编年史档案索引");
+		expect(gmMemText).toContain("[未展开实册]");
+		expect(gmMemText).toContain("[编年史/条约] 济水盟约");
 
 		// 2. 切到非 GM 视角（faction:north-zhou）
 		await service.setViewerScope(root, "faction:north-zhou");
@@ -343,10 +381,13 @@ describe("makeWenyouExtension 9 工具注册与画布事件闭环", () => {
 		expect((await fire("bash", { command: "grep -r 伏兵 ." }))?.block).toBe(true);
 		expect((await fire("bash", { command: "cat 01*/北周.md" }))?.block).toBe(true);
 
-		// 物理阻断裸 read 含 :::secret 的文档与不可见的他国文档；纯公开无暗线文档放行
+		// 物理阻断裸 read/write 含 :::secret 的文档与不可见的他国文档；纯公开无暗线文档放行
 		expect((await fire("read", { path: "01-设定与国力实册/北周.md" }))?.block).toBe(true);
 		expect((await fire("read", { path: "01-设定与国力实册/南楚密档.md" }))?.block).toBe(true);
+		expect((await fire("write", { path: "01-设定与国力实册/北周.md", content: "覆盖暗线" }))?.block).toBe(true);
+		expect((await fire("write", { path: "01-设定与国力实册/南楚密档.md", content: "覆盖他国" }))?.block).toBe(true);
 		expect(await fire("read", { path: "01-设定与国力实册/纯公开.md" })).toBeUndefined();
+		expect(await fire("write", { path: "01-设定与国力实册/纯公开.md", content: "更新公开档案" })).toBeUndefined();
 
 		// 3. wenyou_read_memory 必须走受控裁剪，绝不裸读泄密
 		const memRes = await tools.get("wenyou_read_memory")!.execute("m1", {}, undefined, undefined, ctx);

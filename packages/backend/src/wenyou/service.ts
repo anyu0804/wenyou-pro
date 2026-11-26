@@ -7,7 +7,6 @@ import {
 	type BriefingProgressItem,
 	buildWenyouAssetUrl,
 	clampViewerScope,
-	type DiffPatchProposal,
 	formatViewerScope,
 	type GroupCursorRecord,
 	type MapAssetItem,
@@ -69,7 +68,6 @@ import {
 } from "./secret-blocks";
 
 const MAP_IMAGE_EXTS = new Set([".svg", ".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"]);
-const ALLOWED_CANON_PREFIXES = ["01-设定与国力实册/", "04-编年史与条约/", "chronicle/", "wiki/"] as const;
 const SERIAL_NO_RE = /^[A-Za-z0-9_-]{1,24}$/;
 
 function normalizeWorkspaceKey(cwd: string): string {
@@ -181,17 +179,6 @@ export interface PublishBriefingInput {
 		summary: string;
 		sourceRefs?: string[];
 	}>;
-	sessionId?: string;
-}
-
-export interface ProposeCanonInput {
-	cwd: string;
-	targetPath: string;
-	summary: string;
-	afterContent: string;
-	sourceRefs?: string[];
-	warnings?: string[];
-	viewer?: ViewerScope;
 	sessionId?: string;
 }
 
@@ -1174,138 +1161,6 @@ export class WenyouService {
 		};
 	}
 
-	async proposeCanon(input: ProposeCanonInput): Promise<DiffPatchProposal> {
-		const viewer = await this.getEffectiveViewer(input.cwd, input.viewer);
-		const normalized = normalizeVaultPath(input.targetPath);
-		if (
-			normalized.split("/").includes("..") ||
-			isPrivateVaultPath(normalized) ||
-			!normalized.endsWith(".md") ||
-			!ALLOWED_CANON_PREFIXES.some((p) => normalized.startsWith(p))
-		) {
-			throw new Error(
-				"正史提案 targetPath 仅允许指向 01-设定与国力实册/、04-编年史与条约/、chronicle/ 或 wiki/ 下的 .md 文件",
-			);
-		}
-		const { absPath: absTarget, realRelPath } = await assertRealTargetInsideWorkspace(input.cwd, normalized);
-		if (
-			isPrivateVaultPath(realRelPath) ||
-			!realRelPath.endsWith(".md") ||
-			!ALLOWED_CANON_PREFIXES.some((p) => realRelPath.startsWith(p))
-		) {
-			throw new Error("正史提案目标真实路径落入非法或受限目录");
-		}
-		const exists = existsSync(absTarget);
-		const beforeContent = exists ? await readFile(absTarget, "utf8") : undefined;
-
-		const proposal: DiffPatchProposal = {
-			proposalId: `prop-${Date.now().toString(36)}-${randomUUID().slice(0, 6)}`,
-			createdAt: new Date().toISOString(),
-			targetPath: normalized,
-			operation: exists ? "update" : "create",
-			summary: input.summary.trim(),
-			...(beforeContent !== undefined ? { beforeContent } : {}),
-			afterContent: input.afterContent,
-			sourceRefs: input.sourceRefs ?? [],
-			warnings: input.warnings ?? [],
-			status: "pending",
-			viewer,
-		};
-
-		const propDir = join(input.cwd, "private", "proposals");
-		await mkdir(propDir, { recursive: true });
-		await atomicWriteUtf8(join(propDir, `${proposal.proposalId}.json`), `${JSON.stringify(proposal, null, 2)}\n`);
-
-		this.emitCanvas({
-			kind: "proposal_created",
-			cwd: input.cwd,
-			proposal,
-			...(input.sessionId ? { sessionId: input.sessionId } : {}),
-		});
-		return proposal;
-	}
-
-	async listProposals(cwd: string, viewerRaw?: string | ViewerScope): Promise<DiffPatchProposal[]> {
-		const viewer = await this.getEffectiveViewer(cwd, viewerRaw);
-		const propDir = join(cwd, "private", "proposals");
-		if (!existsSync(propDir)) return [];
-		const entries = await readdir(propDir, { withFileTypes: true });
-		const out: DiffPatchProposal[] = [];
-		for (const entry of entries) {
-			if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
-			try {
-				const parsed = JSON.parse(await readFile(join(propDir, entry.name), "utf8")) as DiffPatchProposal;
-				if (!parsed || typeof parsed.proposalId !== "string") continue;
-				if (viewer.kind === "gm") {
-					out.push(parsed);
-				} else if (
-					viewer.kind === "faction" &&
-					parsed.viewer?.kind === "faction" &&
-					parsed.viewer.factionId === viewer.factionId
-				) {
-					out.push(parsed);
-				}
-			} catch {
-				// ignore malformed proposal
-			}
-		}
-		return out.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-	}
-
-	async decideProposal(
-		cwd: string,
-		proposalId: string,
-		decision: "approved" | "rejected",
-		viewerRaw?: string | ViewerScope,
-	): Promise<DiffPatchProposal> {
-		return this.withWorkspaceLock(cwd, async () => {
-			const viewer = await this.getEffectiveViewer(cwd, viewerRaw);
-			if (viewer.kind !== "gm") {
-				throw new Error("仅 GM 裁判视角有权批准或驳回正史提案");
-			}
-			if (!/^[a-zA-Z0-9_-]+$/.test(proposalId)) {
-				throw new Error("非法 proposalId");
-			}
-			const propFile = join(cwd, "private", "proposals", `${proposalId}.json`);
-			if (!existsSync(propFile)) throw new Error(`未找到提案：${proposalId}`);
-			const proposal = JSON.parse(await readFile(propFile, "utf8")) as DiffPatchProposal;
-			if (proposal.status !== "pending") {
-				throw new Error(`提案 ${proposalId} 已处理（当前状态：${proposal.status}）`);
-			}
-
-			if (decision === "approved") {
-				const normalizedTarget = normalizeVaultPath(proposal.targetPath);
-				if (
-					!normalizedTarget ||
-					normalizedTarget.split("/").includes("..") ||
-					isPrivateVaultPath(normalizedTarget) ||
-					!normalizedTarget.endsWith(".md") ||
-					!ALLOWED_CANON_PREFIXES.some((p) => normalizedTarget.startsWith(p))
-				) {
-					throw new Error(`提案目标路径不合法，已拒绝写入：${proposal.targetPath}`);
-				}
-				const { absPath: absTarget, realRelPath } = await assertRealTargetInsideWorkspace(cwd, normalizedTarget);
-				if (
-					isPrivateVaultPath(realRelPath) ||
-					!realRelPath.endsWith(".md") ||
-					!ALLOWED_CANON_PREFIXES.some((p) => realRelPath.startsWith(p))
-				) {
-					throw new Error(`提案目标真实路径越界或落入受限目录，已拒绝写入：${proposal.targetPath}`);
-				}
-				await atomicWriteUtf8(absTarget, proposal.afterContent);
-			}
-
-			const updated: DiffPatchProposal = {
-				...proposal,
-				status: decision,
-				decidedAt: new Date().toISOString(),
-			};
-			await atomicWriteUtf8(propFile, `${JSON.stringify(updated, null, 2)}\n`);
-			this.emitCanvas({ kind: "workspace_changed", cwd, reason: `proposal_${decision}` });
-			return updated;
-		});
-	}
-
 	async exportPreflight(cwd: string, targetViewerRaw: string): Promise<WenyouExportPreflightResult> {
 		const targetViewer = await this.getEffectiveViewer(cwd, targetViewerRaw);
 		const allFiles = await walkRelativeFiles(cwd);
@@ -1493,13 +1348,12 @@ export class WenyouService {
 		const cursorsMap = refreshCursorStats(visibleEvidence, scopedExistingCursors);
 		const cursors = Object.values(cursorsMap).sort((a, b) => a.groupId.localeCompare(b.groupId));
 		const unreportedCount = cursors.reduce((sum, c) => sum + c.unreportedCount, 0);
-		const [briefings, rawLedger, entities, policies, maps, proposals, canonDocs] = await Promise.all([
+		const [briefings, rawLedger, entities, policies, maps, canonDocs] = await Promise.all([
 			this.listBriefings(cwd, viewer),
 			this.loadRollingLedger(cwd),
 			viewer.kind === "gm" ? Promise.resolve([] as LintVaultEntity[]) : this.collectLintEntities(cwd),
 			this.listPolicies(cwd, viewer),
 			this.listMaps(cwd),
-			this.listProposals(cwd, viewer),
 			this.listCanonDocs(cwd, viewer),
 		]);
 		const rollingLedger = this.filterLedgerForViewer(rawLedger, viewer, entities);
@@ -1519,7 +1373,6 @@ export class WenyouService {
 			rollingLedger,
 			policies,
 			maps,
-			proposals,
 			canonDocs,
 		};
 	}

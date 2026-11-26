@@ -28,7 +28,7 @@ function readDocxCoreXml(buf: Buffer): string {
 }
 
 describe("开箱演示推演夹具 fixtures/demo-campaign 完整性验证", () => {
-	it("具备三群证据、未汇报增量、可点击 sourceRefs 示范局势书、规范 .docx 国策、双年代 SVG 地图与待审提案", async () => {
+	it("具备三群证据、未汇报增量、可点击 sourceRefs 示范局势书、规范 .docx 国策、双年代 SVG 地图与可见档案", async () => {
 		const service = new WenyouService();
 		const overview = await service.getOverview(DEMO_DIR, "gm");
 
@@ -71,8 +71,8 @@ describe("开箱演示推演夹具 fixtures/demo-campaign 完整性验证", () =
 			true,
 		);
 
-		// 待审提案就绪，且公开视角泄密预检拦截 private/ 与 00-群聊收集/ 并剥离 :::secret 块
-		expect(overview.proposals.some((p) => p.proposalId === "prop-demo-001" && p.status === "pending")).toBe(true);
+		// 设定与编年史档案就绪，且公开视角泄密预检拦截 private/ 与 00-群聊收集/ 并剥离 :::secret 块
+		expect(overview.canonDocs.length).toBeGreaterThanOrEqual(1);
 		const preflight = await service.exportPreflight(DEMO_DIR, "public");
 		expect(preflight.blockedPrivateFiles.some((f) => f.includes("gm-secret-notes.md"))).toBe(true);
 		expect(preflight.strippedSecretBlockCount).toBeGreaterThanOrEqual(2);

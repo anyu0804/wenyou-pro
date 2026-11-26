@@ -1,53 +1,26 @@
-import { formatViewerScope, type ProposalStatus, type ViewerScope } from "@percho/shared";
+import { formatViewerScope, type ViewerScope } from "@percho/shared";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getPi } from "../../api";
 import { getExecutionApi } from "../../environment-api";
 import { pushExtensionToast } from "../../stores/toasts";
 import { useWenyouCanvasStore } from "../../stores/wenyou-canvas";
-import {
-	computeSimpleLineDiff,
-	extractAvailableFactions,
-	formatShortTime,
-	renderOfflineChronicleHtml,
-} from "./wenyou-helpers";
+import { extractAvailableFactions, renderOfflineChronicleHtml } from "./wenyou-helpers";
 
-const PROPOSAL_STATUS_META: Record<ProposalStatus, { label: string; className: string }> = {
-	pending: {
-		label: "待审",
-		className: "border-amber-500/35 bg-amber-500/12 text-amber-700 dark:text-amber-300",
-	},
-	approved: {
-		label: "已合入正史",
-		className: "border-emerald-500/35 bg-emerald-500/12 text-emerald-700 dark:text-emerald-300",
-	},
-	rejected: {
-		label: "已驳回",
-		className: "border-zinc-500/30 bg-zinc-500/12 text-zinc-600 dark:text-zinc-300",
-	},
-};
-
-/** Tab 4 — 正史提案审批与群友离线包泄密预检/发包面板 */
+/** Tab 4 — 可见档案速览与群友离线包泄密预检/发包面板 */
 export function ProposalsExportPanel() {
 	const cwd = useWenyouCanvasStore((s) => s.cwd);
 	const overview = useWenyouCanvasStore((s) => s.overview);
 	const viewerScope = useWenyouCanvasStore((s) => s.viewerScope);
-	const selectedProposalId = useWenyouCanvasStore((s) => s.selectedProposalId);
-	const setSelectedProposalId = useWenyouCanvasStore((s) => s.setSelectedProposalId);
-	const decideProposal = useWenyouCanvasStore((s) => s.decideProposal);
-	const openSourceContext = useWenyouCanvasStore((s) => s.openSourceContext);
 	const preflightTargetViewer = useWenyouCanvasStore((s) => s.preflightTargetViewer);
 	const setPreflightTargetViewer = useWenyouCanvasStore((s) => s.setPreflightTargetViewer);
 	const preflightResult = useWenyouCanvasStore((s) => s.preflightResult);
 	const preflightLoading = useWenyouCanvasStore((s) => s.preflightLoading);
 	const runExportPreflight = useWenyouCanvasStore((s) => s.runExportPreflight);
 
-	const [section, setSection] = useState<"proposals" | "export" | "canon">("proposals");
-	const [statusFilter, setStatusFilter] = useState<"all" | ProposalStatus>("all");
-	const [diffViewMode, setDiffViewMode] = useState<"diff" | "full">("diff");
-	const [decidingId, setDecidingId] = useState<string | null>(null);
+	const [section, setSection] = useState<"canon" | "export">("canon");
 	const [exportingFormat, setExportingFormat] = useState<"html" | "json" | null>(null);
 
-	// 正史档案速览状态
+	// 设定与编年史档案速览状态
 	const [previewDocPath, setPreviewDocPath] = useState<string | null>(null);
 	const [previewDocContent, setPreviewDocContent] = useState<{
 		content: string;
@@ -62,37 +35,8 @@ export function ProposalsExportPanel() {
 	cwdRef.current = cwd;
 	const viewerKey = formatViewerScope(viewerScope);
 
-	const proposals = overview?.proposals ?? [];
-	const pendingCount = proposals.filter((p) => p.status === "pending").length;
-	const filteredProposals = useMemo(
-		() => (statusFilter === "all" ? proposals : proposals.filter((p) => p.status === statusFilter)),
-		[proposals, statusFilter],
-	);
-	const selectedProposal =
-		filteredProposals.find((p) => p.proposalId === selectedProposalId) ??
-		filteredProposals[0] ??
-		null;
-
-	const diffLines = useMemo(
-		() =>
-			selectedProposal
-				? computeSimpleLineDiff(selectedProposal.beforeContent, selectedProposal.afterContent)
-				: [],
-		[selectedProposal],
-	);
-
 	const factions = useMemo(() => extractAvailableFactions(overview), [overview]);
 	const canonDocs = overview?.canonDocs ?? [];
-
-	const handleDecide = async (decision: "approved" | "rejected") => {
-		if (!selectedProposal || decidingId) return;
-		setDecidingId(selectedProposal.proposalId);
-		try {
-			await decideProposal(selectedProposal.proposalId, decision);
-		} finally {
-			setDecidingId(null);
-		}
-	};
 
 	const handleExportBundle = async (format: "html" | "json") => {
 		const report = preflightResult ?? (await runExportPreflight(preflightTargetViewer));
@@ -196,19 +140,14 @@ export function ProposalsExportPanel() {
 				<div className="flex items-center gap-1 rounded-lg bg-hover p-0.5">
 					<button
 						type="button"
-						onClick={() => setSection("proposals")}
-						className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-ui-12 font-medium transition-colors ${
-							section === "proposals"
+						onClick={() => setSection("canon")}
+						className={`rounded-md px-2.5 py-1 text-ui-12 font-medium transition-colors ${
+							section === "canon"
 								? "bg-canvas text-ink shadow-soft"
 								: "text-ink-dim hover:text-ink"
 						}`}
 					>
-						<span>正史提案审批</span>
-						{pendingCount > 0 && (
-							<span className="rounded-full bg-amber-500/20 px-1.5 font-mono text-ui-10 font-semibold text-amber-700 dark:text-amber-300">
-								{pendingCount}
-							</span>
-						)}
+						可见档案 ({canonDocs.length})
 					</button>
 					<button
 						type="button"
@@ -221,230 +160,10 @@ export function ProposalsExportPanel() {
 					>
 						泄密预检与发包
 					</button>
-					<button
-						type="button"
-						onClick={() => setSection("canon")}
-						className={`rounded-md px-2.5 py-1 text-ui-12 font-medium transition-colors ${
-							section === "canon"
-								? "bg-canvas text-ink shadow-soft"
-								: "text-ink-dim hover:text-ink"
-						}`}
-					>
-						可见档案 ({canonDocs.length})
-					</button>
 				</div>
 			</div>
 
 			<div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
-				{section === "proposals" && (
-					<div className="space-y-4">
-						{/* 状态筛选胶囊 */}
-						<div className="flex flex-wrap items-center gap-1.5">
-							{(
-								[
-									{ id: "all", label: `全部 (${proposals.length})` },
-									{ id: "pending", label: `待审 (${pendingCount})` },
-									{ id: "approved", label: "已合入" },
-									{ id: "rejected", label: "已驳回" },
-								] as const
-							).map((item) => (
-								<button
-									key={item.id}
-									type="button"
-									onClick={() => setStatusFilter(item.id)}
-									className={`rounded-full border px-2.5 py-0.5 text-ui-11 transition-colors ${
-										statusFilter === item.id
-											? "border-accent bg-accent/12 font-medium text-accent"
-											: "border-border text-ink-dim hover:bg-hover hover:text-ink"
-									}`}
-								>
-									{item.label}
-								</button>
-							))}
-						</div>
-
-						{filteredProposals.length === 0 ? (
-							<div className="py-12 text-center">
-								<p className="text-ui-13 font-medium text-ink">暂无符合条件的正史变更提案</p>
-								<p className="mt-1 text-ui-12 text-ink-dim">
-									司命调用 <code className="font-mono">wenyou_propose_canon</code> 提交对{" "}
-									<code className="font-mono">01-设定与国力实册/</code> 或{" "}
-									<code className="font-mono">04-编年史与条约/</code> 的改动后，会在此等待人工落锤审批。
-								</p>
-							</div>
-						) : (
-							<>
-								{/* 提案选择列表 */}
-								<div className="divide-y divide-border rounded-xl border border-border bg-surface">
-									{filteredProposals.map((p) => {
-										const isSelected = p.proposalId === selectedProposal?.proposalId;
-										const meta = PROPOSAL_STATUS_META[p.status];
-										return (
-											<button
-												key={p.proposalId}
-												type="button"
-												onClick={() => setSelectedProposalId(p.proposalId)}
-												className={`flex w-full items-start justify-between gap-2 px-3.5 py-2.5 text-left transition-colors ${
-													isSelected ? "bg-accent/8" : "hover:bg-hover/70"
-												}`}
-											>
-												<div className="min-w-0">
-													<p className="truncate text-ui-13 font-medium text-ink">{p.summary}</p>
-													<p className="mt-0.5 truncate font-mono text-ui-11 text-ink-dim">
-														{p.operation === "create" ? "新建" : "修订"} · {p.targetPath}
-													</p>
-												</div>
-												<span
-													className={`shrink-0 rounded-full border px-2 py-0.5 text-ui-10 font-medium ${meta.className}`}
-												>
-													{meta.label}
-												</span>
-											</button>
-										);
-									})}
-								</div>
-
-								{/* 选中提案详情与前后对照 Diff */}
-								{selectedProposal && (
-									<div className="space-y-3 border-t border-border pt-4">
-										<div className="flex flex-wrap items-start justify-between gap-2">
-											<div className="min-w-0">
-												<h3 className="text-ui-14 font-semibold text-ink">
-													{selectedProposal.summary}
-												</h3>
-												<p className="mt-0.5 font-mono text-ui-11 text-ink-dim">
-													{selectedProposal.targetPath} · {formatShortTime(selectedProposal.createdAt)}
-												</p>
-											</div>
-											<div className="flex items-center gap-1 rounded-lg bg-hover p-0.5">
-												<button
-													type="button"
-													onClick={() => setDiffViewMode("diff")}
-													className={`rounded-md px-2 py-0.5 text-ui-11 ${
-														diffViewMode === "diff"
-															? "bg-canvas font-medium text-ink shadow-soft"
-															: "text-ink-dim hover:text-ink"
-													}`}
-												>
-													变更对照
-												</button>
-												<button
-													type="button"
-													onClick={() => setDiffViewMode("full")}
-													className={`rounded-md px-2 py-0.5 text-ui-11 ${
-														diffViewMode === "full"
-															? "bg-canvas font-medium text-ink shadow-soft"
-															: "text-ink-dim hover:text-ink"
-													}`}
-												>
-													修改后全文
-												</button>
-											</div>
-										</div>
-
-										{selectedProposal.warnings.length > 0 && (
-											<div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-ui-12 text-amber-700 dark:text-amber-300">
-												{selectedProposal.warnings.map((w, i) => (
-													<p key={i}>⚠ {w}</p>
-												))}
-											</div>
-										)}
-
-										{selectedProposal.sourceRefs.length > 0 && (
-											<div className="flex flex-wrap items-center gap-1.5">
-												<span className="text-ui-11 text-ink-dim">关联证据：</span>
-												{selectedProposal.sourceRefs.map((ref) => (
-													<button
-														key={ref}
-														type="button"
-														onClick={() => void openSourceContext(ref, selectedProposal.summary)}
-														className="rounded-full border border-accent/30 bg-accent/8 px-2 py-0.5 font-mono text-ui-11 text-accent transition-colors hover:border-accent hover:bg-accent/15"
-													>
-														[{ref}]
-													</button>
-												))}
-											</div>
-										)}
-
-										{/* Diff / 全文区 */}
-										<div className="max-h-[340px] overflow-auto rounded-xl border border-border bg-surface font-mono text-ui-12 select-text">
-											{diffViewMode === "diff" ? (
-												<div className="divide-y divide-border/40 py-1">
-													{diffLines.map((line, idx) => (
-														<div
-															key={idx}
-															className={`flex gap-2 px-3 py-0.5 whitespace-pre-wrap break-all ${
-																line.kind === "add"
-																	? "bg-emerald-500/12 text-emerald-800 dark:text-emerald-200"
-																	: line.kind === "del"
-																		? "bg-rose-500/12 text-rose-800 dark:text-rose-200"
-																		: "text-ink-2"
-															}`}
-														>
-															<span className="w-8 shrink-0 text-right text-ui-10 text-ink-faint select-none">
-																{line.oldLine ?? ""}
-															</span>
-															<span className="w-8 shrink-0 text-right text-ui-10 text-ink-faint select-none">
-																{line.newLine ?? ""}
-															</span>
-															<span className="w-3 shrink-0 select-none font-bold">
-																{line.kind === "add" ? "+" : line.kind === "del" ? "−" : " "}
-															</span>
-															<span className="min-w-0 flex-1">{line.text || " "}</span>
-														</div>
-													))}
-												</div>
-											) : (
-												<pre className="whitespace-pre-wrap break-words p-3.5 text-ink">
-													{selectedProposal.afterContent}
-												</pre>
-											)}
-										</div>
-
-										{/* 落锤审批按钮 */}
-										{selectedProposal.status === "pending" ? (
-											<div className="flex flex-wrap items-center justify-between gap-2 pt-1">
-												{viewerScope.kind !== "gm" ? (
-													<p className="text-ui-12 text-warn">
-														当前为非 GM 视角，请先在画布顶栏切回「GM 全局」后再执行落锤裁决。
-													</p>
-												) : (
-													<p className="text-ui-11 text-ink-faint">
-														批准后将原子写入目标正史文件；驳回不会改动现有档案。
-													</p>
-												)}
-												<div className="flex items-center gap-2">
-													<button
-														type="button"
-														disabled={viewerScope.kind !== "gm" || decidingId !== null}
-														onClick={() => void handleDecide("rejected")}
-														className="rounded-lg border border-border px-3 py-1.5 text-ui-12 text-ink-2 transition-colors hover:border-err/40 hover:bg-err/10 hover:text-err disabled:opacity-45"
-													>
-														驳回提案
-													</button>
-													<button
-														type="button"
-														disabled={viewerScope.kind !== "gm" || decidingId !== null}
-														onClick={() => void handleDecide("approved")}
-														className="rounded-lg bg-ok px-3.5 py-1.5 text-ui-12 font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-45"
-													>
-														{decidingId === selectedProposal.proposalId ? "处理中…" : "批准合入正史"}
-													</button>
-												</div>
-											</div>
-										) : (
-											<p className="text-ui-11 text-ink-faint">
-												已于 {formatShortTime(selectedProposal.decidedAt)} 裁决为「
-												{PROPOSAL_STATUS_META[selectedProposal.status].label}」。
-											</p>
-										)}
-									</div>
-								)}
-							</>
-						)}
-					</div>
-				)}
-
 				{section === "export" && (
 					<div className="space-y-4">
 						<div className="space-y-2">
@@ -582,7 +301,7 @@ export function ProposalsExportPanel() {
 						</p>
 						{canonDocs.length === 0 ? (
 							<div className="py-10 text-center text-ui-12 text-ink-faint">
-								当前视角下暂无可见正史或设定文档。
+								当前视角下暂无可见设定或编年史文档。
 							</div>
 						) : (
 							<div className="divide-y divide-border rounded-xl border border-border bg-surface">

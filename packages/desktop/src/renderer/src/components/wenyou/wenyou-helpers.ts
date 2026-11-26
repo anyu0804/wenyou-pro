@@ -81,11 +81,6 @@ export function extractAvailableFactions(overview: WenyouWorkspaceOverview | nul
 	for (const policy of overview.policies) {
 		if (policy.actor?.trim()) set.add(policy.actor.trim());
 	}
-	for (const prop of overview.proposals) {
-		if (prop.viewer?.kind === "faction" && prop.viewer.factionId.trim()) {
-			set.add(prop.viewer.factionId.trim());
-		}
-	}
 	if (overview.viewer.kind === "faction" && overview.viewer.factionId.trim()) {
 		set.add(overview.viewer.factionId.trim());
 	}
@@ -105,67 +100,6 @@ export function formatFileSize(bytes: number): string {
 	if (bytes < 1024) return `${bytes} B`;
 	if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
 	return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
-}
-
-export interface SimpleDiffLine {
-	kind: "context" | "add" | "del";
-	text: string;
-	oldLine?: number;
-	newLine?: number;
-}
-
-/** 轻量行级 Diff（LCS 回溯，超大文件优雅降级防卡顿） */
-export function computeSimpleLineDiff(before: string | undefined, after: string): SimpleDiffLine[] {
-	const oldLines = before === undefined ? [] : before.replace(/\r\n/g, "\n").split("\n");
-	const newLines = after.replace(/\r\n/g, "\n").split("\n");
-
-	if (oldLines.length === 0) {
-		return newLines.map((text, idx) => ({ kind: "add", text, newLine: idx + 1 }));
-	}
-	if (oldLines.length * newLines.length > 250_000) {
-		return [
-			...oldLines.map((text, idx): SimpleDiffLine => ({ kind: "del", text, oldLine: idx + 1 })),
-			...newLines.map((text, idx): SimpleDiffLine => ({ kind: "add", text, newLine: idx + 1 })),
-		];
-	}
-
-	const m = oldLines.length;
-	const n = newLines.length;
-	const dp = Array.from({ length: m + 1 }, () => new Uint32Array(n + 1));
-	for (let i = m - 1; i >= 0; i--) {
-		const row = dp[i]!;
-		const nextRow = dp[i + 1]!;
-		const oldLine = oldLines[i]!;
-		for (let j = n - 1; j >= 0; j--) {
-			row[j] = oldLine === newLines[j]! ? nextRow[j + 1]! + 1 : Math.max(nextRow[j]!, row[j + 1]!);
-		}
-	}
-
-	const result: SimpleDiffLine[] = [];
-	let i = 0;
-	let j = 0;
-	while (i < m && j < n) {
-		if (oldLines[i] === newLines[j]) {
-			result.push({ kind: "context", text: oldLines[i]!, oldLine: i + 1, newLine: j + 1 });
-			i += 1;
-			j += 1;
-		} else if (dp[i + 1]![j]! >= dp[i]![j + 1]!) {
-			result.push({ kind: "del", text: oldLines[i]!, oldLine: i + 1 });
-			i += 1;
-		} else {
-			result.push({ kind: "add", text: newLines[j]!, newLine: j + 1 });
-			j += 1;
-		}
-	}
-	while (i < m) {
-		result.push({ kind: "del", text: oldLines[i]!, oldLine: i + 1 });
-		i += 1;
-	}
-	while (j < n) {
-		result.push({ kind: "add", text: newLines[j]!, newLine: j + 1 });
-		j += 1;
-	}
-	return result;
 }
 
 function escapeHtml(raw: string): string {
