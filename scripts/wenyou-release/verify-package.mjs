@@ -3,7 +3,7 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { mkdir, mkdtemp, readdir, readFile, rm, stat } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readdir, readFile, rm, stat } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { homedir, tmpdir } from "node:os";
 import {
@@ -361,9 +361,12 @@ async function assertPathAbsent(
 	reason = "Forbidden Windows-only resource present in non-Windows package",
 ) {
 	try {
-		await stat(targetPath);
-	} catch {
-		return;
+		await lstat(targetPath);
+	} catch (error) {
+		if (error && typeof error === "object" && error.code === "ENOENT") {
+			return;
+		}
+		throw error;
 	}
 	throw new Error(`${reason}: ${label}`);
 }
@@ -1062,20 +1065,24 @@ export async function verifyAppAsar(archivePath, version, options = {}) {
 	};
 }
 
-export async function verifyUnpackedLocales(appDir) {
+export async function verifyUnpackedLocales(appDir, options = {}) {
+	const statFn = options.statFn ?? stat;
 	const localesDir = join(appDir, "locales");
 	let info;
 	try {
-		info = await stat(localesDir);
-	} catch {
-		return { present: false, checkedPaks: [] };
+		info = await statFn(localesDir);
+	} catch (error) {
+		if (error && typeof error === "object" && error.code === "ENOENT") {
+			return { present: false, checkedPaks: [] };
+		}
+		throw error;
 	}
 	if (!info.isDirectory()) {
 		throw new Error("Expected locales to be a directory in unpacked app");
 	}
 	const entries = await readdir(localesDir, { withFileTypes: true });
 	const pakFiles = entries
-		.filter((entry) => entry.isFile() && entry.name.toLowerCase().endsWith(".pak"))
+		.filter((entry) => (entry.isFile() || entry.isSymbolicLink()) && entry.name.toLowerCase().endsWith(".pak"))
 		.map((entry) => entry.name)
 		.sort();
 	const pakSet = new Set(pakFiles);

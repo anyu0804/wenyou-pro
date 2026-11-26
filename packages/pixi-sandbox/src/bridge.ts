@@ -150,6 +150,7 @@ export type BridgeSandboxMessage =
 
 export interface BridgeWindowLike {
   parent: { postMessage(message: unknown, targetOrigin: string): void } | null;
+  location?: { protocol?: string };
   addEventListener(type: 'message', listener: (event: MessageEvent) => void): void;
   removeEventListener(type: 'message', listener: (event: MessageEvent) => void): void;
 }
@@ -173,19 +174,49 @@ export interface MapBridgeHandle {
   destroy(): void;
 }
 
-/** 放行合法 http(s):// 宿主源（含回环与局域网/远端域名或 IP）、Electron file:// 与内置协议源（wenyou-sandbox://、app://）。 */
-export function isAllowedHostOrigin(origin: string): boolean {
-  if (
-    origin === 'null' ||
-    origin === '' ||
-    origin.startsWith('file://') ||
-    origin.startsWith('wenyou-sandbox://') ||
-    origin.startsWith('app://')
-  ) {
+/**
+ * 放行合法 http(s):// 宿主源（含回环与局域网/远端域名或 IP）、Electron file:// 与内置协议源（精确 wenyou-sandbox://app、app://）。
+ * 仅当沙盘自身运行于 wenyou-sandbox: 或 file: 协议时，才放行 'null' / '' 源，防止局域网 http(s) 下被 sandboxed iframe 借 '*' 广播窃取数据。
+ */
+export function isAllowedHostOrigin(origin: string, sandboxProtocol?: string): boolean {
+  if (origin === 'null' || origin === '') {
+    const proto = (
+      sandboxProtocol ?? (typeof window !== 'undefined' ? window.location?.protocol : undefined)
+    )?.toLowerCase();
+    return proto === 'wenyou-sandbox:' || proto === 'file:';
+  }
+  if (origin.startsWith('file://')) {
     return true;
   }
   try {
     const parsed = new URL(origin);
+    if (parsed.protocol === 'wenyou-sandbox:') {
+      return (
+        parsed.hostname.toLowerCase() === 'app' &&
+        !parsed.port &&
+        (parsed.pathname === '' || parsed.pathname === '/') &&
+        !parsed.search &&
+        !parsed.hash &&
+        !parsed.username &&
+        !parsed.password &&
+        !origin.endsWith('/') &&
+        !origin.includes('?') &&
+        !origin.includes('#')
+      );
+    }
+    if (parsed.protocol === 'app:') {
+      return (
+        Boolean(parsed.hostname) &&
+        (parsed.pathname === '' || parsed.pathname === '/') &&
+        !parsed.search &&
+        !parsed.hash &&
+        !parsed.username &&
+        !parsed.password &&
+        !origin.endsWith('/') &&
+        !origin.includes('?') &&
+        !origin.includes('#')
+      );
+    }
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
     return (
       Boolean(parsed.hostname) &&
@@ -308,7 +339,7 @@ export function initMapBridge(options: InitMapBridgeOptions = {}): MapBridgeHand
   const onMessage = (event: MessageEvent): void => {
     if (!isEmbedded() || !win) return;
     if (event.source !== (win.parent as unknown)) return;
-    if (typeof event.origin !== 'string' || !isAllowedHostOrigin(event.origin)) return;
+    if (typeof event.origin !== 'string' || !isAllowedHostOrigin(event.origin, win.location?.protocol)) return;
     const data = event.data;
     if (!isObjectRecord(data) || data.protocol !== WENYOU_MAP_BRIDGE_PROTOCOL || typeof data.type !== 'string') return;
 

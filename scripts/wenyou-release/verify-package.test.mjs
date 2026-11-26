@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { homedir, tmpdir, userInfo } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { test } from "node:test";
@@ -20,6 +20,7 @@ import {
 	verifyReadmeFile,
 	verifySha256Sums,
 	verifyUnpackedApp,
+	verifyUnpackedLocales,
 	verifyWenyouRelease,
 } from "./verify-package.mjs";
 
@@ -780,13 +781,22 @@ test("Negative #4b: removed resources/ui-plugins and unpruned or incomplete loca
 	const baseDir = await createTempDir(t);
 	const fixture = await createCompleteReleaseFixture(baseDir);
 
-	// 1. resources/ui-plugins must be absent
+	// 1. resources/ui-plugins must be absent (including dangling symlinks / junctions)
 	await writeFileEnsuringDir(join(fixture.resourcesDir, "ui-plugins/SPEC.md"), "# legacy\n");
 	await assert.rejects(
 		() => verifyUnpackedApp(fixture.unpackedDir, fixture.version),
 		/resources\/ui-plugins/i,
 	);
 	await rm(join(fixture.resourcesDir, "ui-plugins"), { recursive: true, force: true });
+
+	const danglingLink = join(fixture.resourcesDir, "ui-plugins");
+	const missingTarget = join(baseDir, "does-not-exist-target");
+	await symlink(missingTarget, danglingLink, process.platform === "win32" ? "junction" : "dir");
+	await assert.rejects(
+		() => verifyUnpackedApp(fixture.unpackedDir, fixture.version),
+		/resources\/ui-plugins/i,
+	);
+	await rm(danglingLink, { recursive: true, force: true });
 
 	// 2. Extra locale .pak file must be rejected
 	const extraPak = join(fixture.unpackedDir, "locales", "fr.pak");
@@ -811,6 +821,25 @@ test("Negative #4b: removed resources/ui-plugins and unpruned or incomplete loca
 	await assert.rejects(
 		() => verifyUnpackedApp(fixture.unpackedDir, fixture.version),
 		/en-US\.pak/i,
+	);
+	await writeFileEnsuringDir(enPak, Buffer.from("PAK-EN"));
+
+	// 4. verifyUnpackedLocales: returns { present: false } strictly on ENOENT, rethrows other fs errors
+	const noLocalesDir = join(baseDir, "no-locales-app");
+	await mkdir(noLocalesDir, { recursive: true });
+	assert.deepEqual(await verifyUnpackedLocales(noLocalesDir), { present: false, checkedPaks: [] });
+
+	const eaccesError = Object.assign(new Error("permission denied"), { code: "EACCES" });
+	await assert.rejects(
+		() => verifyUnpackedLocales(noLocalesDir, { statFn: async () => { throw eaccesError; } }),
+		(err) => err === eaccesError,
+	);
+
+	// 5. Non-directory file at locales path throws explicit error
+	await writeFile(join(noLocalesDir, "locales"), "not-a-dir", "utf8");
+	await assert.rejects(
+		() => verifyUnpackedLocales(noLocalesDir),
+		/Expected locales to be a directory/i,
 	);
 });
 

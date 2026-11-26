@@ -23,7 +23,7 @@ const {
 
 const fixtureSource = await fs.readFile(new URL('./fixtures/fmg-legacy-default.map', import.meta.url), 'utf8');
 
-function createMockWindow(embedded = true) {
+function createMockWindow(embedded = true, protocol = 'wenyou-sandbox:') {
   const listeners = new Set();
   const sent = [];
   const parent = {
@@ -33,6 +33,7 @@ function createMockWindow(embedded = true) {
   };
   const win = {
     parent: null,
+    location: { protocol },
     addEventListener(type, fn) {
       if (type === 'message') listeners.add(fn);
     },
@@ -63,28 +64,46 @@ function resetAppStore() {
   appStore.selectedTacticalId = null;
 }
 
-test('origin 校验与回复目标计算：放行合法 http(s)://（含局域网）、Electron file:// 与内置协议源', () => {
-  assert.equal(isAllowedHostOrigin('http://127.0.0.1:5173'), true);
-  assert.equal(isAllowedHostOrigin('http://localhost:3000'), true);
-  assert.equal(isAllowedHostOrigin('http://[::1]:5174'), true);
-  assert.equal(isAllowedHostOrigin('http://192.168.1.10:5173'), true);
-  assert.equal(isAllowedHostOrigin('http://10.0.0.5:7331'), true);
-  assert.equal(isAllowedHostOrigin('https://wenyou.local:8443'), true);
-  assert.equal(isAllowedHostOrigin('https://sandbox.example.com'), true);
-  assert.equal(isAllowedHostOrigin('null'), true);
-  assert.equal(isAllowedHostOrigin(''), true);
-  assert.equal(isAllowedHostOrigin('file://'), true);
-  assert.equal(isAllowedHostOrigin('wenyou-sandbox://app'), true);
-  assert.equal(isAllowedHostOrigin('app://renderer'), true);
+test('origin 校验与回复目标计算：放行合法 http(s)://（含局域网）、Electron file:// 与精确 wenyou-sandbox://app', () => {
+  assert.equal(isAllowedHostOrigin('http://127.0.0.1:5173', 'http:'), true);
+  assert.equal(isAllowedHostOrigin('http://localhost:3000', 'http:'), true);
+  assert.equal(isAllowedHostOrigin('http://[::1]:5174', 'http:'), true);
+  assert.equal(isAllowedHostOrigin('http://192.168.1.10:5173', 'http:'), true);
+  assert.equal(isAllowedHostOrigin('http://10.0.0.5:7331', 'http:'), true);
+  assert.equal(isAllowedHostOrigin('https://wenyou.local:8443', 'https:'), true);
+  assert.equal(isAllowedHostOrigin('https://sandbox.example.com', 'https:'), true);
+  assert.equal(isAllowedHostOrigin('null', 'wenyou-sandbox:'), true);
+  assert.equal(isAllowedHostOrigin('', 'wenyou-sandbox:'), true);
+  assert.equal(isAllowedHostOrigin('null', 'file:'), true);
+  assert.equal(isAllowedHostOrigin('', 'file:'), true);
+  assert.equal(isAllowedHostOrigin('file://', 'file:'), true);
+  assert.equal(isAllowedHostOrigin('wenyou-sandbox://app', 'wenyou-sandbox:'), true);
+  assert.equal(isAllowedHostOrigin('wenyou-sandbox://APP', 'wenyou-sandbox:'), true);
+  assert.equal(isAllowedHostOrigin('app://renderer', 'wenyou-sandbox:'), true);
 
-  assert.equal(isAllowedHostOrigin('javascript:alert(1)'), false);
-  assert.equal(isAllowedHostOrigin('ftp://192.168.1.10:21'), false);
-  assert.equal(isAllowedHostOrigin('chrome-extension://abcdef'), false);
-  assert.equal(isAllowedHostOrigin('data:text/html,hi'), false);
-  assert.equal(isAllowedHostOrigin('http://192.168.1.10:5173/path'), false);
-  assert.equal(isAllowedHostOrigin('http://192.168.1.10:5173/'), false);
-  assert.equal(isAllowedHostOrigin('http://user:pass@192.168.1.10:5173'), false);
-  assert.equal(isAllowedHostOrigin('not-a-url'), false);
+  // 'null' / '' 源在 http: / https: / 未提供协议时必须拒绝（防 sandboxed iframe '*' 广播泄漏）
+  assert.equal(isAllowedHostOrigin('null', 'http:'), false);
+  assert.equal(isAllowedHostOrigin('', 'http:'), false);
+  assert.equal(isAllowedHostOrigin('null', 'https:'), false);
+  assert.equal(isAllowedHostOrigin('', 'https:'), false);
+  assert.equal(isAllowedHostOrigin('null'), false);
+  assert.equal(isAllowedHostOrigin(''), false);
+
+  // wenyou-sandbox:// 仅允许精确 hostname === 'app' 且无端口/路径/查询串
+  assert.equal(isAllowedHostOrigin('wenyou-sandbox://evil', 'wenyou-sandbox:'), false);
+  assert.equal(isAllowedHostOrigin('wenyou-sandbox://app.evil', 'wenyou-sandbox:'), false);
+  assert.equal(isAllowedHostOrigin('wenyou-sandbox://app:8080', 'wenyou-sandbox:'), false);
+  assert.equal(isAllowedHostOrigin('wenyou-sandbox://app/path', 'wenyou-sandbox:'), false);
+  assert.equal(isAllowedHostOrigin('wenyou-sandbox://app/', 'wenyou-sandbox:'), false);
+
+  assert.equal(isAllowedHostOrigin('javascript:alert(1)', 'http:'), false);
+  assert.equal(isAllowedHostOrigin('ftp://192.168.1.10:21', 'http:'), false);
+  assert.equal(isAllowedHostOrigin('chrome-extension://abcdef', 'http:'), false);
+  assert.equal(isAllowedHostOrigin('data:text/html,hi', 'http:'), false);
+  assert.equal(isAllowedHostOrigin('http://192.168.1.10:5173/path', 'http:'), false);
+  assert.equal(isAllowedHostOrigin('http://192.168.1.10:5173/', 'http:'), false);
+  assert.equal(isAllowedHostOrigin('http://user:pass@192.168.1.10:5173', 'http:'), false);
+  assert.equal(isAllowedHostOrigin('not-a-url', 'http:'), false);
 
   assert.equal(resolveReplyTargetOrigin('http://127.0.0.1:5179'), 'http://127.0.0.1:5179');
   assert.equal(resolveReplyTargetOrigin('http://192.168.1.10:5173'), 'http://192.168.1.10:5173');
@@ -93,6 +112,56 @@ test('origin 校验与回复目标计算：放行合法 http(s)://（含局域�
   assert.equal(resolveReplyTargetOrigin('null'), '*');
   assert.equal(resolveReplyTargetOrigin(''), '*');
   assert.equal(resolveReplyTargetOrigin(null), '*');
+});
+
+test('http(s) 服务态下拒绝 null/空 origin（阻断 sandboxed iframe * 广播泄漏）', async () => {
+  resetAppStore();
+  const { win, parent, sent } = createMockWindow(true, 'http:');
+  const bridge = initMapBridge({
+    win,
+    doc: null,
+    listTheaters: async () => [],
+    exportProject: async () => ({
+      projectJson: '{"secret":true}',
+      activeMapId: 'm1',
+      mapName: 'm1',
+      theaterCount: 1,
+    }),
+  });
+  await flushMicrotasks();
+  sent.length = 0;
+
+  // sandboxed iframe (origin === 'null' / '') 尝试触发 ping 与导出，在 http: 沙盘下必须全部静默丢弃
+  win.dispatchMessage({
+    source: parent,
+    origin: 'null',
+    data: { protocol: WENYOU_MAP_BRIDGE_PROTOCOL, type: 'ping', requestId: 'req-null-1' },
+  });
+  win.dispatchMessage({
+    source: parent,
+    origin: '',
+    data: { protocol: WENYOU_MAP_BRIDGE_PROTOCOL, type: 'request_export_project', requestId: 'req-null-exp' },
+  });
+  win.dispatchMessage({
+    source: parent,
+    origin: 'wenyou-sandbox://evil',
+    data: { protocol: WENYOU_MAP_BRIDGE_PROTOCOL, type: 'ping', requestId: 'req-evil-sandbox' },
+  });
+  await flushMicrotasks();
+  assert.equal(sent.length, 0, 'http: 沙盘必须拒绝 null/空 origin 以及非 app 的 wenyou-sandbox:// 源');
+
+  // 合法局域网 http origin 仍正常响应精确 origin
+  win.dispatchMessage({
+    source: parent,
+    origin: 'http://192.168.1.25:5179',
+    data: { protocol: WENYOU_MAP_BRIDGE_PROTOCOL, type: 'ping', requestId: 'req-lan-ok' },
+  });
+  await flushMicrotasks();
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].targetOrigin, 'http://192.168.1.25:5179');
+  assert.equal(sent[0].message.requestId, 'req-lan-ok');
+
+  bridge.destroy();
 });
 
 test('嵌入握手、上下文同步与非法来源/非法协议忽略', async () => {
