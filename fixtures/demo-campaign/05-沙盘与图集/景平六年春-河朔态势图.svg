@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1000" width="1600" height="1000">
+  <defs>
+    <linearGradient id="bg6" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#f4efe3"/>
+      <stop offset="100%" stop-color="#e5dac2"/>
+    </linearGradient>
+    <linearGradient id="river6" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#4c7d9e"/>
+      <stop offset="100%" stop-color="#2e5e80"/>
+    </linearGradient>
+  </defs>
+  <rect width="1600" height="1000" fill="url(#bg6)"/>
+  <g stroke="#d4c7a9" stroke-width="1" opacity="0.55">
+    <path d="M0 200 H1600 M0 400 H1600 M0 600 H1600 M0 800 H1600 M320 0 V1000 M640 0 V1000 M960 0 V1000 M1280 0 V1000"/>
+  </g>
+  <!-- 势力色块 -->
+  <path d="M460,80 L1520,80 L1520,470 Q1180,520 880,490 Q620,465 440,510 Z" fill="#c7d6e6" opacity="0.58" stroke="#365c7d" stroke-width="3"/>
+  <path d="M70,110 L460,80 L440,510 L390,780 L70,820 Z" fill="#dfd0b2" opacity="0.65" stroke="#8a6835" stroke-width="3"/>
+  <path d="M440,545 Q640,505 880,530 Q1180,560 1520,510 L1520,930 L390,930 Z" fill="#e5c7c2" opacity="0.62" stroke="#8f3b34" stroke-width="3"/>
+  <!-- 济水主航道 -->
+  <path d="M380,535 Q640,485 880,510 Q1180,540 1560,490" fill="none" stroke="url(#river6)" stroke-width="26" stroke-linecap="round"/>
+  <path d="M380,535 Q640,485 880,510 Q1180,540 1560,490" fill="none" stroke="#9ec5dc" stroke-width="4" stroke-dasharray="14 10"/>
+  <!-- 景平六年春新增动态箭头 -->
+  <!-- 南楚广陵水师上行至临河渡南岸 -->
+  <path d="M1225,740 Q1080,620 925,568" fill="none" stroke="#b3241d" stroke-width="6" stroke-dasharray="12 6"/>
+  <polygon points="915,562 938,556 931,579" fill="#b3241d"/>
+  <!-- 北周清源城前出渡口与东翼哨骑 -->
+  <path d="M950,230 Q915,330 885,425" fill="none" stroke="#1b4f72" stroke-width="5"/>
+  <polygon points="882,434 875,414 895,419" fill="#1b4f72"/>
+  <!-- 西凉潜在南下虚线试探 -->
+  <path d="M275,380 Q440,580 870,680" fill="none" stroke="#9e6d1c" stroke-width="4" stroke-dasharray="8 10"/>
+  <text x="455" y="625" font-family="SimSun, serif" font-size="19" fill="#7c5210">西凉密谈牵制线（待夏初精铁到位）</text>
+  <!-- 警戒对峙圈 -->
+  <circle cx="890" cy="525" r="82" fill="#d9483b" opacity="0.14" stroke="#b3241d" stroke-width="2.5" stroke-dasharray="8 6"/>
+  <!-- 城池与动态驻防 -->
+  <g font-family="SimSun, serif" fill="#231f1a">
+    <circle cx="960" cy="210" r="16" fill="#264b6e" stroke="#fff" stroke-width="3"/>
+    <text x="986" y="218" font-size="28" font-weight="bold">邺京（京畿卫拨粮南运）</text>
+    <circle cx="730" cy="275" r="12" fill="#264b6e" stroke="#fff" stroke-width="2.5"/>
+    <text x="750" y="283" font-size="22">白狼关 · 朔北镇(1.6万)</text>
+    <circle cx="880" cy="440" r="15" fill="#1b4f72" stroke="#fff" stroke-width="3"/>
+    <text x="904" y="446" font-size="23" font-weight="bold" fill="#143a54">清源城 · 河阳镇(增防+常平仓集粮)</text>
+    <rect x="856" y="488" width="48" height="18" rx="4" fill="#1b4f72"/>
+    <text x="678" y="486" font-size="20" font-weight="bold" fill="#143a54">临河渡北寨（加筑烽燧）</text>
+    <circle cx="260" cy="360" r="15" fill="#7c5b27" stroke="#fff" stroke-width="3"/>
+    <text x="150" y="405" font-size="26" font-weight="bold">凉州城（西凉）</text>
+    <circle cx="910" cy="690" r="15" fill="#8f3b34" stroke="#fff" stroke-width="3"/>
+    <text x="935" y="698" font-size="26" font-weight="bold">襄城（南楚补给枢纽）</text>
+    <circle cx="1240" cy="760" r="16" fill="#8f3b34" stroke="#fff" stroke-width="3"/>
+    <text x="1265" y="768" font-size="28" font-weight="bold">广陵（主力楼船待春汛）</text>
+    <!-- 扩建后的南岸新水寨 -->
+    <polygon points="898,546 914,574 882,574" fill="#b3241d" stroke="#fff" stroke-width="2.5"/>
+    <text x="922" y="575" font-size="21" font-weight="bold" fill="#8f1d17">南岸新木栅水寨（实到22船 / 1.1万人）</text>
+    <text x="1030" y="638" font-size="19" fill="#8f1d17">广陵前锋溯水北上</text>
+  </g>
+  <!-- 标题图框 -->
+  <rect x="44" y="34" width="560" height="92" rx="10" fill="#faf6ec" stroke="#8f3b34" stroke-width="2.5" opacity="0.95"/>
+  <text x="68" y="74" font-family="SimSun, serif" font-size="30" font-weight="bold" fill="#751c16">河朔态势图 · 景平六年春（最新）</text>
+  <text x="68" y="108" font-family="SimSun, serif" font-size="19" fill="#594e3f">南楚临河渡南岸扩寨增兵｜北周清源收粮固防｜对峙升级</text>
+</svg>

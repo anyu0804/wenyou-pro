@@ -1,0 +1,64 @@
+appId: io.github.anyu.wenyou-pro
+productName: Wenyou Pro
+copyright: "Copyright © 2026 安钰 (Based on Percho MIT)"
+extraMetadata:
+  version: 0.2.0
+  releaseChannel: stable
+  productName: Wenyou Pro
+  disableAutoUpdate: true
+directories:
+  output: ../../dist/wenyou-pro-0.2.0-win-x64/raw
+files:
+  - out/**
+  - package.json
+  - "!node_modules/@percho"
+asarUnpack:
+  - "**/*.node"
+  - "**/node_modules/esbuild/**"
+  - "**/node_modules/@esbuild/**"
+extraResources:
+  - from: "../../node_modules/@earendil-works/pi-coding-agent/docs"
+    to: "pi-package/docs"
+  - from: "../../node_modules/@earendil-works/pi-coding-agent/examples"
+    to: "pi-package/examples"
+  - from: "../../node_modules/@earendil-works/pi-coding-agent/README.md"
+    to: "pi-package/README.md"
+  - from: "../../node_modules/@earendil-works/pi-coding-agent/CHANGELOG.md"
+    to: "pi-package/CHANGELOG.md"
+  - from: "../../node_modules/@earendil-works/pi-coding-agent/package.json"
+    to: "pi-package/package.json"
+  - from: "../../node_modules/@earendil-works/pi-coding-agent/dist/core/export-html"
+    to: "pi-package/dist/core/export-html"
+  - from: "../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme"
+    to: "pi-package/dist/modes/interactive/theme"
+  - from: "../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/assets"
+    to: "pi-package/dist/modes/interactive/assets"
+  - from: "resources/ui-plugins"
+    to: "ui-plugins"
+  - from: "resources/wenyou-skills"
+    to: "wenyou-skills"
+  - from: "resources/ntqq-vfs"
+    to: "ntqq-vfs"
+  - from: "resources/update-diagnostics"
+    to: "update-diagnostics"
+win:
+  icon: build/wenyou-pro.ico
+  artifactName: Wenyou-Pro-Portable-${version}-${arch}.${ext}
+  target:
+    - target: nsis
+      arch: [x64]
+    - target: zip
+      arch: [x64]
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: Wenyou Pro
+  installerIcon: build/wenyou-pro.ico
+  uninstallerIcon: build/wenyou-pro.ico
+  installerHeaderIcon: build/wenyou-pro.ico
+  language: "2052"
+  artifactName: Wenyou-Pro-Setup-${version}-${arch}.${ext}
+publish: null

@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1000" width="1600" height="1000">
+  <defs>
+    <linearGradient id="bg5" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#f4efe3"/>
+      <stop offset="100%" stop-color="#e8dfc9"/>
+    </linearGradient>
+    <linearGradient id="river5" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#5d8aa8"/>
+      <stop offset="100%" stop-color="#3c6e8f"/>
+    </linearGradient>
+  </defs>
+  <rect width="1600" height="1000" fill="url(#bg5)"/>
+  <g stroke="#d4c7a9" stroke-width="1" opacity="0.55">
+    <path d="M0 200 H1600 M0 400 H1600 M0 600 H1600 M0 800 H1600 M320 0 V1000 M640 0 V1000 M960 0 V1000 M1280 0 V1000"/>
+  </g>
+  <!-- 势力色块：北周（北）、西凉（西）、南楚（南） -->
+  <path d="M460,80 L1520,80 L1520,470 Q1180,520 880,490 Q620,465 440,510 Z" fill="#c7d6e6" opacity="0.58" stroke="#365c7d" stroke-width="3"/>
+  <path d="M70,110 L460,80 L440,510 L390,780 L70,820 Z" fill="#dfd0b2" opacity="0.65" stroke="#8a6835" stroke-width="3"/>
+  <path d="M440,545 Q640,505 880,530 Q1180,560 1520,510 L1520,930 L390,930 Z" fill="#e5c7c2" opacity="0.58" stroke="#8f3b34" stroke-width="3"/>
+  <!-- 济水主航道 -->
+  <path d="M380,535 Q640,485 880,510 Q1180,540 1560,490" fill="none" stroke="url(#river5)" stroke-width="26" stroke-linecap="round"/>
+  <path d="M380,535 Q640,485 880,510 Q1180,540 1560,490" fill="none" stroke="#9ec5dc" stroke-width="4" stroke-dasharray="14 10"/>
+  <!-- 盐马互市商道 -->
+  <path d="M260,360 Q480,310 730,275" fill="none" stroke="#8a6835" stroke-width="4" stroke-dasharray="10 8"/>
+  <!-- 城池与关隘 -->
+  <g font-family="SimSun, serif" fill="#231f1a">
+    <circle cx="960" cy="210" r="16" fill="#264b6e" stroke="#fff" stroke-width="3"/>
+    <text x="986" y="218" font-size="28" font-weight="bold">邺京（北周都）</text>
+    <circle cx="730" cy="275" r="12" fill="#264b6e" stroke="#fff" stroke-width="2.5"/>
+    <text x="750" y="283" font-size="22">白狼关 · 朔北镇(1.6万)</text>
+    <circle cx="880" cy="440" r="13" fill="#264b6e" stroke="#fff" stroke-width="2.5"/>
+    <text x="902" y="446" font-size="23" font-weight="bold">清源城 · 河阳镇(1.5万)</text>
+    <rect x="858" y="492" width="44" height="16" rx="4" fill="#355e80"/>
+    <text x="730" y="492" font-size="20" fill="#1e3c54">临河渡（停战界点）</text>
+    <circle cx="260" cy="360" r="15" fill="#7c5b27" stroke="#fff" stroke-width="3"/>
+    <text x="150" y="405" font-size="26" font-weight="bold">凉州城（西凉）</text>
+    <text x="455" y="295" font-size="19" fill="#6b4e1f">盐马互市道（年马1200匹）</text>
+    <circle cx="910" cy="690" r="15" fill="#8f3b34" stroke="#fff" stroke-width="3"/>
+    <text x="935" y="698" font-size="26" font-weight="bold">襄城（南楚北府）</text>
+    <circle cx="1240" cy="760" r="16" fill="#8f3b34" stroke="#fff" stroke-width="3"/>
+    <text x="1265" y="768" font-size="28" font-weight="bold">广陵（南楚水师本营）</text>
+    <circle cx="900" cy="560" r="10" fill="#8f3b34" stroke="#fff" stroke-width="2"/>
+    <text x="920" y="570" font-size="20" fill="#752822">南岸旧水寨（战船10艘）</text>
+  </g>
+  <!-- 标题图框 -->
+  <rect x="44" y="34" width="520" height="92" rx="10" fill="#faf6ec" stroke="#7d6d55" stroke-width="2" opacity="0.94"/>
+  <text x="68" y="74" font-family="SimSun, serif" font-size="30" font-weight="bold" fill="#1f1b16">河朔态势图 · 景平五年秋</text>
+  <text x="68" y="108" font-family="SimSun, serif" font-size="19" fill="#594e3f">《河朔盟约》初签｜济水停战界线稳定｜南岸仅设常规水哨</text>
+</svg>

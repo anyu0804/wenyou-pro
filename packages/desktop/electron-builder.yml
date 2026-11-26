@@ -1,0 +1,85 @@
+appId: io.github.anyu.wenyou-pro
+productName: Wenyou Pro
+extraMetadata:
+  releaseChannel: stable
+beforePack: resources/remote-runtime/before-pack.cjs
+directories:
+  output: dist
+files:
+  - out/**
+  - package.json
+  - "!node_modules/@percho"
+asarUnpack:
+  - "**/*.node"
+  # UI 插件运行时构建：esbuild 要 spawn 平台二进制，asar 内无法 exec（spawn ENOTDIR）；
+  # unpack 后 Electron child_process 自动把 app.asar 路径重写为 app.asar.unpacked
+  - "**/node_modules/esbuild/**"
+  - "**/node_modules/@esbuild/**"
+# pi SDK 包资源镜像：docs/examples/README 不进 asar，agent 的 read/bash 工具都能直接访问。
+# main 进程经 PI_PACKAGE_DIR 指到这里（export-html/themes/package.json 同根解析，必须一起带）。
+extraResources:
+  - from: "resources/remote-runtime"
+    to: "remote-runtime"
+    filter: ["manifest.json"]
+  - from: "../../node_modules/@earendil-works/pi-coding-agent/docs"
+    to: "pi-package/docs"
+  - from: "../../node_modules/@earendil-works/pi-coding-agent/examples"
+    to: "pi-package/examples"
+  - from: "../../node_modules/@earendil-works/pi-coding-agent/README.md"
+    to: "pi-package/README.md"
+  - from: "../../node_modules/@earendil-works/pi-coding-agent/CHANGELOG.md"
+    to: "pi-package/CHANGELOG.md"
+  - from: "../../node_modules/@earendil-works/pi-coding-agent/package.json"
+    to: "pi-package/package.json"
+  - from: "../../node_modules/@earendil-works/pi-coding-agent/dist/core/export-html"
+    to: "pi-package/dist/core/export-html"
+  - from: "../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme"
+    to: "pi-package/dist/modes/interactive/theme"
+  - from: "../../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/assets"
+    to: "pi-package/dist/modes/interactive/assets"
+  # UI 插件 agent 规范三件套（SPEC/percho-ui.d.ts/skill/examples）：main 经 process.resourcesPath 读取
+  - from: "resources/ui-plugins"
+    to: "ui-plugins"
+  # Wenyou Pro 随包文游专职技能包
+  - from: "resources/wenyou-skills"
+    to: "wenyou-skills"
+  # Wenyou Pro 本机 NTQQ 零依赖只读 VFS 解库组件
+  - from: "resources/ntqq-vfs"
+    to: "ntqq-vfs"
+  # 显式导出更新诊断时的只读 Windows 快照脚本（无用户命令/凭证采集）
+  - from: "resources/update-diagnostics"
+    to: "update-diagnostics"
+mac:
+  category: public.app-category.developer-tools
+  # adhoc 临时签名整个 bundle：Gatekeeper 从「已损坏（无绕过）」→「无法验证开发者（可右键打开）」
+  # hardenedRuntime 必须关：library validation 会拒绝预签名 Electron 框架和 pi SDK 的 .node prebuild
+  identity: "-"
+  hardenedRuntime: false
+  target:
+    - target: dmg
+      arch: [arm64, x64]
+    - target: zip
+      arch: [arm64, x64]
+  artifactName: wenyou-pro-mac-${arch}.${ext}
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+    - target: zip
+      arch: [x64]
+  artifactName: wenyou-pro-windows-${arch}.${ext}
+linux:
+  executableName: wenyou-pro
+  category: Development
+  target:
+    - target: AppImage
+      arch: [x64]
+  artifactName: wenyou-pro-linux-${arch}.${ext}
+nsis:
+  include: build/update-diagnostics.nsh
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+publish:
+  provider: github
+  owner: Jaxton07
+  repo: percho

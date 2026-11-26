@@ -1,0 +1,209 @@
+import type { PermissionMode, SessionMeta } from "@percho/shared";
+import { environmentEntityRef } from "@percho/shared";
+import { getExecutionApi } from "../environment-api";
+import { errText } from "../lib/error-text";
+import { measureRendererSwitch } from "../lib/session-switch-probe";
+import { installSessionBaseline } from "./session-baseline-install";
+import {
+	beginSessionBaseline,
+	failSessionBaseline,
+	isCurrentSessionBaseline,
+} from "./session-event-boundary";
+import {
+	clearSessionHistory,
+	deferSessionHistory,
+	finishSessionHistory,
+	historyOpenEpoch,
+	isHistoryReady,
+} from "./session-history";
+import { pushToast } from "./toasts";
+import { setSessionHistoryLoadError, useTranscriptStore } from "./transcript";
+import { useUiPreferencesStore } from "./ui-preferences";
+
+export interface SessionDataPorts {
+	isOpen(sessionId: string): boolean;
+	isReadOnly(sessionId: string): boolean;
+	landMeta(meta: SessionMeta): void;
+	readPermissionMode(sessionId: string): PermissionMode | undefined;
+	writePermissionMode(sessionId: string, mode: PermissionMode): void;
+}
+
+/** Data loading only: each instance owns file/session flights, never navigation or drafts. */
+export function createSessionLoader(ports: SessionDataPorts) {
+	/** 同会话在途的 bundle 装载（key = sessionId） */
+	const bundleInFlight = new Map<string, Promise<void>>();
+
+	/**
+	 * 打开会话时同步四件套：消息历史（可选跳过 live 态）、排队队列、todo 面板、权限模式。
+	 * 取数并行（各写 store 不同字段，无交叉读），应用顺序保持 history → queue → todos。
+	 * 权限模式对齐后端真值：关 tab 重开后端已归零 default，拉回防 stale（spec permission-mode D1）。
+	 *
+	 * 同会话同时在途时复用同一个 Promise（spec D3，见 `ensureOpenSession`）：open 完成时 meta 会先落进
+	 * `sessions`，用户这时再点那一行就走 `switchSession` 的懒加载，两条路会撞车重复拉四件套。
+	 */
+	function loadSessionBundle(
+		sessionId: string,
+		opts?: { skipHistoryIfLive?: boolean; observeSubagent?: boolean },
+	): Promise<void> {
+		const existing = bundleInFlight.get(sessionId);
+		if (existing) return existing;
+		const openingEpoch = historyOpenEpoch(sessionId);
+		const promise = loadSessionBundleInner(sessionId, opts)
+			.catch((error: unknown) => {
+				// 历史 IPC 失败也不能把「有一条实时消息」当作历史完成。保留可重试状态。
+				if (
+					historyOpenEpoch(sessionId) === openingEpoch &&
+					!isHistoryReady(sessionId) &&
+					environmentEntityRef(sessionId).environment.kind === "local" &&
+					ports.isOpen(sessionId)
+				) {
+					deferSessionHistory(sessionId, () => ports.isOpen(sessionId));
+				}
+				throw error;
+			})
+			.finally(() => {
+				if (bundleInFlight.get(sessionId) === promise) bundleInFlight.delete(sessionId);
+			});
+		bundleInFlight.set(sessionId, promise);
+		return promise;
+	}
+
+	async function loadSessionBundleInner(
+		sessionId: string,
+		opts?: { skipHistoryIfLive?: boolean; observeSubagent?: boolean },
+	): Promise<void> {
+		// 已完整装载的活动会话不用再覆盖；GC重开和尚未就绪的活动会话必须恢复原子基线。
+		if (
+			opts?.skipHistoryIfLive &&
+			isHistoryReady(sessionId) &&
+			useTranscriptStore.getState().bySession[sessionId]?.agentActive
+		)
+			return;
+		const openingEpoch = historyOpenEpoch(sessionId);
+		const token = beginSessionBaseline(sessionId);
+		try {
+			if (opts?.observeSubagent) await getExecutionApi(sessionId).setViewedSubagent({ sessionId });
+			if (historyOpenEpoch(sessionId) !== openingEpoch) return;
+			const endRead = measureRendererSwitch("historyRoundTrip");
+			const baseline = await getExecutionApi(sessionId).getSessionBaseline({
+				sessionId,
+				imageMode: "references",
+				historyTurns: 4,
+			});
+			endRead();
+			if (
+				historyOpenEpoch(sessionId) !== openingEpoch ||
+				!ports.isOpen(sessionId) ||
+				!isCurrentSessionBaseline(sessionId, token)
+			)
+				return;
+			const installed = installSessionBaseline(sessionId, token, baseline, () => {
+				ports.landMeta(baseline.meta);
+				ports.writePermissionMode(sessionId, baseline.permissionMode);
+			});
+			if (!installed) return;
+			finishSessionHistory(sessionId, baseline.hydrationToken);
+			// 本机持久偏好只在对应打开代次仍有效时恢复，不能盖到重开的同ID实例上。
+			const remembered =
+				environmentEntityRef(sessionId).environment.kind === "local"
+					? useUiPreferencesStore.getState().sessionPermissionModes[sessionId]
+					: undefined;
+			if (remembered && remembered !== baseline.permissionMode) {
+				try {
+					await getExecutionApi(sessionId).setPermissionMode({ sessionId, mode: remembered });
+					if (historyOpenEpoch(sessionId) === openingEpoch && ports.isOpen(sessionId))
+						ports.writePermissionMode(sessionId, remembered);
+				} catch (error) {
+					console.warn("恢复会话权限模式失败", error);
+				}
+			}
+		} catch (error) {
+			failSessionBaseline(sessionId, token);
+			if (
+				isCurrentSessionBaseline(sessionId, token) &&
+				historyOpenEpoch(sessionId) === openingEpoch &&
+				ports.isOpen(sessionId)
+			)
+				setSessionHistoryLoadError(sessionId, error);
+			throw error;
+		}
+	}
+
+	/** GC重建后恢复renderer档位；有效失败回落backend default并提示，持久偏好留待下次重试。 */
+	async function restorePermissionMode(sessionId: string): Promise<void> {
+		const openingEpoch = historyOpenEpoch(sessionId);
+		if (environmentEntityRef(sessionId).environment.kind !== "local") return;
+		const mode = ports.readPermissionMode(sessionId);
+		if (!mode || mode === "default") return;
+		try {
+			await getExecutionApi(sessionId).setPermissionMode({ sessionId, mode });
+		} catch (error) {
+			console.warn("恢复会话权限模式失败", error);
+			if (historyOpenEpoch(sessionId) !== openingEpoch || !ports.isOpen(sessionId)) return;
+			ports.writePermissionMode(sessionId, "default");
+			pushToast("warning", "toast.permissionModeFailed", errText(error));
+		}
+	}
+
+	/** 按trim后的file单飞，失败一次提示且可重试；GC loadBundle:false保留现有transcript。 */
+	function ensureOpenSession(filePath: string, opts?: { loadBundle?: boolean }): Promise<SessionMeta | null> {
+		const key = filePath.trim();
+		const existing = openInFlight.get(key);
+		if (existing) return existing;
+		const promise: Promise<SessionMeta | null> = ensureOpenSessionInner(
+			key,
+			opts?.loadBundle !== false,
+			() => openInFlight.get(key) === promise,
+		).finally(() => {
+			if (openInFlight.get(key) === promise) openInFlight.delete(key);
+		});
+		openInFlight.set(key, promise);
+		return promise;
+	}
+
+	const openInFlight = new Map<string, Promise<SessionMeta | null>>();
+
+	async function ensureOpenSessionInner(
+		filePath: string,
+		loadBundle: boolean,
+		isCurrent: () => boolean,
+	): Promise<SessionMeta | null> {
+		let meta: SessionMeta;
+		try {
+			meta = await getExecutionApi(filePath).openSession({ filePath });
+		} catch (error) {
+			console.error("打开会话失败", error);
+			if (!isCurrent()) return null;
+			pushToast("warning", "toast.sessionOpenFailed", errText(error));
+			return null;
+		}
+		// 数据先落：meta 进 tabs + LRU 打点 —— 这些与「谁抢到焦点」无关（由调用者的 token 决定）。
+		// lastUsedAt 必须在数据路径打：用户确实点了这一行，不然 GC 会把它当成「从没用过」。
+		if (!isCurrent()) return null;
+		ports.landMeta(meta);
+		if (!loadBundle) return isCurrent() ? meta : null;
+		try {
+			// 运行中子会话的事件已按其 sessionId 实时转发；保留已有流式态，
+			// 否则会在点击卡片时把 agent_start 建立的进度视图重置为静态历史。
+			await loadSessionBundle(meta.sessionId, { skipHistoryIfLive: true });
+		} catch (error) {
+			// 会话已经打开了（后端在内存里、meta 在 tabs）：数据装载失败只能提示，
+			// 不能当成「打开失败」——否则用户点了行却什么都没发生。
+			console.error("装载会话数据失败", error);
+			if (!isCurrent()) return null;
+			pushToast("warning", "toast.sessionOpenFailed", errText(error));
+		}
+		return isCurrent() ? meta : null;
+	}
+
+	function forget(sessionId: string, file?: string, options: { preserveHistoryAck?: boolean } = {}): void {
+		clearSessionHistory(sessionId, options);
+		if (file) openInFlight.delete(file.trim());
+		bundleInFlight.delete(sessionId);
+	}
+	function invalidateBundle(sessionId: string): void {
+		clearSessionHistory(sessionId, { preserveHistoryAck: true });
+		bundleInFlight.delete(sessionId);
+	}
+	return { ensureOpenSession, loadSessionBundle, restorePermissionMode, forget, invalidateBundle };
+}

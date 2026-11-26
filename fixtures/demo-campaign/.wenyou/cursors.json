@@ -1,0 +1,47 @@
+{
+  "version": 1,
+  "groups": {
+    "group-cabinet-1003": {
+      "groupId": "group-cabinet-1003",
+      "groupName": "内阁群",
+      "role": "cabinet",
+      "totalIngested": 2,
+      "lastIngestedSourceId": "group-cabinet-1003-97abddc2",
+      "lastIngestedTimestamp": "2026-11-25 20:12:45",
+      "lastReportedSourceId": null,
+      "lastReportedAt": null,
+      "unreportedCount": 2,
+      "sourceFiles": [
+        "00-群聊收集/内阁群_group-cabinet-1003.txt"
+      ]
+    },
+    "group-dice-1002": {
+      "groupId": "group-dice-1002",
+      "groupName": "骰子群",
+      "role": "dice",
+      "totalIngested": 2,
+      "lastIngestedSourceId": "group-dice-1002-roll-02",
+      "lastIngestedTimestamp": "2026-11-25 19:42:10",
+      "lastReportedSourceId": "group-dice-1002-roll-01",
+      "lastReportedAt": "2026-11-26T00:24:57.460Z",
+      "unreportedCount": 1,
+      "sourceFiles": [
+        "00-群聊收集/骰子群_group-dice-1002.json"
+      ]
+    },
+    "group-main-1001": {
+      "groupId": "group-main-1001",
+      "groupName": "主群",
+      "role": "main",
+      "totalIngested": 10,
+      "lastIngestedSourceId": "group-main-1001-8cdc8915",
+      "lastIngestedTimestamp": "2026-11-25 19:35:00",
+      "lastReportedSourceId": "group-main-1001-f6b361ee",
+      "lastReportedAt": "2026-11-26T00:24:57.460Z",
+      "unreportedCount": 1,
+      "sourceFiles": [
+        "00-群聊收集/主群_group-main-1001.txt"
+      ]
+    }
+  }
+}

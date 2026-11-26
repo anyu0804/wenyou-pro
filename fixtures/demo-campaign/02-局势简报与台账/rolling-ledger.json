@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "id": "ledger-7d7e4bd0",
+      "category": "military",
+      "tag": "[military]",
+      "faction": "南楚",
+      "summary": "临河渡南岸新木栅水寨实驻战船22艘、水陆约1.1万人，大型楼船滞留广陵。",
+      "updatedAt": "2026-11-26T00:24:57.460Z",
+      "sourceRefs": [
+        "group-main-1001-aa1a44f2",
+        "group-dice-1002-roll-01"
+      ]
+    },
+    {
+      "id": "ledger-25e65444",
+      "category": "treaty",
+      "tag": "[treaty]",
+      "faction": "西凉",
+      "summary": "《河朔盐马互市约》进入景平六年夏初交付窗口（官盐3万引换战马1200匹）。",
+      "updatedAt": "2026-11-26T00:24:57.460Z",
+      "sourceRefs": [
+        "group-main-1001-4302cca8"
+      ]
+    },
+    {
+      "id": "ledger-d3577246",
+      "category": "unconfirmed_draft",
+      "tag": "[未定案草案]",
+      "faction": "北周",
+      "summary": "[未定案草案] 内阁度支参谋曾提议抽调朔北镇八千人夜袭强渡，司马参军反对，尚未定案。",
+      "updatedAt": "2026-11-26T00:24:57.460Z",
+      "sourceRefs": [
+        "group-cabinet-1003-9330674f"
+      ]
+    }
+  ]
+}

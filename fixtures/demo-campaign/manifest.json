@@ -1,0 +1,36 @@
+{
+	"schemaVersion": 1,
+	"worldId": "canglan-era",
+	"title": "沧澜纪元 · 河朔风云",
+	"description": "Wenyou Pro 开箱演示推演战役（全合成角色与合成群号，不含任何真实个人信息）",
+	"currentEra": "景平六年春",
+	"updatedAt": "2026-11-26T00:00:00.000Z",
+	"branches": [
+		{
+			"id": "main",
+			"title": "河朔主战线",
+			"currentEra": "景平六年春",
+			"theaterMapId": "heshuo-theater"
+		}
+	],
+	"bindings": [
+		{
+			"entityId": "north-zhou",
+			"theaterMapId": "heshuo-theater",
+			"stateId": 1,
+			"burgIds": [101, 102, 103]
+		},
+		{
+			"entityId": "south-chu",
+			"theaterMapId": "heshuo-theater",
+			"stateId": 2,
+			"burgIds": [201, 202]
+		},
+		{
+			"entityId": "west-liang",
+			"theaterMapId": "heshuo-theater",
+			"stateId": 3,
+			"burgIds": [301]
+		}
+	]
+}

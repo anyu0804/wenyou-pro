@@ -1,0 +1,161 @@
+import { mkdir } from "node:fs/promises";
+import { join } from "node:path";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import type { EnvironmentHandlers } from "@percho/shared";
+import { checkoutBranch, getGitBranch, listGitBranches } from "./git";
+import { resolveExistingPath } from "./path-target";
+import type { PiBackend } from "./pi-backend";
+import { validateProjectDirectory } from "./project/directory";
+
+/** Explicit implementations share the existing IPC method identities; there is no backend reflection. */
+export function createExecutionHandlers(
+	backend: PiBackend,
+	options: { getDailyDir?: () => Promise<string>; allowInteractiveAuth?: boolean } = {},
+): EnvironmentHandlers {
+	return {
+		validateProjectDirectory: ({ path }) => validateProjectDirectory(path),
+		createSession: ({ options }) => backend.createSession(options),
+		listSessions: ({ cwd }) => backend.listSessions(cwd),
+		listAllSessions: () => backend.listAllSessions(),
+		querySessionProjects: () => backend.querySessionProjects(),
+		previewSessionProjectDeletion: ({ cwd }) => backend.previewSessionProjectDeletion(cwd),
+		deleteSessionProject: ({ cwd, token }) => backend.deleteSessionProject(cwd, token),
+		querySessionCatalog: ({ query }) => backend.querySessionCatalog(query),
+		verifySessionCatalog: ({ references }) => backend.verifySessionCatalog(references),
+		archiveSession: (input) => backend.archiveSession(input),
+		unarchiveSession: (input) => backend.unarchiveSession(input),
+		openSession: ({ filePath }) => backend.openSession(filePath),
+		closeSession: ({ sessionId, intent }) => backend.closeSession(sessionId, intent),
+		getChannelSubscriptionSessionIds: () => backend.getChannelSubscriptionSessionIds(),
+		deleteSession: ({ sessionId, sessionFile }) => backend.deleteSession(sessionId, sessionFile),
+		prompt: ({ sessionId, text, images, document }) => backend.prompt(sessionId, text, images, document),
+		retryLastFailedTurn: ({ sessionId, ref }) => backend.retryLastFailedTurn(sessionId, ref),
+		abort: ({ sessionId }) => backend.abort(sessionId),
+		setModel: ({ sessionId, provider, modelId }) => backend.setModel(sessionId, provider, modelId),
+		setThinkingLevel: ({ sessionId, level }) => backend.setThinkingLevel(sessionId, level),
+		getPendingInteractions: () => backend.getPendingInteractions(),
+		getLoadedSessions: () => backend.getLoadedSessions(),
+		setViewedSubagent: ({ sessionId }) => backend.setViewedSubagent(sessionId),
+		getSessionBaseline: ({ sessionId, imageMode, historyTurns }) =>
+			backend.getSessionBaseline(sessionId, { imageMode, historyTurns }),
+		getSessionHistoryPage: ({ sessionId, cursor }) => backend.getSessionHistoryPage(sessionId, cursor),
+		getSessionNavigation: ({ sessionId }) => backend.getSessionNavigation(sessionId),
+		getSessionMessages: ({ sessionId, imageMode }) => backend.getSessionMessages(sessionId, { imageMode }),
+		startSessionMediaPreview: ({ sessionFile }) => backend.startSessionMediaPreview(sessionFile),
+		startSessionMediaCompaction: (input) => backend.startSessionMediaCompaction(input),
+		startSessionMediaRestore: ({ requestId, compactionRequestId, confirmed }) =>
+			backend.startSessionMediaRestore(requestId, compactionRequestId, confirmed),
+		resumeSessionMediaJob: ({ requestId, confirmed }) => backend.resumeSessionMediaJob(requestId, confirmed),
+		abandonSessionMediaJob: ({ requestId, confirmed }) =>
+			backend.abandonSessionMediaJob(requestId, confirmed),
+		getSessionMediaTransaction: ({ requestId }) => backend.getSessionMediaTransaction(requestId),
+		getSessionMediaMaintenance: ({ sessionFile }) => backend.getSessionMediaMaintenance(sessionFile),
+		getSessionMediaJob: ({ jobId }) => backend.getSessionMediaJob(jobId),
+		cancelSessionMediaJob: ({ jobId }) => backend.cancelSessionMediaJob(jobId),
+		getSessionImage: ({ sessionId, imageId, revision }) =>
+			backend.getSessionImage(sessionId, imageId, revision),
+		markSessionHistoryReady: ({ sessionId, hydrationToken }) =>
+			backend.markSessionHistoryReady(sessionId, hydrationToken),
+		getTodos: ({ sessionId }) => backend.getTodos(sessionId),
+		compact: ({ sessionId, customInstructions }) => backend.compact(sessionId, customInstructions),
+		getStats: ({ sessionId }) => backend.getStats(sessionId),
+		getContextUsage: ({ sessionId }) => backend.getContextUsage(sessionId),
+		getQuota: () => backend.getQuota(),
+		clearQueue: ({ sessionId }) => backend.clearQueue(sessionId),
+		getFollowUpMessages: ({ sessionId }) => backend.getFollowUpMessages(sessionId),
+		listSlashCommands: ({ sessionId }) => backend.listSlashCommands(sessionId),
+		listSlashCommandsForCwd: ({ cwd }) => backend.listSlashCommandsForCwd(cwd),
+		setSessionName: ({ sessionId, name, cwd }) => backend.setSessionName(sessionId, name, cwd),
+		exportSession: ({ sessionId, format }) => backend.exportSession(sessionId, format),
+		forkSession: ({ sessionId, ref }) => backend.forkSession(sessionId, ref),
+		recallMessage: ({ sessionId, ref }) => backend.recallMessage(sessionId, ref),
+		getLoadedResources: ({ sessionId }) => backend.getLoadedResources(sessionId),
+		getChannelSubscriptions: ({ sessionId }) => backend.getChannelSubscriptions(sessionId),
+		listModels: () => backend.listModels(),
+		listProjectFiles: ({ cwd }) => backend.listProjectFiles(cwd),
+		ensureProjectTrust: ({ cwd }) => backend.ensureProjectTrust(cwd),
+		mcpLogin: (input) => backend.mcpLogin(input),
+		mcpConfigList: ({ cwd, instanceId }) => backend.getMcpConfig({ cwd, instanceId }),
+		mcpConfigUpsert: (input) => backend.upsertMcpServer(input),
+		mcpConfigImport: (input) => backend.importMcpServers(input),
+		mcpConfigRemove: (input) => backend.removeMcpServer(input),
+		mcpReconnect: (input) => backend.reconnectMcpServer(input),
+		listProviders: ({ options }) => backend.settings.listProviders(options),
+		saveApiKey: ({ providerId, key }) => backend.settings.saveApiKey(providerId, key),
+		removeCredential: ({ providerId }) => backend.settings.removeCredential(providerId),
+		addCustomProvider: ({ input }) => backend.settings.addCustomProvider(input),
+		listUpstreamModels: (input) => backend.settings.listUpstreamModels(input),
+		updateCustomProvider: ({ input }) => backend.settings.updateCustomProvider(input),
+		removeCustomProvider: ({ providerId }) => backend.settings.removeCustomProvider(providerId),
+		setProviderBaseUrl: ({ providerId, baseUrl, apiKey }) =>
+			backend.settings.setProviderBaseUrl(providerId, baseUrl, apiKey),
+		testProvider: ({ providerId, modelId }) => backend.settings.testProvider(providerId, modelId),
+		getModelPrefs: () => backend.modelPrefs.getPrefs(),
+		setModelHidden: ({ provider, modelId, hidden }) =>
+			backend.modelPrefs.setModelHidden(provider, modelId, hidden),
+		setModelsHidden: ({ provider, modelIds, hidden }) =>
+			backend.modelPrefs.setModelsHidden(provider, modelIds, hidden),
+		setProviderModelsHidden: ({ provider, hidden }) =>
+			backend.modelPrefs.setProviderModelsHidden(provider, hidden),
+		setSubagentModel: ({ agent, modelRef }) => backend.modelPrefs.setSubagentModel(agent, modelRef),
+		setSubagentThinking: ({ agent, level }) => backend.modelPrefs.setSubagentThinking(agent, level),
+		setSubagentPreferBuiltin: ({ enabled }) => backend.modelPrefs.setSubagentPreferBuiltin(enabled),
+		listSubagents: () => backend.listSubagents(),
+		startProviderLogin: ({ loginId, providerId }) => {
+			if (options.allowInteractiveAuth === false)
+				throw new Error(
+					"Remote interactive login is unavailable in the desktop. Stop the service and use its same-version auth maintenance entry.",
+				);
+			return backend.login.startLogin(loginId, providerId);
+		},
+		cancelProviderLogin: ({ loginId }) => backend.login.cancel(loginId),
+		respondProviderLogin: ({ loginId, promptId, value }) => backend.login.respond(loginId, promptId, value),
+		respondPermission: ({ requestId, answer }) => backend.respondPermission(requestId, answer),
+		getPermissionConfig: () => backend.getPermissionConfig(),
+		getPermissionMode: ({ sessionId }) => backend.getSessionPermissionMode(sessionId),
+		setPermissionMode: ({ sessionId, mode }) => backend.setSessionPermissionMode(sessionId, mode),
+		getChannelWatchConfig: () => backend.getChannelWatchConfig(),
+		getCodemodeConfig: () => backend.getCodemodeConfig(),
+		setCodemodeOnly: ({ only }) => backend.setCodemodeOnly(only),
+		getCacheWarming: () => backend.getCacheWarming(),
+		setCacheWarming: ({ mode }) => backend.setCacheWarming(mode),
+		setCodemodeEnabled: ({ enabled }) => backend.setCodemodeEnabled(enabled),
+		setChannelWatchEnabled: ({ enabled }) => backend.setChannelWatchEnabled(enabled),
+		respondTrust: ({ requestId, answer }) => backend.respondTrust(requestId, answer),
+		searchCatalog: ({ query, type, page }) => backend.packages.searchPackages(query, type, page),
+		installPackage: ({ name }) => backend.packages.installPackage(name),
+		removePackage: ({ source, scope, sessionId }) => backend.removePackage(source, scope, sessionId),
+		listConfiguredPackages: ({ sessionId }) => backend.listConfiguredPackages(sessionId),
+		checkPackageUpdates: ({ names }) => backend.packages.checkPackageUpdates(names),
+		respondExtensionDialog: ({ requestId, answer }) => backend.respondExtensionDialog(requestId, answer),
+		getGitBranch: ({ cwd }) => getGitBranch(cwd),
+		listGitBranches: ({ cwd }) => listGitBranches(cwd),
+		checkoutBranch: ({ cwd, branch }) => checkoutBranch(cwd, branch),
+		resolvePath: ({ target, cwd }) => resolveExistingPath(target, cwd),
+		getDailyDir:
+			options.getDailyDir ??
+			(async () => {
+				const directory = join(getAgentDir(), "daily");
+				await mkdir(directory, { recursive: true });
+				return directory;
+			}),
+		wenyouInitCampaign: ({ cwd, worldTitle, currentEra }) =>
+			backend.wenyou.initCampaign(cwd, { worldTitle, currentEra }),
+		wenyouGetOverview: ({ cwd, viewer }) => backend.wenyou.getOverview(cwd, viewer),
+		wenyouPullQq: ({ cwd, groupId }) => backend.wenyou.pullQq(cwd, groupId),
+		wenyouLookupSource: ({ cwd, sourceId, window, viewer }) =>
+			backend.wenyou.lookupSource(cwd, sourceId, window, viewer),
+		wenyouListBriefings: ({ cwd }) => backend.wenyou.listBriefings(cwd),
+		wenyouListPolicies: ({ cwd }) => backend.wenyou.listPolicies(cwd),
+		wenyouLintPolicy: ({ cwd, text, viewer, branchId, currentOrder }) =>
+			backend.wenyou.lintPolicy(cwd, text, { viewer, branchId, currentOrder }),
+		wenyouWritePolicyDocx: ({ cwd, title, content, actor, turnLabel, serialNo, force }) =>
+			backend.wenyou.writePolicyDocx({ cwd, title, content, actor, turnLabel, serialNo, force }),
+		wenyouListMaps: ({ cwd }) => backend.wenyou.listMaps(cwd),
+		wenyouListProposals: ({ cwd, viewer }) => backend.wenyou.listProposals(cwd, viewer),
+		wenyouDecideProposal: ({ cwd, proposalId, decision, viewer }) =>
+			backend.wenyou.decideProposal(cwd, proposalId, decision, viewer),
+		wenyouExportPreflight: ({ cwd, targetViewer }) => backend.wenyou.exportPreflight(cwd, targetViewer),
+		wenyouReadCanonDoc: ({ cwd, relPath, viewer }) => backend.wenyou.readCanonDoc(cwd, relPath, viewer),
+	};
+}

@@ -1,0 +1,20 @@
+{
+	"stable": {
+		"name": "Wenyou Pro",
+		"appId": "io.github.anyu.wenyou-pro",
+		"badge": "",
+		"badgeColor": ""
+	},
+	"beta": {
+		"name": "Wenyou Pro Beta",
+		"appId": "io.github.anyu.wenyou-pro.beta",
+		"badge": "BETA",
+		"badgeColor": "#c47417"
+	},
+	"dev": {
+		"name": "Wenyou Pro Dev",
+		"appId": "io.github.anyu.wenyou-pro.dev",
+		"badge": "DEV",
+		"badgeColor": "#5271c4"
+	}
+}

@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "worldId": "demo-atlas",
+  "title": "星海演义（脱敏黄金回归夹具）",
+  "description": "用于契约、双向链接、视角隔离与导出审计的合成测试世界包。",
+  "exportedViewer": "gm",
+  "updatedAt": "2026-11-25T00:00:00Z",
+  "branches": [
+    {
+      "id": "north",
+      "title": "北陆支线",
+      "currentEra": "1760年底",
+      "theaterMapId": "map-north"
+    },
+    {
+      "id": "islands",
+      "title": "群岛支线",
+      "currentEra": "1765年",
+      "theaterMapId": "map-islands"
+    }
+  ],
+  "bindings": [
+    {
+      "entityId": "country:aurelia",
+      "theaterMapId": "map-north",
+      "stateId": 1,
+      "burgIds": [101, 102]
+    },
+    {
+      "entityId": "country:valen",
+      "theaterMapId": "map-north",
+      "stateId": 2,
+      "burgIds": [201]
+    }
+  ]
+}

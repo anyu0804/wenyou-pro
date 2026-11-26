@@ -1,0 +1,407 @@
+import { existsSync } from "node:fs";
+import { join, resolve, sep } from "node:path";
+import type { Model } from "@earendil-works/pi-ai";
+import type { AgentSessionEvent, ModelRuntime } from "@earendil-works/pi-coding-agent";
+import {
+	createAgentSession,
+	DefaultResourceLoader,
+	getAgentDir,
+	SessionManager,
+	SettingsManager,
+} from "@earendil-works/pi-coding-agent";
+import {
+	isThinkingLevel,
+	type PermissionMode,
+	type SubagentRunStatus,
+	type SubagentRunSummary,
+	type ThinkingLevel,
+} from "@percho/shared";
+import { makePermissionGateExtension } from "../../permissions/extension";
+import type { PermissionGate, PermissionRequestMeta } from "../../permissions/gate";
+import type { SessionTraces } from "../../session/traces";
+import { makeUiContext } from "../../session/ui-context";
+import { makeWebFetchTool } from "../webfetch";
+import type { SubagentDefinition } from "./agents";
+import { subagentPermissionMode } from "./policy";
+import { describeBoundaries, REPORT_GUIDE, SUBAGENT_CORE } from "./prompt";
+import { summarizeSubagentRun } from "./summary";
+
+export interface SubagentUsage {
+	input: number;
+	output: number;
+	cacheRead: number;
+	cacheWrite: number;
+	cost: number;
+	totalTokens: { tokens: number };
+}
+
+export interface SingleResult {
+	agent: string;
+	task: string;
+	model?: string;
+	/** 子会话实际生效的思考档位（SDK 按模型能力 clamp 后的值；无模型时为 off） */
+	thinkingLevel?: string;
+	exitCode: number;
+	status?: SubagentRunStatus;
+	summary?: SubagentRunSummary;
+	index?: number;
+	error?: string;
+	content?: string;
+	usage: SubagentUsage;
+	artifactPaths: { jsonlPath?: string };
+}
+
+export interface RunSubagentInput {
+	agent: SubagentDefinition;
+	task: string;
+	cwd: string;
+	/** 父会话的项目信任态（子会话 SettingsManager 对齐，不硬编码 trusted） */
+	projectTrusted: boolean;
+	batchIndex?: number;
+	model?: Model<any>;
+	signal?: AbortSignal;
+	onProgress?: (result: SingleResult) => void;
+}
+
+export interface RunSubagentDeps {
+	getModelRuntime: () => Promise<ModelRuntime>;
+	/** 设置页的 per-agent 覆盖；无配置时返回 undefined 并继续走 frontmatter / 父模型。 */
+	getSubagentModel: (agentName: string) => Promise<string | undefined>;
+	/** 设置页的 per-agent 思考深度覆盖；无配置时返回 undefined 并继续走 frontmatter。 */
+	getSubagentThinkingLevel: (agentName: string) => Promise<string | undefined>;
+	getPermissionMode?: () => PermissionMode;
+	gate: PermissionGate;
+	traces: SessionTraces;
+	/** 把运行中子会话事件转发给宿主；未提供时只写 trace（供非桌面宿主使用）。 */
+	onEvent?: (sessionId: string, event: AgentSessionEvent, abort: () => Promise<void>) => void;
+	registerRun?: (sessionId: string, handle: SubagentRunHandle) => void;
+	unregisterRun?: (sessionId: string) => void;
+}
+
+export interface SubagentRunHandle {
+	/** 仅借用公开读取面；检视页不能创建另一个SDK运行上下文。 */
+	getSource?: () => import("../../session/read-only-view").RunningSessionSource;
+	/** 完整runner清理完成；删除必须等待，不能只等待SDK abort。 */
+	completion?: Promise<void>;
+	abort: () => Promise<void>;
+	dispose: () => void;
+	getBranch: () => ReturnType<SessionManager["getBranch"]>;
+}
+
+const EMPTY_USAGE: SubagentUsage = {
+	input: 0,
+	output: 0,
+	cacheRead: 0,
+	cacheWrite: 0,
+	cost: 0,
+	totalTokens: { tokens: 0 },
+};
+
+/** 子会话统一根目录（与主历史列表物理隔离；openSession 据此判定只读） */
+export function subagentSessionsRoot(agentDir: string = getAgentDir()): string {
+	return join(agentDir, "sessions-subagents");
+}
+
+/** filePath 是否落在子会话目录下（规范化后做前缀判定，防 `..` 绕判） */
+export function isSubagentSessionPath(filePath: string, agentDir?: string): boolean {
+	const root = resolve(subagentSessionsRoot(agentDir));
+	const normalized = resolve(filePath);
+	return normalized === root || normalized.startsWith(root + sep);
+}
+
+function projectSlug(cwd: string): string {
+	const slug = cwd.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
+	return slug || "default";
+}
+
+export async function resolveModel(
+	runtime: ModelRuntime,
+	spec: string | undefined,
+	fallback: Model<any> | undefined,
+): Promise<Model<any> | undefined> {
+	if (!spec) return fallback;
+	const slash = spec.indexOf("/");
+	if (slash > 0) return runtime.getModel(spec.slice(0, slash), spec.slice(slash + 1)) ?? fallback;
+	const matches = (await runtime.getAvailable()).filter((model) => model.id === spec);
+	return matches.length === 1 ? matches[0] : fallback;
+}
+
+/** 模型优先级：设置页 per-agent 覆盖 > agent frontmatter > 父会话模型。 */
+export async function resolveSubagentModel(
+	runtime: ModelRuntime,
+	preference: string | undefined,
+	frontmatter: string | undefined,
+	fallback: Model<any> | undefined,
+): Promise<Model<any> | undefined> {
+	return resolveModel(runtime, preference ?? frontmatter, fallback);
+}
+
+/**
+ * 思考深度优先级（spec D2）：设置页 per-agent 覆盖 > agent frontmatter > undefined。
+ * undefined = 不传显式档位，交 SDK 默认链（既有会话 > per-model > 全局默认）并按模型能力 clamp。
+ * 设置页脏值（非 7 档）跳过、回退 frontmatter（model-prefs 读侧已白名单过滤，此处只做兑底）。
+ */
+export function resolveSubagentThinkingLevel(
+	preference: string | undefined,
+	frontmatter: ThinkingLevel | undefined,
+): ThinkingLevel | undefined {
+	return isThinkingLevel(preference) ? preference : frontmatter;
+}
+
+/** 子会话标题对齐主会话命名：任务首行，最多 30 字；加 agent 前缀方便快速检视。 */
+export function subagentSessionName(agent: string, task: string, batchIndex?: number): string {
+	const identity = batchIndex === undefined ? agent : `${agent} #${batchIndex}`;
+	const firstLine = (task.trim().split("\n")[0] ?? "").trim();
+	const title = firstLine.length > 30 ? `${firstLine.slice(0, 30)}…` : firstLine;
+	return title ? `${identity}: ${title}` : identity;
+}
+
+function assistantText(session: { messages: readonly unknown[] }): string {
+	const messages = [...session.messages].reverse();
+	const assistant = messages.find((message) => (message as { role?: string }).role === "assistant") as
+		| { content?: unknown[] }
+		| undefined;
+	if (!assistant || !Array.isArray(assistant.content)) return "";
+	return assistant.content
+		.filter((block): block is { type: "text"; text: string } => {
+			const item = block as { type?: string; text?: unknown };
+			return item.type === "text" && typeof item.text === "string";
+		})
+		.map((block) => block.text)
+		.join("")
+		.trim();
+}
+
+type UsageDelta = {
+	input?: number;
+	output?: number;
+	cacheRead?: number;
+	cacheWrite?: number;
+	cost?: number;
+	totalTokens?: number;
+};
+
+function usageFromMessage(message: unknown): UsageDelta {
+	const usage = (message as { usage?: Record<string, unknown> } | undefined)?.usage;
+	if (!usage) return {};
+	const cost = usage.cost as { total?: unknown } | undefined;
+	return {
+		input: typeof usage.input === "number" ? usage.input : undefined,
+		output: typeof usage.output === "number" ? usage.output : undefined,
+		cacheRead: typeof usage.cacheRead === "number" ? usage.cacheRead : undefined,
+		cacheWrite: typeof usage.cacheWrite === "number" ? usage.cacheWrite : undefined,
+		cost: typeof cost?.total === "number" ? cost.total : undefined,
+		totalTokens: typeof usage.totalTokens === "number" ? usage.totalTokens : undefined,
+	};
+}
+
+function addUsage(target: SubagentUsage, delta: UsageDelta): void {
+	target.input += delta.input ?? 0;
+	target.output += delta.output ?? 0;
+	target.cacheRead += delta.cacheRead ?? 0;
+	target.cacheWrite += delta.cacheWrite ?? 0;
+	target.cost += delta.cost ?? 0;
+	// totalTokens 是单条消息的累计上下文量（非增量）：取峰值而非求和，求和会重复计数
+	if (typeof delta.totalTokens === "number") {
+		target.totalTokens.tokens = Math.max(target.totalTokens.tokens, delta.totalTokens);
+	}
+}
+
+function modelLabel(model: Model<any> | undefined): string | undefined {
+	return model ? `${model.provider}/${model.id}` : undefined;
+}
+
+/** 在共享 ModelRuntime 上运行一个隔离的、深度固定为 1 的子会话。 */
+export async function runSubagent(deps: RunSubagentDeps, input: RunSubagentInput): Promise<SingleResult> {
+	const startedAt = Date.now();
+	const runtime = await deps.getModelRuntime();
+	const model = await resolveSubagentModel(
+		runtime,
+		await deps.getSubagentModel(input.agent.name),
+		input.agent.model,
+		input.model,
+	);
+	// 显式档位覆盖全局默认（SDK 仍会按模型能力 clamp）；undefined = 走 SDK 默认链
+	const thinkingLevel = resolveSubagentThinkingLevel(
+		await deps.getSubagentThinkingLevel(input.agent.name),
+		input.agent.thinking,
+	);
+	const agentDir = getAgentDir();
+	const sessionDir = join(subagentSessionsRoot(agentDir), projectSlug(input.cwd));
+	const cancellation = new AbortController();
+	const childGateConfirm = (title: string, message: string, meta?: PermissionRequestMeta) =>
+		deps.gate.confirm(
+			`[${input.agent.name}${input.batchIndex ? ` #${input.batchIndex}` : ""}] ${title}`,
+			message,
+			meta,
+			cancellation.signal,
+		);
+	const childSettings = SettingsManager.create(input.cwd, agentDir, {
+		projectTrusted: input.projectTrusted,
+	});
+	const safeTools = input.agent.tools.filter((name) => name !== "subagent" && !name.startsWith("subagent_"));
+	const customTools = safeTools.includes("webfetch") ? [makeWebFetchTool()] : [];
+	const policy = { agentDir, deny: input.agent.deny ?? [], permissionMode: input.agent.permissionMode };
+	const resourceLoader = new DefaultResourceLoader({
+		cwd: input.cwd,
+		agentDir,
+		settingsManager: childSettings,
+		noExtensions: true,
+		noSkills: true,
+		noPromptTemplates: true,
+		// 保留角色指令，同时让 SDK 按父会话信任态发现 APPEND_SYSTEM.md。
+		appendSystemPromptOverride: (base) => [
+			input.agent.systemPrompt,
+			SUBAGENT_CORE,
+			describeBoundaries(policy),
+			REPORT_GUIDE,
+			...base,
+		],
+		extensionFactories: [
+			makePermissionGateExtension(agentDir, {
+				projectRoot: input.cwd,
+				confirm: childGateConfirm,
+				subagentPolicy: policy,
+				getMode: () =>
+					subagentPermissionMode(deps.getPermissionMode?.() ?? "default", input.agent.permissionMode),
+			}),
+		],
+	});
+	await resourceLoader.reload();
+
+	const sessionManager = SessionManager.create(input.cwd, sessionDir);
+	const { session } = await createAgentSession({
+		cwd: input.cwd,
+		agentDir,
+		modelRuntime: runtime,
+		model,
+		thinkingLevel,
+		tools: safeTools,
+		customTools,
+		sessionManager,
+		settingsManager: childSettings,
+		resourceLoader,
+	});
+	const result: SingleResult = {
+		agent: input.agent.name,
+		task: input.task,
+		model: modelLabel(session.model),
+		// 实际生效档位（SDK clamp 后）；卡片元信息与 jsonl 的 thinking_level_change 一致
+		thinkingLevel: session.thinkingLevel,
+		exitCode: -1,
+		status: "running",
+		index: input.batchIndex,
+		usage: structuredClone(EMPTY_USAGE),
+		artifactPaths: { jsonlPath: session.sessionFile },
+	};
+	let aborted = false;
+	let disposed = false;
+	let complete!: () => void;
+	const completion = new Promise<void>((resolve) => {
+		complete = resolve;
+	});
+	const handle: SubagentRunHandle = {
+		completion,
+		abort: async () => {
+			aborted = true;
+			cancellation.abort();
+			await session.abort();
+		},
+		dispose: () => {
+			if (!disposed) {
+				disposed = true;
+				session.dispose();
+			}
+		},
+		getBranch: () => session.sessionManager.getBranch(),
+		getSource: () => session,
+	};
+	let settled = false;
+	let failure: string | undefined;
+	let unsubscribeEvents: (() => void) | undefined;
+	// 等待 agent_settled 而非 agent_end：SDK 运行主体的 finally 保证已启动运行最终 settled
+	// （正常结束 / 异常逃逸 / abort）都触发；agent_end 在 overflow 重试（willRetry）或异常时不算终结。
+	const endPromise = new Promise<void>((resolve) => {
+		unsubscribeEvents = session.subscribe((event: AgentSessionEvent) => {
+			deps.traces.record(session.sessionId, event);
+			deps.onEvent?.(session.sessionId, event, handle.abort);
+			if (event.type === "message_end") addUsage(result.usage, usageFromMessage(event.message));
+			if (event.type === "agent_settled") {
+				settled = true;
+				resolve();
+			}
+		});
+	});
+	const abort = () => {
+		void handle.abort();
+	};
+	if (input.signal) {
+		if (input.signal.aborted) abort();
+		else input.signal.addEventListener("abort", abort, { once: true });
+	}
+	try {
+		deps.registerRun?.(session.sessionId, handle);
+		// 子会话没有主会话的 message_start 自动命名器；创建后立即把任务首行写进自己的 jsonl。
+		session.setSessionName(subagentSessionName(input.agent.name, input.task, input.batchIndex));
+		// 子会话 noExtensions（用户扩展不加载），对话框永远不被触发：makeUiContext({}) 即纯 no-op。
+		// mode 同步改 "rpc"（D9，与主会话一致）；内置权限扩展走 childGateConfirm 直通道，不经 ui.confirm。
+		await session.bindExtensions({ uiContext: makeUiContext({}), mode: "rpc" });
+		// sessionFile 已在创建时落盘；先通知父工具/UI，用户即可在首个模型事件前进入实时子会话。
+		input.onProgress?.(result);
+		await deps.traces.start(session.sessionId, session.sessionManager.getSessionDir());
+		// expandPromptTemplates: false——子会话无任何模板/命令，任务文本以 "/" 开头也不触发命令解析
+		if (!aborted) await session.prompt(input.task, { expandPromptTemplates: false });
+		if (!settled && !aborted) await endPromise;
+		result.content = assistantText(session);
+		result.status = aborted || input.signal?.aborted ? "aborted" : "done";
+		result.exitCode = result.status === "done" ? 0 : 1;
+		// 子会话 LLM 错误不一定 throw（stopReason "error" 体现在最后一条 assistant 消息上）
+		const lastAssistant = [...session.messages]
+			.reverse()
+			.find((message) => (message as { role?: string }).role === "assistant") as
+			| { stopReason?: string; errorMessage?: string }
+			| undefined;
+		if (lastAssistant?.stopReason === "aborted") result.status = "aborted";
+		if (lastAssistant?.stopReason === "error" && result.status !== "aborted") {
+			result.status = "failed";
+			result.exitCode = 1;
+			result.error = lastAssistant.errorMessage ?? "subagent model error";
+		}
+	} catch (error) {
+		result.status = aborted || input.signal?.aborted ? "aborted" : "failed";
+		failure = error instanceof Error ? error.message : String(error);
+		result.exitCode = 1;
+		result.error = failure;
+	} finally {
+		try {
+			unsubscribeEvents?.();
+			input.signal?.removeEventListener("abort", abort);
+			result.summary = summarizeSubagentRun(session.sessionManager, Date.now() - startedAt);
+			deps.traces.recordCustom?.(session.sessionId, "subagent_summary", result.summary);
+			await deps.traces.stop(session.sessionId);
+		} finally {
+			try {
+				handle.dispose();
+			} finally {
+				try {
+					deps.unregisterRun?.(session.sessionId);
+				} finally {
+					complete();
+				}
+			}
+		}
+	}
+	if (aborted || input.signal?.aborted) result.status = "aborted";
+	result.exitCode = result.status === "done" ? 0 : 1;
+	if (failure && !result.error) result.error = failure;
+	// totalTokens 从未上报时回落 input+output（卡片 tokens 展示用）
+	if (result.usage.totalTokens.tokens === 0) {
+		result.usage.totalTokens.tokens = result.usage.input + result.usage.output;
+	}
+	// 子会话在任何消息落盘前失败时文件还没写盘（1.0.4：路径早在 create 时就分配、文件要等首条消息）
+	// ——不给卡片一个打不开的点击目标；判据是 existsSync，不是 sessionFile 有无
+	if (result.artifactPaths.jsonlPath && !existsSync(result.artifactPaths.jsonlPath)) {
+		result.artifactPaths = {};
+	}
+	return result;
+}

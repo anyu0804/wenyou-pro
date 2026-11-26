@@ -1,0 +1,664 @@
+import { existsSync } from "node:fs";
+import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { basename, extname, join } from "node:path";
+import type {
+	EvidenceMessageKind,
+	EvidenceMessageRecord,
+	GroupCursorRecord,
+	GroupRole,
+	SourceContextWindow,
+	ViewerScope,
+	VisibilityLevel,
+	WenyouPullQqResult,
+} from "@percho/shared";
+import { canViewerSee } from "./secret-blocks";
+
+const QQ_DATE_TIME_RE = /^(.+?)\s+(\d{4})[-/](\d{1,2})[-/](\d{1,2})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?$/;
+const QQ_TIME_WITH_SEC_RE = /^(.+?)\s+(\d{1,2}):(\d{2}):(\d{2})$/;
+const QQ_TIME_NO_SEC_RE = /^(.+?)\s+(\d{1,2}):(\d{2})$/;
+
+function pad2(val: string): string {
+	return val.padStart(2, "0");
+}
+
+function cleanSender(rawSender: string): { sender: string; senderId?: string } {
+	const trimmed = rawSender.trim();
+	const idMatch = trimmed.match(/[（(](qq-demo-\d+|\d{5,12}|[^()（）\s]+@[^()（）\s]+)[)）]$/);
+	const senderId = idMatch?.[1];
+	const cleaned = trimmed
+		.replace(/\s*[（(](?:qq-demo-\d+|\d{5,12}|[^()（）\s]+@[^()（）\s]+)[)）]$/, "")
+		.trim();
+	return { sender: cleaned.length > 0 ? cleaned : trimmed, ...(senderId ? { senderId } : {}) };
+}
+
+export function computeEvidenceFingerprint(record: {
+	groupId: string;
+	sender: string;
+	timestamp: string;
+	text: string;
+}): string {
+	const payload = `${record.groupId}\0${record.sender}\0${record.timestamp}\0${record.text}`;
+	let h1 = 0x811c9dc5;
+	let h2 = 0x9e3779b1;
+	for (let i = 0; i < payload.length; i += 1) {
+		const code = payload.charCodeAt(i);
+		h1 ^= code;
+		h1 = Math.imul(h1, 0x01000193) >>> 0;
+		h2 ^= code ^ (i & 0xff);
+		h2 = Math.imul(h2, 0x85ebca6b) >>> 0;
+	}
+	return `${h1.toString(16).padStart(8, "0")}${h2.toString(16).padStart(8, "0")}`;
+}
+
+export function inferGroupMeta(fileName: string): {
+	groupId: string;
+	groupName: string;
+	role: GroupRole;
+	defaultVisibility: VisibilityLevel;
+} {
+	const stem = basename(fileName, extname(fileName));
+	const idMatch = stem.match(/(group-[a-z0-9-]+|\d{6,12})/i);
+	const groupId = idMatch?.[1]?.toLowerCase() ?? stem.toLowerCase().replace(/[^a-z0-9\u4e00-\u9fa5-]+/g, "-");
+	const lower = stem.toLowerCase();
+	let role: GroupRole = "other";
+	let defaultVisibility: VisibilityLevel = "public";
+	if (lower.includes("主群") || lower.includes("main")) {
+		role = "main";
+	} else if (lower.includes("骰") || lower.includes("dice")) {
+		role = "dice";
+	} else if (lower.includes("内阁") || lower.includes("密") || lower.includes("cabinet") || lower.includes("private")) {
+		role = "cabinet";
+		defaultVisibility = "gm";
+	} else if (lower.includes("外交") || lower.includes("diplomacy")) {
+		role = "diplomacy";
+	}
+	const groupName = stem.replace(/[_-]group-[a-z0-9-]+$/i, "").trim() || stem;
+	return { groupId, groupName, role, defaultVisibility };
+}
+
+function classifyMessageKind(sender: string, text: string, role: GroupRole): EvidenceMessageKind {
+	if (role === "dice" || /骰娘|掷骰|\.r\b|1d100|检定|大成功|大失败/i.test(`${sender} ${text}`)) {
+		return "dice_roll";
+	}
+	if (/裁判|司历|GM|主持|公告|裁定/i.test(sender) || /^【(?:裁判|裁定|正式结算|公告)】/.test(text)) {
+		return "gm_ruling";
+	}
+	if (/照会|通牒|盟约|停战|宣战|使节|国书/.test(text)) {
+		return "diplomacy";
+	}
+	if (/^(?:ooc|水群|哈哈|草|笑死|晚安|冒泡)/i.test(text.trim())) {
+		return "ooc";
+	}
+	return "chat";
+}
+
+function parsePlainTextMessages(
+	rawText: string,
+	meta: { groupId: string; groupName: string; role: GroupRole; defaultVisibility: VisibilityLevel },
+): Omit<EvidenceMessageRecord, "lineIndex">[] {
+	const lines = rawText.replace(/^\uFEFF/, "").replace(/\r\n/g, "\n").split("\n");
+	const records: Omit<EvidenceMessageRecord, "lineIndex">[] = [];
+	let current: { sender: string; senderId?: string; timestamp: string; body: string[] } | null = null;
+	let lastSeenDate: string | undefined;
+
+	const flush = () => {
+		if (!current) return;
+		const text = current.body.join("\n").trim();
+		if (!text) {
+			current = null;
+			return;
+		}
+		const fp = computeEvidenceFingerprint({
+			groupId: meta.groupId,
+			sender: current.sender,
+			timestamp: current.timestamp,
+			text,
+		});
+		records.push({
+			sourceId: `${meta.groupId}-${fp.slice(0, 8)}`,
+			groupId: meta.groupId,
+			groupName: meta.groupName,
+			sender: current.sender,
+			...(current.senderId ? { senderId: current.senderId } : {}),
+			timestamp: current.timestamp,
+			text,
+			kind: classifyMessageKind(current.sender, text, meta.role),
+			visibility: meta.defaultVisibility,
+			fingerprint: fp,
+		});
+		current = null;
+	};
+
+	for (const line of lines) {
+		const trimmed = line.trim();
+		const dtMatch = trimmed.match(QQ_DATE_TIME_RE);
+		if (dtMatch && dtMatch[1] && dtMatch[2] && dtMatch[3] && dtMatch[4] && dtMatch[5] && dtMatch[6]) {
+			flush();
+			const datePart = `${dtMatch[2]}-${pad2(dtMatch[3])}-${pad2(dtMatch[4])}`;
+			lastSeenDate = datePart;
+			const cleaned = cleanSender(dtMatch[1]);
+			current = {
+				sender: cleaned.sender,
+				senderId: cleaned.senderId,
+				timestamp: `${datePart} ${pad2(dtMatch[5])}:${dtMatch[6]}:${pad2(dtMatch[7] ?? "00")}`,
+				body: [],
+			};
+			continue;
+		}
+		const secMatch = trimmed.match(QQ_TIME_WITH_SEC_RE);
+		if (secMatch && secMatch[1] && secMatch[2] && secMatch[3] && secMatch[4]) {
+			flush();
+			const cleaned = cleanSender(secMatch[1]);
+			current = {
+				sender: cleaned.sender,
+				senderId: cleaned.senderId,
+				timestamp: `${lastSeenDate ?? "2026-01-01"} ${pad2(secMatch[2])}:${secMatch[3]}:${secMatch[4]}`,
+				body: [],
+			};
+			continue;
+		}
+		if (lastSeenDate) {
+			const shortMatch = trimmed.match(QQ_TIME_NO_SEC_RE);
+			if (shortMatch && shortMatch[1] && shortMatch[2] && shortMatch[3]) {
+				flush();
+				const cleaned = cleanSender(shortMatch[1]);
+				current = {
+					sender: cleaned.sender,
+					senderId: cleaned.senderId,
+					timestamp: `${lastSeenDate} ${pad2(shortMatch[2])}:${shortMatch[3]}:00`,
+					body: [],
+				};
+				continue;
+			}
+		}
+		if (current) current.body.push(line);
+	}
+	flush();
+	return records;
+}
+
+interface RawJsonMessage {
+	sourceId?: unknown;
+	id?: unknown;
+	messageId?: unknown;
+	sender?: unknown;
+	senderName?: unknown;
+	nickname?: unknown;
+	senderId?: unknown;
+	uin?: unknown;
+	timestamp?: unknown;
+	time?: unknown;
+	text?: unknown;
+	content?: unknown;
+	visibility?: unknown;
+	visibleToFactions?: unknown;
+	groupId?: unknown;
+	groupName?: unknown;
+}
+
+function normalizeRawJsonItems(
+	items: RawJsonMessage[],
+	fallbackMeta: { groupId: string; groupName: string; role: GroupRole; defaultVisibility: VisibilityLevel },
+): Omit<EvidenceMessageRecord, "lineIndex">[] {
+	const out: Omit<EvidenceMessageRecord, "lineIndex">[] = [];
+	for (const raw of items) {
+		const rawText = typeof raw.text === "string" ? raw.text : typeof raw.content === "string" ? raw.content : "";
+		const text = rawText.trim();
+		if (!text) continue;
+		const groupId = typeof raw.groupId === "string" && raw.groupId.trim() ? raw.groupId.trim() : fallbackMeta.groupId;
+		const groupName =
+			typeof raw.groupName === "string" && raw.groupName.trim() ? raw.groupName.trim() : fallbackMeta.groupName;
+		const senderRaw =
+			(typeof raw.sender === "string" && raw.sender) ||
+			(typeof raw.senderName === "string" && raw.senderName) ||
+			(typeof raw.nickname === "string" && raw.nickname) ||
+			"未知发言人";
+		const cleaned = cleanSender(senderRaw);
+		const senderId =
+			(typeof raw.senderId === "string" && raw.senderId.trim()) ||
+			(typeof raw.uin === "string" && raw.uin.trim()) ||
+			cleaned.senderId;
+		const timestamp =
+			(typeof raw.timestamp === "string" && raw.timestamp.trim()) ||
+			(typeof raw.time === "string" && raw.time.trim()) ||
+			"2026-01-01 00:00:00";
+		const fp = computeEvidenceFingerprint({ groupId, sender: cleaned.sender, timestamp, text });
+		const explicitId =
+			(typeof raw.sourceId === "string" && raw.sourceId.trim()) ||
+			(typeof raw.id === "string" && raw.id.trim()) ||
+			(typeof raw.messageId === "string" && raw.messageId.trim()) ||
+			`${groupId}-${fp.slice(0, 8)}`;
+		const visibility: VisibilityLevel =
+			raw.visibility === "gm" || raw.visibility === "public" || raw.visibility === "faction"
+				? raw.visibility
+				: fallbackMeta.defaultVisibility;
+		const visibleToFactions = Array.isArray(raw.visibleToFactions)
+			? raw.visibleToFactions.filter((v): v is string => typeof v === "string" && v.trim().length > 0)
+			: undefined;
+		out.push({
+			sourceId: explicitId,
+			groupId,
+			groupName,
+			sender: cleaned.sender,
+			...(senderId ? { senderId } : {}),
+			timestamp,
+			text,
+			kind: classifyMessageKind(cleaned.sender, text, fallbackMeta.role),
+			visibility,
+			...(visibleToFactions && visibleToFactions.length > 0 ? { visibleToFactions } : {}),
+			fingerprint: fp,
+		});
+	}
+	return out;
+}
+
+export function evidenceJsonlPath(cwd: string): string {
+	return join(cwd, ".wenyou", "evidence.jsonl");
+}
+
+export function cursorsJsonPath(cwd: string): string {
+	return join(cwd, ".wenyou", "cursors.json");
+}
+
+export async function loadEvidenceRecords(cwd: string): Promise<EvidenceMessageRecord[]> {
+	const file = evidenceJsonlPath(cwd);
+	if (!existsSync(file)) return [];
+	const raw = await readFile(file, "utf8");
+	const records: EvidenceMessageRecord[] = [];
+	for (const line of raw.split(/\r?\n/)) {
+		const trimmed = line.trim();
+		if (!trimmed) continue;
+		try {
+			const parsed = JSON.parse(trimmed) as EvidenceMessageRecord;
+			if (parsed && typeof parsed.sourceId === "string" && typeof parsed.text === "string") {
+				records.push({ ...parsed, lineIndex: records.length });
+			}
+		} catch {
+			// skip corrupted jsonl line
+		}
+	}
+	return records;
+}
+
+export async function saveEvidenceRecords(cwd: string, records: readonly EvidenceMessageRecord[]): Promise<void> {
+	await mkdir(join(cwd, ".wenyou"), { recursive: true });
+	const lines = records.map((rec, idx) => JSON.stringify({ ...rec, lineIndex: idx }));
+	await writeFile(evidenceJsonlPath(cwd), lines.length ? `${lines.join("\n")}\n` : "", "utf8");
+}
+
+export async function loadCursors(cwd: string): Promise<Record<string, GroupCursorRecord>> {
+	const file = cursorsJsonPath(cwd);
+	if (!existsSync(file)) return {};
+	try {
+		const raw = JSON.parse(await readFile(file, "utf8")) as { groups?: Record<string, GroupCursorRecord> } | Record<string, GroupCursorRecord>;
+		if (raw && typeof raw === "object" && "groups" in raw && raw.groups && typeof raw.groups === "object") {
+			return raw.groups as Record<string, GroupCursorRecord>;
+		}
+		return (raw && typeof raw === "object" ? raw : {}) as Record<string, GroupCursorRecord>;
+	} catch {
+		return {};
+	}
+}
+
+export async function saveCursors(cwd: string, cursors: Record<string, GroupCursorRecord>): Promise<void> {
+	await mkdir(join(cwd, ".wenyou"), { recursive: true });
+	await writeFile(cursorsJsonPath(cwd), JSON.stringify({ version: 1, groups: cursors }, null, 2), "utf8");
+}
+
+export function computeUnreportedMessages(
+	records: readonly EvidenceMessageRecord[],
+	cursors: Record<string, GroupCursorRecord>,
+	groupId?: string,
+): EvidenceMessageRecord[] {
+	const byGroup = new Map<string, EvidenceMessageRecord[]>();
+	for (const rec of records) {
+		if (groupId && rec.groupId !== groupId) continue;
+		const list = byGroup.get(rec.groupId) ?? [];
+		list.push(rec);
+		byGroup.set(rec.groupId, list);
+	}
+	const unreported: EvidenceMessageRecord[] = [];
+	for (const [gid, list] of byGroup) {
+		const cursor = cursors[gid];
+		const reportedId = cursor?.lastReportedSourceId;
+		if (!reportedId) {
+			unreported.push(...list);
+			continue;
+		}
+		const idx = list.findIndex((item) => item.sourceId === reportedId);
+		if (idx === -1) {
+			unreported.push(...list);
+		} else {
+			unreported.push(...list.slice(idx + 1));
+		}
+	}
+	return unreported;
+}
+
+export function refreshCursorStats(
+	records: readonly EvidenceMessageRecord[],
+	existingCursors: Record<string, GroupCursorRecord>,
+	sourceFilesByGroup?: Map<string, Set<string>>,
+): Record<string, GroupCursorRecord> {
+	const byGroup = new Map<string, EvidenceMessageRecord[]>();
+	for (const rec of records) {
+		const list = byGroup.get(rec.groupId) ?? [];
+		list.push(rec);
+		byGroup.set(rec.groupId, list);
+	}
+	const next: Record<string, GroupCursorRecord> = { ...existingCursors };
+	for (const [gid, list] of byGroup) {
+		const prev = existingCursors[gid];
+		const last = list[list.length - 1];
+		const reportedId = prev?.lastReportedSourceId ?? null;
+		let unreportedCount = list.length;
+		if (reportedId) {
+			const idx = list.findIndex((item) => item.sourceId === reportedId);
+			unreportedCount = idx === -1 ? list.length : Math.max(0, list.length - 1 - idx);
+		}
+		const inferred = inferGroupMeta(last?.groupName ?? gid);
+		const files = new Set<string>(prev?.sourceFiles ?? []);
+		for (const f of sourceFilesByGroup?.get(gid) ?? []) files.add(f);
+		next[gid] = {
+			groupId: gid,
+			groupName: prev?.groupName || last?.groupName || inferred.groupName,
+			role: prev?.role || inferred.role,
+			totalIngested: list.length,
+			lastIngestedSourceId: last?.sourceId ?? null,
+			lastIngestedTimestamp: last?.timestamp ?? null,
+			lastReportedSourceId: reportedId,
+			lastReportedAt: prev?.lastReportedAt ?? null,
+			unreportedCount,
+			sourceFiles: [...files].sort(),
+		};
+	}
+	return next;
+}
+
+async function listCollectFiles(dir: string, relPrefix = ""): Promise<Array<{ absPath: string; relPath: string }>> {
+	if (!existsSync(dir)) return [];
+	const entries = await readdir(dir, { withFileTypes: true });
+	const out: Array<{ absPath: string; relPath: string }> = [];
+	for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+		const absPath = join(dir, entry.name);
+		const relPath = relPrefix ? `${relPrefix}/${entry.name}` : entry.name;
+		if (entry.isDirectory()) {
+			out.push(...(await listCollectFiles(absPath, relPath)));
+		} else if (entry.isFile()) {
+			const ext = extname(entry.name).toLowerCase();
+			if (ext === ".txt" || ext === ".json" || ext === ".jsonl") {
+				out.push({ absPath, relPath });
+			}
+		}
+	}
+	return out;
+}
+
+/**
+ * 将外部已解码的消息集合（如本机 NTQQ VFS 直读拉取结果）按统一指纹幂等合入 `.wenyou/evidence.jsonl` 并推进双游标。
+ */
+export interface ExternalEvidenceMessageInput {
+	sourceId?: string;
+	groupId: string;
+	groupName: string;
+	role?: GroupRole;
+	visibility?: VisibilityLevel;
+	sender: string;
+	senderId?: string;
+	timestamp: string;
+	text: string;
+	sourceTag?: string;
+}
+
+export async function ingestExternalMessages(
+	cwd: string,
+	items: readonly ExternalEvidenceMessageInput[],
+): Promise<{
+	newlyIngested: number;
+	skippedDuplicates: number;
+	totalEvidenceCount: number;
+	perGroupCounts: Record<string, { newlyIngested: number; skippedDuplicates: number }>;
+	cursors: GroupCursorRecord[];
+}> {
+	const existing = await loadEvidenceRecords(cwd);
+	const cursors = await loadCursors(cwd);
+	const seenFp = new Set(existing.map((r) => r.fingerprint));
+	const usedIds = new Set(existing.map((r) => r.sourceId));
+	const merged: EvidenceMessageRecord[] = [...existing];
+	const sourceFilesByGroup = new Map<string, Set<string>>();
+	const perGroupCounts: Record<string, { newlyIngested: number; skippedDuplicates: number }> = {};
+
+	let newlyIngested = 0;
+	let skippedDuplicates = 0;
+
+	for (const raw of items) {
+		const text = raw.text.trim();
+		if (!text) continue;
+		const groupId = raw.groupId.trim();
+		if (!groupId) continue;
+		const groupName = raw.groupName.trim() || groupId;
+		const role: GroupRole = raw.role ?? inferGroupMeta(groupName).role;
+		const visibility: VisibilityLevel = raw.visibility ?? (role === "cabinet" ? "gm" : "public");
+		const sender = raw.sender.trim() || "未知成员";
+		const timestamp = raw.timestamp.trim() || "2026-01-01 00:00:00";
+		const fp = computeEvidenceFingerprint({ groupId, sender, timestamp, text });
+
+		const tag = raw.sourceTag || `ntqq://group/${groupId}`;
+		const files = sourceFilesByGroup.get(groupId) ?? new Set<string>();
+		files.add(tag);
+		sourceFilesByGroup.set(groupId, files);
+
+		const counter = perGroupCounts[groupId] ?? { newlyIngested: 0, skippedDuplicates: 0 };
+		perGroupCounts[groupId] = counter;
+
+		if (seenFp.has(fp)) {
+			skippedDuplicates += 1;
+			counter.skippedDuplicates += 1;
+			continue;
+		}
+		let sourceId = raw.sourceId?.trim() || `qq-${groupId}-${fp.slice(0, 8)}`;
+		if (usedIds.has(sourceId)) {
+			let suffix = 2;
+			while (usedIds.has(`${sourceId}-${suffix}`)) suffix += 1;
+			sourceId = `${sourceId}-${suffix}`;
+		}
+		seenFp.add(fp);
+		usedIds.add(sourceId);
+		merged.push({
+			sourceId,
+			groupId,
+			groupName,
+			sender,
+			...(raw.senderId ? { senderId: raw.senderId } : {}),
+			timestamp,
+			text,
+			kind: classifyMessageKind(sender, text, role),
+			visibility,
+			fingerprint: fp,
+			lineIndex: merged.length,
+		});
+		newlyIngested += 1;
+		counter.newlyIngested += 1;
+	}
+
+	if (newlyIngested > 0 || !existsSync(evidenceJsonlPath(cwd))) {
+		await saveEvidenceRecords(cwd, merged);
+	}
+	const updatedCursors = refreshCursorStats(merged, cursors, sourceFilesByGroup);
+	for (const raw of items) {
+		const gid = raw.groupId.trim();
+		const cur = updatedCursors[gid];
+		if (cur) {
+			if (raw.groupName.trim()) cur.groupName = raw.groupName.trim();
+			if (raw.role) cur.role = raw.role;
+		}
+	}
+	await saveCursors(cwd, updatedCursors);
+
+	return {
+		newlyIngested,
+		skippedDuplicates,
+		totalEvidenceCount: merged.length,
+		perGroupCounts,
+		cursors: Object.values(updatedCursors).sort((a, b) => a.groupId.localeCompare(b.groupId)),
+	};
+}
+
+/**
+ * 扫描 `00-群聊收集/` 多群聊天文件并增量合入 `.wenyou/evidence.jsonl`：
+ * - 支持 QQ 纯文本粘贴 `.txt`、QCE `.json`、`.jsonl`
+ * - 按指纹幂等去重
+ * - 严格区分总入库游标 (`lastIngestedSourceId`) 与上次简报已汇报游标 (`lastReportedSourceId`)
+ */
+export async function pullQqGroupsIncremental(cwd: string, groupIdFilter?: string): Promise<WenyouPullQqResult> {
+	const existing = await loadEvidenceRecords(cwd);
+	const cursors = await loadCursors(cwd);
+	const seenFp = new Set(existing.map((r) => r.fingerprint));
+	const usedIds = new Set(existing.map((r) => r.sourceId));
+	const merged: EvidenceMessageRecord[] = [...existing];
+	const sourceFilesByGroup = new Map<string, Set<string>>();
+
+	let newlyIngested = 0;
+	let skippedDuplicates = 0;
+
+	const collectDir = join(cwd, "00-群聊收集");
+	const files = await listCollectFiles(collectDir);
+
+	for (const file of files) {
+		const meta = inferGroupMeta(file.relPath);
+		if (groupIdFilter && meta.groupId !== groupIdFilter) continue;
+		const ext = extname(file.absPath).toLowerCase();
+		const content = await readFile(file.absPath, "utf8");
+		let parsed: Omit<EvidenceMessageRecord, "lineIndex">[] = [];
+
+		if (ext === ".txt") {
+			parsed = parsePlainTextMessages(content, meta);
+		} else if (ext === ".json") {
+			try {
+				const doc = JSON.parse(content) as
+					| RawJsonMessage[]
+					| {
+							groupId?: string;
+							groupName?: string;
+							chatInfo?: { name?: string; uin?: string };
+							messages?: RawJsonMessage[];
+							records?: RawJsonMessage[];
+					  };
+				const effectiveMeta = { ...meta };
+				if (!Array.isArray(doc) && doc && typeof doc === "object") {
+					if (typeof doc.groupId === "string" && doc.groupId.trim()) effectiveMeta.groupId = doc.groupId.trim();
+					if (typeof doc.groupName === "string" && doc.groupName.trim()) {
+						effectiveMeta.groupName = doc.groupName.trim();
+					} else if (typeof doc.chatInfo?.name === "string" && doc.chatInfo.name.trim()) {
+						effectiveMeta.groupName = doc.chatInfo.name.trim();
+					}
+				}
+				const items = Array.isArray(doc)
+					? doc
+					: Array.isArray(doc?.messages)
+						? doc.messages
+						: Array.isArray(doc?.records)
+							? doc.records
+							: [];
+				parsed = normalizeRawJsonItems(items, effectiveMeta);
+			} catch {
+				parsed = [];
+			}
+		} else if (ext === ".jsonl") {
+			const items: RawJsonMessage[] = [];
+			for (const line of content.split(/\r?\n/)) {
+				const trimmed = line.trim();
+				if (!trimmed) continue;
+				try {
+					items.push(JSON.parse(trimmed) as RawJsonMessage);
+				} catch {
+					// skip bad line
+				}
+			}
+			parsed = normalizeRawJsonItems(items, meta);
+		}
+
+		for (const item of parsed) {
+			const set = sourceFilesByGroup.get(item.groupId) ?? new Set<string>();
+			set.add(`00-群聊收集/${file.relPath}`);
+			sourceFilesByGroup.set(item.groupId, set);
+
+			if (seenFp.has(item.fingerprint)) {
+				skippedDuplicates += 1;
+				continue;
+			}
+			let sourceId = item.sourceId;
+			if (usedIds.has(sourceId)) {
+				let suffix = 2;
+				while (usedIds.has(`${sourceId}-${suffix}`)) suffix += 1;
+				sourceId = `${sourceId}-${suffix}`;
+			}
+			seenFp.add(item.fingerprint);
+			usedIds.add(sourceId);
+			merged.push({ ...item, sourceId, lineIndex: merged.length });
+			newlyIngested += 1;
+		}
+	}
+
+	if (newlyIngested > 0 || !existsSync(evidenceJsonlPath(cwd))) {
+		await saveEvidenceRecords(cwd, merged);
+	}
+	const updatedCursors = refreshCursorStats(merged, cursors, sourceFilesByGroup);
+	await saveCursors(cwd, updatedCursors);
+
+	const unreportedMessages = computeUnreportedMessages(merged, updatedCursors, groupIdFilter);
+	return {
+		cwd,
+		newlyIngested,
+		skippedDuplicates,
+		totalEvidenceCount: merged.length,
+		unreportedMessages,
+		cursors: Object.values(updatedCursors).sort((a, b) => a.groupId.localeCompare(b.groupId)),
+	};
+}
+
+/** 按 sourceId 极速回查同群前后 N（默认 10）条上下文，并遵守视角可见性裁剪 */
+export async function lookupSourceContext(
+	cwd: string,
+	sourceId: string,
+	windowSize = 10,
+	viewer: ViewerScope = { kind: "gm" },
+): Promise<SourceContextWindow | null> {
+	const all = await loadEvidenceRecords(cwd);
+	const visible = all.filter((rec) => canViewerSee(rec.visibility, rec.visibleToFactions, viewer));
+	const hit = visible.find((rec) => rec.sourceId === sourceId);
+	if (!hit) return null;
+	const sameGroup = visible.filter((rec) => rec.groupId === hit.groupId);
+	const idx = sameGroup.findIndex((rec) => rec.sourceId === sourceId);
+	if (idx === -1) return null;
+	const win = Math.max(0, Math.min(50, Math.floor(windowSize)));
+	const start = Math.max(0, idx - win);
+	const end = Math.min(sameGroup.length, idx + win + 1);
+	return {
+		targetSourceId: hit.sourceId,
+		groupId: hit.groupId,
+		groupName: hit.groupName,
+		targetIndex: idx - start,
+		messages: sameGroup.slice(start, end),
+	};
+}
+
+/** 按关键词/发言人检索 L0 证据库 */
+export async function searchEvidenceRecords(
+	cwd: string,
+	query: { keyword?: string; sender?: string; groupId?: string; limit?: number; viewer?: ViewerScope },
+): Promise<EvidenceMessageRecord[]> {
+	const viewer = query.viewer ?? { kind: "gm" };
+	const all = await loadEvidenceRecords(cwd);
+	const kw = query.keyword?.trim().toLowerCase();
+	const senderKw = query.sender?.trim().toLowerCase();
+	const limit = Math.max(1, Math.min(100, query.limit ?? 20));
+	const matched = all.filter((rec) => {
+		if (!canViewerSee(rec.visibility, rec.visibleToFactions, viewer)) return false;
+		if (query.groupId && rec.groupId !== query.groupId) return false;
+		if (senderKw && !rec.sender.toLowerCase().includes(senderKw)) return false;
+		if (kw && !rec.text.toLowerCase().includes(kw) && !rec.sender.toLowerCase().includes(kw)) return false;
+		return true;
+	});
+	return matched.slice(-limit);
+}

@@ -1,0 +1,3476 @@
+import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
+import { lstat, mkdtemp, open, readFile, realpath, rm, stat, unlink } from "node:fs/promises";
+import { homedir } from "node:os";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import type { Model, ThinkingLevel } from "@earendil-works/pi-ai";
+import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
+import {
+	type AgentSession,
+	type CreateAgentSessionResult,
+	createAgentSession,
+	type DefaultResourceLoader,
+	type ExtensionError,
+	getAgentDir,
+	hasTrustRequiringProjectResources,
+	ModelRuntime,
+	ProjectTrustStore,
+	type SessionEntry,
+	type SessionInfo,
+	SessionManager,
+	SettingsManager,
+	type SettingsManager as SettingsManagerType,
+	type ToolDefinition,
+} from "@earendil-works/pi-coding-agent";
+import type {
+	AvailableModel,
+	ChannelSubscriptionsSnapshot,
+	ContextUsageInfo,
+	CreateSessionOptions,
+	ExtensionDialogRequest,
+	ExtensionDialogResolved,
+	ExtensionDialogRespond,
+	ExtensionEditorTextEvent,
+	ExtensionNotifyEvent,
+	ImageInput,
+	LoadedResources,
+	LoginEventPayload,
+	McpConfigListResult,
+	McpMutationResult,
+	McpServersChangedPayload,
+	McpUpsertInput,
+	PendingInteractions,
+	PermissionAnswer,
+	PermissionMode,
+	PermissionRequest,
+	PermissionResolved,
+	QuotaInfo,
+	SessionCloseIntent,
+	SessionEvent,
+	SessionMediaJob,
+	SessionMessage,
+	SessionMeta,
+	SessionStats,
+	SlashCommandInfo,
+	SubagentInfo,
+	TrustAnswer,
+	TrustRequest,
+	TrustResolved,
+	WenyouCanvasEvent,
+} from "@percho/shared";
+import {
+	type ComposerDocument,
+	composerDocumentFromText,
+	composerDocumentText,
+	extractTodos,
+	formatSkillCommand,
+	isMcpReconnectable,
+	isModelVisible,
+	parseComposerDocument,
+	parseExpandedSkillInvocation,
+	projectMcpRuntime,
+	type QueuedMessages,
+	readComposerDocument,
+	TODO_TOOL_NAME,
+	type TodoItem,
+} from "@percho/shared";
+import { ChannelSubscriptionRegistry } from "./channel-subscriptions";
+import { Emitter } from "./emitter";
+import { createLogger } from "./log";
+import { importMcpServers, listMcpServers, removeMcpServer, upsertMcpServer } from "./mcp/config-store";
+import { McpRuntimeStore } from "./mcp/runtime-store";
+import { PackageAdmin } from "./packages/admin";
+import { loadPermissionConfig } from "./permissions";
+import {
+	makePermissionGateExtension,
+	type PermissionConfirm,
+	type PermissionModeRef,
+} from "./permissions/extension";
+import { PermissionGate } from "./permissions/gate";
+import { validateProjectDirectory, validateProjectReference } from "./project/directory";
+import { walkProjectFiles } from "./project/files";
+import { TrustGate } from "./project/trust";
+import { ProjectResourceLoader } from "./project/trust-loader";
+import { addAllowedPattern, addWorkspaceRoot } from "./project/workspace-store";
+import { RUNTIME_MESSAGE_BYTES } from "./runtime/frames";
+import { ArchiveSourceUnavailableError, readSessionHeaderId, SessionArchiveService } from "./session/archive";
+import { SessionCatalog } from "./session/catalog";
+import {
+	composerInputBridge,
+	composerQueueDocument,
+	composerQueueText,
+	projectComposerMessage,
+} from "./session/composer-input";
+import { slimBulkyEvent, slimMessageUpdate } from "./session/event-slim";
+import { ExtensionDialogHost } from "./session/extension-dialog-host";
+import { SessionFileOperations } from "./session/file-operations";
+import { type SelectedHistory, SessionHistoryPager } from "./session/history-pager";
+import { SessionHydrationGate } from "./session/hydration-gate";
+import { LiveTranscript } from "./session/live-transcript";
+import { maintenancePaths } from "./session/maintenance-paths";
+import { displayImageEntryIds, inlineSessionAssets } from "./session/media-entries";
+import { prepareMediaFork } from "./session/media-fork";
+import { SessionMediaMaintenanceJobs } from "./session/media-maintenance-jobs";
+import { SessionMediaTransactions } from "./session/media-maintenance-transactions";
+import { SessionMediaStore } from "./session/media-store";
+import {
+	blockImages,
+	blockText,
+	type RawMessage,
+	readSessionMessagesFromContent,
+	resolveForkEntryId,
+	resolveRecallEntryId,
+	toBranchSessionMessages,
+} from "./session/messages";
+import { autoNameSession } from "./session/naming";
+import { SessionProjectDeletion } from "./session/project-deletion";
+import { EventRateTracker } from "./session/rates";
+import { exportReadOnlyHtml } from "./session/read-only-html";
+import { ReadOnlySessionView } from "./session/read-only-view";
+import {
+	type EventForwarder,
+	type RegisteredSession,
+	releaseEntryResources,
+	SessionRegistry,
+} from "./session/registry";
+import { renameSessionFile } from "./session/rename";
+import { emitSessionShutdown } from "./session/shutdown";
+import { KeyedSingleFlight } from "./session/single-flight";
+import { SessionSourceSnapshots } from "./session/source-snapshot";
+import { StreamGuard } from "./session/stream-guard";
+import { measureSessionSwitch, recordSessionSwitchPayload } from "./session/switch-diagnostics";
+import { TraceRecorder } from "./session/trace";
+import { SessionTraces } from "./session/traces";
+import { makeUiContext } from "./session/ui-context";
+import { CacheWarmingSettings } from "./settings/cache-warming";
+import {
+	codemodeSessionOptions,
+	readCodemodeConfig,
+	writeCodemodeEnabled,
+	writeCodemodeOnly,
+} from "./settings/codemode";
+import { LoginService } from "./settings/login";
+import { ModelPrefsService } from "./settings/model-prefs";
+import { makeQuotaService } from "./settings/quota";
+import { SettingsService } from "./settings/settings";
+import { slashCommandsForLoader, slashCommandsForSession } from "./slash-commands";
+import { privateDirectory } from "./storage/private-directory";
+import type { LocalSessionPaths } from "./storage/session-paths";
+import { readChannelWatchEnabled, writeChannelWatchEnabled } from "./tools/channel-watch";
+import { ChannelBackendHost } from "./tools/channels/backend-host";
+import { makeChannelsExtension } from "./tools/channels/extension";
+import { resolveChannelProject } from "./tools/channels/project";
+import { ChannelDatabaseService, ChannelService } from "./tools/channels/service";
+import { makeCompactionGuardExtension } from "./tools/compaction-guard";
+import { createCompactionRequestPolicy } from "./tools/compaction-guard/request-policy";
+import { makeEvapExtension, reportEvapBatch } from "./tools/context-evaporation";
+import { makeShowImageTool } from "./tools/show-image";
+import { discoverAgents, isSubagentSessionPath, makeSubagentTool } from "./tools/subagent";
+import { applySubagentMutex, resolveSubagentPreferBuiltin } from "./tools/subagent/mutex";
+import type { SubagentRunHandle } from "./tools/subagent/runner";
+import { makeTodoTool } from "./tools/todo";
+import { makeTodoReminderExtension } from "./tools/todo-reminder";
+import { makeWebFetchTool } from "./tools/webfetch";
+import { makeWenyouExtension, WenyouService } from "./wenyou";
+
+const log = createLogger("backend");
+
+async function sourceExists(path: string): Promise<boolean> {
+	try {
+		await lstat(path);
+		return true;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+		throw error;
+	}
+}
+
+/** SessionManager 磁盘枚举项 → SessionMeta（listSessions/listAllSessions 共用） */
+function sessionInfoToMeta(
+	info: SessionInfo,
+	opts: { cwdFallback: string; active: boolean; readOnly?: boolean },
+): SessionMeta {
+	return {
+		sessionId: info.id,
+		sessionFile: info.path,
+		cwd: info.cwd || opts.cwdFallback,
+		name: info.name,
+		active: opts.active,
+		readOnly: opts.readOnly || undefined,
+		messageCount: info.messageCount,
+		createdAt: info.created.getTime(),
+		modifiedAt: info.modified.getTime(),
+	};
+}
+
+export interface PiBackendOptions {
+	/** 可注入隔离媒体仓库，不改变SDK agentDir或正式用户配置。 */
+	sessionMediaStore?: SessionMediaStore;
+	/** Desktop-only imported session path compatibility, installed before any session opens. */
+	localSessionPaths?: LocalSessionPaths;
+	/** 远端仅为显式媒体维护批准agent会话根，不重定向普通open路径。 */
+	maintenanceSessionRoot?: string;
+	/** 默认工作目录（createSession 未指定时使用） */
+	defaultCwd?: string;
+	/** Independent remote host validates literal directories before new execution. */
+	validateWorkspace?: boolean;
+	/** 每会话工具白名单；缺省用 pi 默认（read/bash/edit/write） */
+	tools?: string[];
+	/** 额外自定义工具 */
+	customTools?: ToolDefinition[];
+	/** 是否启用权限确认门控（false 时 confirm 直接通过） */
+	permissionGates?: boolean;
+	/** 是否注册内置权限门控扩展（false 时逐工具规则不生效；用户换用自己的权限扩展时关闭）。permissionGates=false 时强制不注册 */
+	permissionExtension?: boolean;
+	/** 是否启用项目信任门控（false 时所有项目自动信任，项目资源直接加载；供无人值守场景用） */
+	projectTrust?: boolean;
+	/** 是否内置 webfetch 工具（默认 true）；传对象可配置 CIDR 放行 */
+	webFetch?: boolean | { allowRanges?: string[] };
+	/** 内置 subagent 优先于第三方 subagent 扩展（默认 true） */
+	subagentPreferBuiltin?: boolean;
+	/**
+	 * 桌面端集成（Electron 专用；纯 CLI 环境不传）：
+	 * appendSystemPrompt = 追加进每次会话系统提示词的段落（如「你运行在 Percho 桌面端，界面可被 UI 插件定制」）；
+	 * additionalSkillPaths = 额外技能目录（如随包分发的 percho-ui-plugin skill，描述原生进可用技能清单）。
+	 */
+	desktopIntegration?: {
+		appendSystemPrompt: string[];
+		additionalSkillPaths: string[];
+	};
+	/**
+	 * 打开外部链接（官方内置扩展用；桌面端传 `shell.openExternal`）：
+	 * 目前是 MCP 的 OAuth 授权页（spec §4.2）。缺省 → 官方内置扩展自行回落到平台默认浏览器。
+	 */
+	openExternal?: (url: string) => void | Promise<void>;
+}
+
+/**
+ * PiBackend：pi SDK 的唯一适配层（门面）。不依赖 Electron，
+ * 主进程与（未来的）独立 server 均可复用。
+ *
+ * 领域实现拆在同包模块（各文件单一职责）：
+ * - slash-commands.ts     斜杠命令清单（内置/模板/skill/扩展）
+ * - session/messages.ts   pi 消息 → SessionMessage 解析与 entryId 配对（fork/recall/回放共用）
+ * - packages/admin.ts     社区包安装/卸载/搜索 + 会话热重载
+ * - project/trust-loader.ts 两阶段项目资源加载 + 信任决策
+ * - session/traces.ts     会话事件 trace 生命周期
+ * - emitter.ts            泛型订阅/分发原语（9 套事件管线共用）
+ * - settings/quota.ts     opencode-go 套餐额度（TTL 缓存 + 官方 API）
+ */
+type SessionReloadReport = {
+	reloaded: number;
+	skipped: Array<{ sessionId: string; reason: "streaming" | "compacting" | "failed" }>;
+};
+
+export class PiBackend {
+	private mcpRestartRequired = false;
+	private readonly registry = new SessionRegistry();
+	private readonly cacheWarming = new CacheWarmingSettings(getAgentDir, () =>
+		this.registry
+			.list()
+			.filter((entry) => !entry.readOnly)
+			.map((entry) => entry.session),
+	);
+	private stopping = false;
+	private shutdownPromise?: Promise<void>;
+	private readonly creationFlights = new Set<Promise<unknown>>();
+	private readonly constructionGates = new Set<PermissionGate>();
+	private readonly constructionDialogs = new Set<ExtensionDialogHost>();
+	private readonly shutdownFailures: unknown[] = [];
+	private shutdownAborts: Promise<PromiseSettledResult<void>[]> = Promise.resolve([]);
+	private shutdownChannels?: Promise<PromiseSettledResult<void>[]>;
+	private stopChannels(): Promise<PromiseSettledResult<void>[]> {
+		if (!this.shutdownChannels) {
+			const closing = [...this.channelServices.values()].map((service) => {
+				try {
+					return service.close();
+				} catch (error) {
+					return Promise.reject(error);
+				}
+			});
+			this.channelServices.clear();
+			if (this.channelDatabase) closing.push(this.channelDatabase.close());
+			this.shutdownChannels = Promise.allSettled(closing);
+		}
+		return this.shutdownChannels;
+	}
+	assertRunning(): void {
+		if (this.stopping) throw new Error("BACKEND_STOPPING: no new work is accepted");
+	}
+	private trackCreation<T>(work: () => Promise<T>): Promise<T> {
+		this.assertRunning();
+		const promise = Promise.resolve().then(() => {
+			this.assertRunning();
+			return work();
+		});
+		this.creationFlights.add(promise);
+		void promise.then(
+			() => this.creationFlights.delete(promise),
+			() => this.creationFlights.delete(promise),
+		);
+		return promise;
+	}
+	/** Synchronous fence before awaiting any cleanup or in-flight request. */
+	beginShutdown(): void {
+		if (this.stopping) return;
+		this.stopping = true;
+		void this.stopChannels();
+		const attempt = (work: () => void) => {
+			try {
+				work();
+			} catch (error) {
+				this.shutdownFailures.push(error);
+			}
+		};
+		attempt(() => this.trustGate.dispose());
+		attempt(() => this.login.dispose());
+		attempt(() => this.historyGate.dispose());
+		attempt(() => this.sourceSnapshots.dispose());
+		for (const gate of this.constructionGates) attempt(() => gate.dispose());
+		this.constructionGates.clear();
+		for (const host of this.constructionDialogs) attempt(() => host.dispose());
+		for (const entry of this.registry.list()) {
+			attempt(() => this.beforeSessionShutdown(entry));
+			attempt(() => entry.gate.dispose());
+			attempt(() => entry.dialogs.dispose());
+			if (!entry.readOnly) attempt(() => entry.session.clearQueue());
+		}
+		this.shutdownAborts = Promise.allSettled(
+			this.registry.list().map((entry) => Promise.resolve().then(() => entry.session.abort())),
+		);
+	}
+	/** Remote host awaits SDK shutdown before disposing contexts. Failures retain host ownership. */
+	shutdown(): Promise<void> {
+		this.beginShutdown();
+		this.shutdownPromise ??= (async () => {
+			await Promise.allSettled([...this.creationFlights]);
+			const entries = this.registry.list();
+			const aborted = await this.shutdownAborts;
+			const disposed = await Promise.allSettled(entries.map((entry) => this.disposeSession(entry)));
+			for (const result of [...aborted, ...disposed])
+				if (result.status === "rejected") this.shutdownFailures.push(result.reason);
+			const channels = await this.stopChannels();
+			for (const result of channels)
+				if (result.status === "rejected") this.shutdownFailures.push(result.reason);
+			this.dispose();
+			if (this.shutdownFailures.length)
+				throw new AggregateError(this.shutdownFailures, "Remote SDK shutdown did not complete cleanly");
+		})();
+		return this.shutdownPromise;
+	}
+	private readonly sessionDisposals = new WeakMap<RegisteredSession, Promise<void>>();
+	private readonly archiveFrozen = new WeakSet<RegisteredSession>();
+	private readonly archiveShutdown = new WeakSet<RegisteredSession>();
+	private readonly archiveSdkDisposed = new WeakSet<RegisteredSession>();
+	private readonly shutdownErrors = new WeakMap<AgentSession, ExtensionError[]>();
+	/** open 的 single-flight（key = 规范化绝对路径）：同文件并发 open 共享一次构造（spec D4） */
+	private readonly openFlights = new KeyedSingleFlight<SessionMeta>();
+	/** 频道订阅的界面快照与版本。 */
+	private readonly channelSubs = new ChannelSubscriptionRegistry((id) => this.registry.has(id));
+	private readonly channelServices = new Map<string, ChannelService>();
+	private readonly channelRoots = new WeakMap<PermissionModeRef, string>();
+	private channelPeerRefresh: Promise<void> = Promise.resolve();
+	private channelHost?: ChannelBackendHost;
+	private channelDatabase?: ChannelDatabaseService;
+	private channelRecovery?: Promise<void>;
+	private getChannelDatabase(): ChannelDatabaseService {
+		this.assertRunning();
+		this.channelDatabase ??= new ChannelDatabaseService({ agentDir: getAgentDir() });
+		return this.channelDatabase;
+	}
+	private getChannelHost(): ChannelBackendHost {
+		this.channelHost ??= new ChannelBackendHost(
+			getAgentDir(),
+			(root) => this.channelServiceAtRoot(root),
+			this.getChannelDatabase(),
+		);
+		return this.channelHost;
+	}
+	private channelServiceAtRoot(root: string): ChannelService {
+		root = resolve(root);
+		let service = this.channelServices.get(root);
+		if (!service) {
+			this.assertRunning();
+			service = new ChannelService({
+				projectRoot: root,
+				agentDir: getAgentDir(),
+				database: this.getChannelDatabase(),
+			});
+			this.channelServices.set(root, service);
+		}
+		return service;
+	}
+	private async recoverChannelDeletes(): Promise<void> {
+		for (const { service, fence } of await this.getChannelHost().fences()) {
+			if (fence.state !== "delete" || (await sourceExists(fence.source))) continue;
+			await this.fileOperations.run([fence.source], "delete", async () => {
+				if ((await sourceExists(fence.source)) || this.registry.has(fence.sessionId)) return;
+				await this.media.deleteOwner(fence.sessionId);
+				await service.completeMaintenance(fence.sessionId, fence.opId, "deleted");
+				this.channelSubs.delete(fence.sessionId);
+			});
+		}
+	}
+	private async channelService(
+		cwd: string,
+		rootOverride?: string,
+		readOnly = false,
+	): Promise<ChannelService> {
+		const root = rootOverride ?? (await resolveChannelProject(cwd));
+		if (!readOnly) {
+			this.channelRecovery ??= this.recoverChannelDeletes().catch((error) => {
+				this.channelRecovery = undefined;
+				throw error;
+			});
+			await this.channelRecovery;
+			await this.getChannelHost().register(root);
+		}
+		return this.channelServiceAtRoot(root);
+	}
+
+	private async refreshChannelPeers(
+		sessionId: string,
+		cwd: string,
+		modeRef: PermissionModeRef | undefined,
+	): Promise<void> {
+		const root = await resolveChannelProject(cwd, modeRef ? this.channelRoots.get(modeRef) : undefined);
+		await Promise.all(
+			this.registry.list().map(async (entry) => {
+				const id = entry.session.sessionId;
+				if (id === sessionId || entry.readOnly) return;
+				try {
+					const peerRoot = await resolveChannelProject(entry.cwd, this.channelRoots.get(entry.modeRef));
+					if (peerRoot === root && this.registry.get(id) === entry) await this.getChannelSubscriptions(id);
+				} catch (error) {
+					log.warn("channel peer snapshot unavailable", id, error);
+				}
+			}),
+		);
+	}
+
+	private async channelServiceForFile(
+		file: string,
+		fallbackCwd?: string,
+		sessionId?: string,
+	): Promise<ChannelService> {
+		let cwd = fallbackCwd;
+		try {
+			const handle = await open(file, "r");
+			let header: { id?: unknown; cwd?: unknown };
+			try {
+				const buffer = Buffer.alloc(65536);
+				const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+				const end = buffer.subarray(0, bytesRead).indexOf(10);
+				if (end < 0) throw new Error("Session header exceeds limit");
+				header = JSON.parse(buffer.subarray(0, end).toString("utf8"));
+			} finally {
+				await handle.close();
+			}
+			if (sessionId && header.id !== sessionId) throw new Error("Session file identity changed");
+			if (typeof header.cwd !== "string") throw new Error("Session header has no cwd");
+			cwd = header.cwd;
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+			if (!cwd) {
+				const match = sessionId ? await this.getChannelHost().find(sessionId, file) : undefined;
+				if (match) return match.service;
+				throw new ArchiveSourceUnavailableError("Channel maintenance source unavailable");
+			}
+		}
+		if (!cwd) throw new Error("Session project is unavailable");
+		const binding = sessionId ? await this.getChannelHost().binding(sessionId) : undefined;
+		if (binding && binding.cwd !== resolve(cwd)) throw new Error("Session binding cwd changed");
+		// Historical maintenance uses persisted identity, not a live cwd/Git probe.
+		return this.channelServiceAtRoot(binding?.root ?? resolve(cwd));
+	}
+
+	private readonly catalogEmitter = new Emitter<import("@percho/shared").SessionCatalogChange>();
+	private sessionCatalog?: SessionCatalog;
+	private archiveService?: SessionArchiveService;
+	private archiveInitialization?: Promise<void>;
+	private projectDeletion?: SessionProjectDeletion;
+	private readonly projectLeases = new Set<string>();
+	private readonly deletingSessions = new Set<string>();
+	private getProjectDeletion(): SessionProjectDeletion {
+		this.projectDeletion ??= new SessionProjectDeletion({
+			catalog: () => this.getSessionCatalog(),
+			getLoaded: () => this.getLoadedSessions().map((item) => item.meta),
+			loadedIdentity: (id) => this.registry.get(id),
+			deleteSession: async (id, file) => {
+				await this.deleteSession(id, file || undefined);
+			},
+			isProtected: (cwd) =>
+				[
+					join(getAgentDir(), "daily"),
+					join(homedir(), ".wenyou-pro", "daily"),
+					join(homedir(), ".percho", "daily"),
+				].some((daily) => resolve(cwd) === resolve(daily)),
+			isBusy: (id) => {
+				if (this.creationFlights.size > 0) return true;
+				if (this.projectLeases.has(id)) return false;
+				const entry = this.registry.get(id);
+				if (!entry || entry.readOnly) return false;
+				const lease = entry.session.tryAcquireIdleLease();
+				if (!lease) return true;
+				lease.release();
+				return false;
+			},
+			freeze: (id) => {
+				const entry = this.registry.get(id);
+				if (!entry || entry.readOnly) return () => {};
+				const lease = entry.session.tryAcquireIdleLease();
+				if (!lease) throw new Error("Project contains busy sessions");
+				this.projectLeases.add(id);
+				return () => {
+					this.projectLeases.delete(id);
+					lease.release();
+				};
+			},
+		});
+		return this.projectDeletion;
+	}
+	async previewSessionProjectDeletion(
+		cwd: string,
+	): Promise<import("@percho/shared").SessionProjectDeletionPreview> {
+		this.assertRunning();
+		await this.archives();
+		return this.getProjectDeletion().preview(cwd);
+	}
+	async deleteSessionProject(
+		cwd: string,
+		token: string,
+	): Promise<import("@percho/shared").SessionProjectDeletionResult> {
+		this.assertRunning();
+		await this.archives();
+		if (this.creationFlights.size > 0) throw new Error("Session initialization is in progress");
+		return this.getProjectDeletion().delete(cwd, token);
+	}
+	getSessionCatalog(): SessionCatalog {
+		this.sessionCatalog ??= new SessionCatalog({
+			sessionsDir: join(getAgentDir(), "sessions"),
+			indexPath: join(getAgentDir(), "session-catalog.sqlite"),
+			onChange: (change) => this.catalogEmitter.emit(change),
+		});
+		return this.sessionCatalog;
+	}
+	private async archives(): Promise<SessionArchiveService> {
+		this.archiveService ??= new SessionArchiveService({
+			agentDir: getAgentDir(),
+			catalog: () => this.getSessionCatalog(),
+			getSession: (id) => {
+				const entry = this.registry.get(id);
+				return entry && !entry.readOnly ? entry.session : undefined;
+			},
+			hasPending: (id) => {
+				const pending = this.getPendingInteractions();
+				const entry = this.registry.get(id);
+				return (
+					!!(entry && this.sessionDisposals.has(entry)) ||
+					this.constructionGates.size > 0 ||
+					pending.permissions.some((p) => p.sessionId === id) ||
+					pending.dialogs.some((p) => p.sessionId === id)
+				);
+			},
+			disposeSession: async (id) => {
+				const entry = this.registry.get(id);
+				if (entry) await this.disposeSessionStrict(entry);
+			},
+			confirmDeleted: async ({ sessionId, sessionFile, operationId }) => {
+				const host = this.getChannelHost();
+				const match = await host.find(sessionId, sessionFile);
+				if (!match || match.fence.kind !== "delete" || !["delete", "deleted"].includes(match.fence.state))
+					return false;
+				const fingerprint = await host.deleteFingerprint(match.service.projectRoot, match.fence.opId);
+				if (
+					!fingerprint ||
+					fingerprint.id !== sessionId ||
+					fingerprint.archiveOperationId !== operationId ||
+					this.registry.has(sessionId)
+				)
+					return false;
+				if (await sourceExists(sessionFile)) return false;
+				await this.media.deleteOwner(sessionId);
+				if (await sourceExists(sessionFile)) return false;
+				await match.service.completeMaintenance(sessionId, match.fence.opId, "deleted");
+				this.channelSubs.delete(sessionId);
+				return true;
+			},
+			prepareChannelMaintenance: async ({ sessionId, sessionFile, operationId }) => {
+				if (!(await sourceExists(sessionFile))) {
+					const match = await this.getChannelHost().find(sessionId, sessionFile);
+					if (!match) throw new ArchiveSourceUnavailableError("Channel maintenance source unavailable");
+					if (match.fence.opId !== operationId) throw new Error("Channel maintenance operation changed");
+					await match.service.prepareMaintenance(sessionId, operationId, "archive", sessionFile);
+					return;
+				}
+				const service = await this.channelServiceForFile(
+					sessionFile,
+					this.registry.get(sessionId)?.cwd,
+					sessionId,
+				);
+				await service.prepareMaintenance(sessionId, operationId, "archive", sessionFile);
+			},
+			completeChannelMaintenance: async ({ sessionId, sessionFile, operationId, outcome }) => {
+				if (!(await sourceExists(sessionFile))) {
+					const match = await this.getChannelHost().find(sessionId, sessionFile);
+					if (!match && outcome === "active") return;
+					if (!match) throw new ArchiveSourceUnavailableError("Channel maintenance source unavailable");
+					if (match.fence.opId !== operationId) throw new Error("Channel maintenance operation changed");
+					await match.service.completeMaintenance(sessionId, operationId, outcome);
+					return;
+				}
+				const service = await this.channelServiceForFile(
+					sessionFile,
+					this.registry.get(sessionId)?.cwd,
+					sessionId,
+				);
+				if (outcome === "active") {
+					const fence = (await service.pendingMaintenance()).find((item) => item.sessionId === sessionId);
+					if (!fence) return;
+				}
+				await service.completeMaintenance(sessionId, operationId, outcome);
+			},
+			withFile: (files, operation) => this.fileOperations.run(files, "archive", operation),
+			resolveFile: (file) => this.options.localSessionPaths?.resolveFile(file, true) ?? file,
+		});
+		this.archiveInitialization ??= this.archiveService
+			.init()
+			.then(async () => {
+				const projections = await this.archiveService!.projections();
+				try {
+					await this.getSessionCatalog().setArchiveOverlay(projections);
+				} catch (error) {
+					// Queries retry the dirty projection; an index failure cannot invalidate authority.
+					log.warn("Archive catalog initialization failed", error);
+				}
+			})
+			.catch((error) => {
+				this.archiveInitialization = undefined;
+				log.warn("Archive authority initialization failed before catalog query", error);
+				throw error;
+			});
+		await this.archiveInitialization;
+		return this.archiveService;
+	}
+	async querySessionProjects(): Promise<import("@percho/shared").SessionCatalogProjects> {
+		this.assertRunning();
+		await this.archives();
+		return this.getSessionCatalog().projects();
+	}
+	async querySessionCatalog(
+		query: import("@percho/shared").SessionCatalogQuery,
+	): Promise<import("@percho/shared").SessionCatalogPage> {
+		this.assertRunning();
+		await this.archives();
+		const page = await this.getSessionCatalog().query(query);
+		return {
+			...page,
+			sessions: page.sessions.map((meta) => ({ ...meta, active: this.registry.has(meta.sessionId) })),
+		};
+	}
+	async verifySessionCatalog(
+		references: import("@percho/shared").SessionCatalogReference[],
+	): Promise<import("@percho/shared").SessionCatalogVerification[]> {
+		this.assertRunning();
+		await this.archives();
+		return this.getSessionCatalog().verify(
+			references.map((r) => ({
+				...r,
+				sessionFile: r.sessionFile
+					? (this.options.localSessionPaths?.resolveFile(r.sessionFile, true) ?? r.sessionFile)
+					: undefined,
+			})),
+		);
+	}
+	onSessionCatalogChanged(
+		handler: (change: import("@percho/shared").SessionCatalogChange) => void,
+	): () => void {
+		return this.catalogEmitter.subscribe(handler);
+	}
+	async archiveSession(
+		input: import("@percho/shared").SessionArchiveInput,
+	): Promise<import("@percho/shared").SessionArchiveResult> {
+		this.assertRunning();
+		try {
+			const service = this.archiveService ?? (await this.archives());
+			return await service.archive(input);
+		} catch (error) {
+			this.archiveInitialization = undefined;
+			throw error;
+		}
+	}
+	async unarchiveSession(
+		input: import("@percho/shared").SessionArchiveInput,
+	): Promise<import("@percho/shared").SessionArchiveResult> {
+		this.assertRunning();
+		return (await this.archives()).unarchive(input);
+	}
+
+	/** 用户级模型可见性与子代理模型偏好（独立于 CLI 共用 settings.json）。readonly 直暴露 */
+	readonly modelPrefs = new ModelPrefsService(join(getAgentDir(), "model-prefs.json"));
+	/** 社区包管理；项目相关操作由门面绑定会话上下文。 */
+	readonly packages: PackageAdmin;
+	private readonly eventEmitter = new Emitter<{ sessionId: string; event: SessionEvent; sequence: number }>();
+	private readonly permissionEmitter = new Emitter<PermissionRequest>();
+	private readonly permissionResolvedEmitter = new Emitter<PermissionResolved>();
+	private readonly trustEmitter = new Emitter<TrustRequest>();
+	private readonly trustResolvedEmitter = new Emitter<TrustResolved>();
+	private interactionRevision = 0;
+	private publishInteraction<T>(emitter: Emitter<T>, event: T): void {
+		emitter.emit({ ...event, revision: ++this.interactionRevision });
+	}
+	getPendingInteractions(): PendingInteractions {
+		return {
+			revision: this.interactionRevision,
+			permissions: this.getPendingPermissionRequests(),
+			dialogs: [
+				...new Set([...this.registry.list().map((entry) => entry.dialogs), ...this.constructionDialogs]),
+			].flatMap((host) => host.listPending()),
+			trust: this.trustGate.listPending(),
+		};
+	}
+	private readonly loginEmitter = new Emitter<LoginEventPayload>();
+	private readonly extensionDialogRequestEmitter = new Emitter<ExtensionDialogRequest>();
+	private readonly extensionDialogResolvedEmitter = new Emitter<ExtensionDialogResolved>();
+	private readonly extensionNotifyEmitter = new Emitter<ExtensionNotifyEvent>();
+	private readonly extensionEditorTextEmitter = new Emitter<ExtensionEditorTextEvent>();
+	private readonly wenyouCanvasEmitter = new Emitter<WenyouCanvasEvent>();
+	/** Wenyou Pro 领域服务（多群采集/L0-L2记忆/国策门禁+.docx/双屏图集/提案审批） */
+	readonly wenyou = new WenyouService((event) => this.wenyouCanvasEmitter.emit(event));
+	/** MCP 运行态变化（spec §4.8.1：面板刷新用） */
+	private readonly mcpServersChangedEmitter = new Emitter<McpServersChangedPayload>();
+	private readonly mcpRuntime = new McpRuntimeStore((snapshot) =>
+		this.mcpServersChangedEmitter.emit(snapshot),
+	);
+	private readonly mcpOwners = new WeakMap<PermissionModeRef, ReturnType<McpRuntimeStore["owner"]>>();
+
+	/** 项目信任决策记录（~/.percho/agent/trust.json，Percho 私有）+ 信任请求门控 */
+	private readonly trustStore = new ProjectTrustStore(getAgentDir());
+	private readonly trustGate = new TrustGate(
+		(req) => this.publishInteraction(this.trustEmitter, req),
+		(requestId) => this.publishInteraction(this.trustResolvedEmitter, { requestId }),
+	);
+	/** 会话事件 trace（JSONL，离线可重放） */
+	private readonly traces = new SessionTraces();
+	private readonly streamGuard = new StreamGuard();
+	private readonly historyGate = new SessionHydrationGate();
+	private readonly historyTokens = new WeakMap<PermissionModeRef, string>();
+	private readonly sourceSnapshots = new SessionSourceSnapshots();
+	private readonly historyPager = new SessionHistoryPager();
+	getSessionHistoryStats() {
+		return this.historyPager.stats();
+	}
+	private readonly media: SessionMediaStore;
+	private readonly fileOperations = new SessionFileOperations(async (files, kind) => {
+		if (
+			(!this.options.localSessionPaths && !this.options.maintenanceSessionRoot) ||
+			kind.startsWith("media-")
+		)
+			return;
+		for (const file of files)
+			await this.transactionService().assertOpenAllowed(this.fileOperations.key(file));
+	});
+	private mediaTransactions?: SessionMediaTransactions;
+	private maintenancePolicy() {
+		if (!this.options.localSessionPaths && !this.options.maintenanceSessionRoot)
+			throw new Error("Maintenance requires configured session paths");
+		return maintenancePaths(
+			this.options.maintenanceSessionRoot ?? getAgentDir(),
+			this.options.localSessionPaths,
+		);
+	}
+	private transactionService(): SessionMediaTransactions {
+		this.assertRunning();
+		const paths = this.maintenancePolicy();
+		if (!this.mediaTransactions)
+			this.mediaTransactions = new SessionMediaTransactions({
+				root: join(this.options.maintenanceSessionRoot ?? getAgentDir(), "session-maintenance"),
+				media: this.media,
+				resolveFile: (file) => paths.resolveFile(file, true),
+				exclusive: (file, work) => this.fileOperations.run([file], "media-transaction", work),
+				assertIdle: (file, owner) => {
+					const key = this.fileOperations.key(file);
+					if (
+						this.registry
+							.list()
+							.some(
+								(entry) =>
+									entry.session.sessionId === owner ||
+									(entry.session.sessionFile && this.fileOperations.key(entry.session.sessionFile) === key),
+							)
+					)
+						throw new Error("Close the session and all read-only views before maintenance");
+					for (const [id, run] of this.runningSubagents) {
+						const source = run.getSource?.()?.sessionFile;
+						if (id === owner || (source && this.fileOperations.key(source) === key))
+							throw new Error("Running subagent source cannot be maintained");
+					}
+					if (owner && this.channelSubs.snapshot(owner).topics.length)
+						throw new Error("Channel-resident session cannot be maintained");
+				},
+			});
+		return this.mediaTransactions;
+	}
+	private mediaMaintenance?: SessionMediaMaintenanceJobs;
+	private maintenanceJobs(): SessionMediaMaintenanceJobs {
+		this.assertRunning();
+		const paths = this.maintenancePolicy();
+		if (!this.mediaMaintenance)
+			this.mediaMaintenance = new SessionMediaMaintenanceJobs({
+				resolveFile: (file) => paths.resolveFile(file, true),
+				read: (file, work) => this.fileOperations.run([file], "media-preview", work),
+			});
+		return this.mediaMaintenance;
+	}
+	startSessionMediaPreview(sessionFile: string) {
+		return this.maintenanceJobs().startPreview(sessionFile);
+	}
+	async getSessionMediaJob(jobId: string): Promise<SessionMediaJob> {
+		const job = this.maintenanceJobs().find(jobId);
+		if (job?.kind === "preview") return job;
+		const record = job?.requestId
+			? await this.transactionService().get(job.requestId)
+			: await this.transactionService().byJobId(jobId);
+		if (!record) throw new Error("Maintenance job is unavailable");
+		if (job) return { ...job, transaction: record };
+		return {
+			jobId: record.operationId,
+			requestId: record.requestId,
+			kind: record.kind,
+			sessionFile: record.sessionFile,
+			status: record.phase === "complete" ? "completed" : record.phase === "aborted" ? "cancelled" : "failed",
+			transaction: record,
+			createdAt: record.createdAt,
+			updatedAt: record.updatedAt,
+			processedBytes: 0,
+			totalBytes: record.preview?.fileBytes ?? 0,
+			...(record.phase !== "complete" && record.phase !== "aborted"
+				? { error: "Interrupted maintenance requires explicit recovery" }
+				: {}),
+		};
+	}
+	async cancelSessionMediaJob(jobId: string) {
+		const job = this.maintenanceJobs().find(jobId);
+		if (job) {
+			const cancelled = this.maintenanceJobs().cancel(jobId);
+			if (cancelled.status === "cancelled" && cancelled.requestId)
+				await this.transactionService().cancelUnstarted(cancelled.requestId);
+		} else {
+			const record = await this.transactionService().byJobId(jobId);
+			if (!record) throw new Error("Maintenance job is unavailable");
+			await this.transactionService().cancelUnstarted(record.requestId);
+		}
+		return this.getSessionMediaJob(jobId);
+	}
+	getSessionMediaTransaction(requestId: string) {
+		return this.transactionService().get(requestId);
+	}
+	getSessionMediaMaintenance(sessionFile: string) {
+		return this.transactionService().forFile(this.maintenancePolicy().resolveFile(sessionFile, true));
+	}
+	async startSessionMediaCompaction(input: {
+		requestId: string;
+		sessionFile: string;
+		expectedHash: string;
+		confirmed: boolean;
+	}) {
+		const service = this.transactionService();
+		const known = await service.get(input.requestId);
+		if (!known) this.maintenanceJobs().assertCapacity();
+		const record = await service.create(input);
+		return this.maintenanceJobs().enqueue(record, (options) => service.execute(record.requestId, options));
+	}
+	async startSessionMediaRestore(requestId: string, compactionRequestId: string, confirmed: boolean) {
+		const service = this.transactionService(),
+			original = await service.get(compactionRequestId);
+		if (!original?.outputHash) throw new Error("Completed compaction is unavailable");
+		return this.startRestoreRecord({
+			requestId,
+			sessionFile: original.sessionFile,
+			expectedHash: original.outputHash,
+			confirmed,
+			restoreFrom: compactionRequestId,
+		});
+	}
+	private async startRestoreRecord(input: {
+		requestId: string;
+		sessionFile: string;
+		expectedHash: string;
+		confirmed: boolean;
+		restoreFrom: string;
+	}) {
+		const service = this.transactionService();
+		if (!(await service.get(input.requestId))) this.maintenanceJobs().assertCapacity();
+		const record = await service.create(input);
+		return this.maintenanceJobs().enqueue(record, (options) => service.execute(record.requestId, options));
+	}
+	async resumeSessionMediaJob(requestId: string, confirmed: boolean) {
+		if (!confirmed) throw new Error("Explicit recovery confirmation required");
+		const service = this.transactionService(),
+			record = await service.get(requestId);
+		if (!record) throw new Error("Maintenance job is unavailable");
+		return this.maintenanceJobs().enqueue(record, (options) => service.execute(record.requestId, options));
+	}
+	async abandonSessionMediaJob(requestId: string, confirmed: boolean) {
+		if (!confirmed) throw new Error("Explicit recovery confirmation required");
+		const service = this.transactionService(),
+			record = await service.get(requestId);
+		if (!record) throw new Error("Maintenance job is unavailable");
+		return this.maintenanceJobs().enqueue(record, (options) => service.abandon(record.requestId, options));
+	}
+	private historyToken(modeRef: PermissionModeRef): string {
+		let token = this.historyTokens.get(modeRef);
+		if (!token) {
+			token = randomUUID();
+			this.historyTokens.set(modeRef, token);
+		}
+		return token;
+	}
+	/**
+	 * 频道 watcher 的会话级清理（按 modeRef 键控）。
+	 * ❗SDK 的 `dispose()` **不发 `session_shutdown`**（pi 1.0.4），所以 disposeSession 里除了
+	 * emit 该事件（见 `session/shutdown.ts`）仍显式调这里 —— 两道都触发时 cleanup 幂等，重复无害。
+	 */
+	private readonly channelWatchCleanups = new WeakMap<PermissionModeRef, () => void>();
+	/** 每会话事件速率（60s 窗口；心跳/临终快照数据源） */
+	private readonly eventRates = new EventRateTracker();
+	private modelRuntime: ModelRuntime | undefined;
+	private modelPromise: Promise<ModelRuntime> | undefined;
+	/** 设置页（provider/模型/凭证配置）服务 */
+	readonly settings = new SettingsService(() => this.getModelRuntime());
+	/** opencode-go 套餐额度（TTL 缓存；无 key 返回 null） */
+	private readonly quota = makeQuotaService(() => this.getModelRuntime());
+	/** provider 交互登录服务（OAuth + api_key 交互，如 Google Vertex），事件经 onLoginEvent 分发 */
+	readonly login = new LoginService({
+		getRuntime: () => this.getModelRuntime(),
+		send: (payload) => this.loginEmitter.emit(payload),
+	});
+	/** 项目资源两阶段加载 + 信任决策 */
+	private readonly projectLoader: ProjectResourceLoader;
+
+	constructor(private readonly options: PiBackendOptions = {}) {
+		this.media = options.sessionMediaStore ?? new SessionMediaStore(join(getAgentDir(), "media"));
+		this.packages = new PackageAdmin({
+			reloadIdleSessions: (cwd) => this.reloadIdleSessions(cwd),
+			defaultCwd: options.defaultCwd,
+		});
+		this.projectLoader = new ProjectResourceLoader({
+			trustStore: this.trustStore,
+			ask: (dir, opts) => this.trustGate.ask(dir, opts),
+			canAsk: () => this.trustEmitter.size > 0,
+			buildExtensions: (cwd, confirm, modeRef) => this.buildExtensionFactories(cwd, confirm, modeRef),
+			projectTrust: options.projectTrust,
+			desktopIntegration: options.desktopIntegration,
+			openUrl: options.openExternal,
+		});
+	}
+
+	/** 自定义工具 = 调用方传入的 + 内置 webfetch（webFetch:false 关闭）+ show_image + todo + subagent */
+	private buildCustomTools(
+		gate: PermissionGate,
+		preferBuiltin: boolean,
+		getPermissionMode: () => PermissionMode,
+		modeRef: PermissionModeRef,
+	): ToolDefinition[] {
+		const tools = [...(this.options.customTools ?? [])];
+		const webFetch = this.options.webFetch;
+		if (webFetch !== false) {
+			tools.push(makeWebFetchTool(typeof webFetch === "object" ? webFetch : undefined));
+		}
+		tools.push(
+			makeShowImageTool((owner, file) => {
+				const entry = this.registry.get(owner);
+				if (!entry || entry.readOnly || entry.modeRef !== modeRef || entry.session.sessionFile !== file)
+					throw new Error("Image owner is not the current writable SDK session");
+				const lease = this.media.lease(
+					owner,
+					() => !this.stopping && this.registry.get(owner) === entry && !this.sessionDisposals.has(entry),
+				);
+				return { assert: lease.assert, publish: (bytes, mimeType) => this.media.put(lease, bytes, mimeType) };
+			}),
+		);
+		tools.push(makeTodoTool());
+		if (preferBuiltin) {
+			tools.push(
+				makeSubagentTool({
+					getModelRuntime: () => this.getModelRuntime(),
+					getSubagentModel: (agentName) => this.modelPrefs.getSubagentModel(agentName),
+					getSubagentThinkingLevel: (agentName) => this.modelPrefs.getSubagentThinking(agentName),
+					gate,
+					getPermissionMode,
+					traces: this.traces,
+					registerRun: (id, handle) => {
+						this.assertRunning();
+						if (this.deletingSessions.has(id)) throw new Error("Session deletion is in progress");
+						this.runningSubagents.set(id, handle);
+					},
+					unregisterRun: (id) => {
+						this.runningSubagents.delete(id);
+						if (!this.registry.has(id)) {
+							this.liveTranscripts.delete(id);
+							this.streamGuard.cleanup(id);
+							this.eventRates.delete(id);
+						}
+					},
+					onEvent: (sessionId, event, abort) => this.emitSubagentEvent(sessionId, event, abort),
+				}),
+			);
+		}
+		return tools;
+	}
+
+	/**
+	 * 内置 subagent 执行器是否优先：构造参数（测试/嵌入宿主 override）> model-prefs.json 实时值 > true。
+	 * 只影响新会话创建（调用点已 async，故在最早异步点预读一次，避免同步 buildCustomTools 内读盘）。
+	 */
+	private async subagentPreferBuiltin(): Promise<boolean> {
+		return resolveSubagentPreferBuiltin(
+			this.options.subagentPreferBuiltin,
+			await this.modelPrefs.getSubagentPreferBuiltin(),
+		);
+	}
+
+	/**
+	 * 内置扩展随资源加载器注册（inline factory，不受项目信任影响）。注册序即
+	 * context 钩子链序（V2 冒烟实证）：权限门控（无 context 钩子）→ 视觉代理
+	 * （image→文本，先文本化）→ 上下文蒸发（基于文本化内容做蒸发决策，
+	 * 需保住视觉代理的替换）→ todo-reminder（恢复注入最后，不被压）。
+	 * 权限门控受 permissionGates/permissionExtension 开关控制（permissionGates=false
+	 * 时 confirm 恒 false，不能注册）；视觉代理 handler 实时读配置，设置页保存后立即
+	 * 生效；上下文蒸发默认开启（缺省 mode=evaporation），设置页可切 off，切换 ≤2s
+	 * 生效免重开会话；subagent 子会话不加载本工厂——noExtensions，见 runner.ts）。
+	 */
+	private buildExtensionFactories(
+		cwd: string,
+		confirm: PermissionConfirm | undefined,
+		modeRef?: PermissionModeRef,
+	): Array<
+		| ReturnType<typeof makeTodoReminderExtension>
+		| ReturnType<typeof makeChannelsExtension>
+		| ReturnType<typeof makeEvapExtension>
+		| ReturnType<typeof makeCompactionGuardExtension>
+		| ReturnType<typeof makeWenyouExtension>
+	> {
+		const factories: Array<
+			| ReturnType<typeof makeTodoReminderExtension>
+			| ReturnType<typeof makeChannelsExtension>
+			| ReturnType<typeof makeEvapExtension>
+			| ReturnType<typeof makeCompactionGuardExtension>
+			| ReturnType<typeof makeWenyouExtension>
+		> = [];
+		factories.push((pi) => {
+			pi.on("input", () => (this.stopping ? { action: "handled" } : { action: "continue" }));
+		});
+		if (this.options.permissionGates !== false && this.options.permissionExtension !== false) {
+			// confirm 直接桥到 PermissionGate（携带 kind/suggestDir 元数据，驱动「允许此目录」）；
+			// 未提供时扩展自行回退 ctx.ui.confirm（无元数据）；modeRef 同款闭包注入（D1：
+			// 按会话内存态，每次 tool_call 实时读，无 modeRef 的调用方如 draft 斜杠命令恒 default）
+			factories.push(
+				makePermissionGateExtension(getAgentDir(), {
+					projectRoot: cwd,
+					confirm,
+					getMode: () => modeRef?.current ?? "default",
+				}),
+			);
+		}
+		// 上下文蒸发（默认开启：缺省 mode=evaporation；钩子实时读派生 mode，
+		// 设置页切换后 ≤2s 生效，无需重开会话）。
+		// 批次上报双通道：log（快速 grep）+ trace_custom 行（灰度分析脚本直读，
+		// reducer 未知类型 no-op，replay-trace.mts 重放安全）
+		factories.push(
+			makeEvapExtension({
+				agentDir: getAgentDir(),
+				reporter: (sessionId, batch) => {
+					reportEvapBatch(sessionId, batch);
+					this.traces.recordCustom(sessionId, "evap_batch", batch);
+				},
+			}),
+		);
+		// 摘要输入限制与观测。主动压缩在 wireSession 绑定的请求策略中，不在 settled 启动。
+		// 观测双通道：log（快速 grep）+ trace_custom `compaction_guard` 行（reducer 未知类型 no-op）
+		factories.push(
+			makeCompactionGuardExtension({
+				agentDir: getAgentDir(),
+				reporter: (sessionId, observation) => {
+					this.traces.recordCustom(sessionId, "compaction_guard", observation);
+				},
+			}),
+		);
+		factories.push(
+			makeChannelsExtension({
+				agentDir: getAgentDir(),
+				cwd,
+				projectRoot: modeRef ? this.channelRoots.get(modeRef) : undefined,
+				service: async (readOnly) => {
+					const bound = modeRef ? this.channelRoots.get(modeRef) : undefined;
+					if (bound && (await resolveChannelProject(cwd, bound)) !== bound)
+						throw new Error("Channel project root changed");
+					return this.channelService(cwd, bound, readOnly);
+				},
+				authorizeRoot: async (root, ctx) => {
+					const decision = this.trustStore.get(root);
+					return decision ?? (root === resolve(ctx.cwd) && ctx.isProjectTrusted());
+				},
+				onSnapshot: (sessionId, entries) => {
+					if (this.registry.get(sessionId)?.modeRef !== modeRef) return;
+					this.channelSubs.reportEntries(sessionId, entries);
+					this.channelPeerRefresh = this.channelPeerRefresh
+						.then(() => this.refreshChannelPeers(sessionId, cwd, modeRef))
+						.catch((error) => log.warn("channel peer refresh failed", error));
+				},
+				isSessionAlive: (sessionId) =>
+					!this.stopping && modeRef !== undefined && this.registry.get(sessionId)?.modeRef === modeRef,
+				onSessionCleanup: (cleanup) => {
+					if (modeRef) this.channelWatchCleanups.set(modeRef, cleanup);
+				},
+			}),
+		);
+		// Wenyou Pro 内置文游工具链与态势感知扩展
+		factories.push(makeWenyouExtension({ service: this.wenyou, cwd }));
+		// todo-reminder 最后：compaction 后恢复注入的任务列表不被上游折叠
+		factories.push(makeTodoReminderExtension());
+		return factories;
+	}
+
+	/**
+	 * 扩展绑定（无条件，与权限门逃生舱解耦）：对话框宿主 + mode "rpc"（官方半可用语义，
+	 * D9：hasUI=true + 对话框可用 + TUI 专属明确降级）+ onError 接 log/trace。
+	 * 子代理 runner 不走这里（子会话用 makeUiContext({}) 纯 no-op）。
+	 */
+	private async bindSessionExtensions(
+		session: AgentSession,
+		sessionId: string,
+		cwd: string,
+	): Promise<ExtensionDialogHost> {
+		const dialogs = new ExtensionDialogHost({
+			onRequest: (req) => this.publishInteraction(this.extensionDialogRequestEmitter, { ...req, cwd }),
+			onResolved: (result) => this.publishInteraction(this.extensionDialogResolvedEmitter, result),
+		});
+		dialogs.bind(sessionId, cwd);
+		this.constructionDialogs.add(dialogs);
+		const recordExtensionError = (err: ExtensionError): void => {
+			if (err.event === "session_shutdown") this.shutdownErrors.get(session)?.push(err);
+			log.error("extension error", sessionId, err);
+			try {
+				this.traces.recordCustom(sessionId, "extension_error", {
+					path: err.extensionPath,
+					event: err.event,
+					error: err.error,
+				});
+			} catch {
+				// trace 不可用不影响扩展运行
+			}
+		};
+		try {
+			await session.bindExtensions({
+				uiContext: makeUiContext({
+					dialogs,
+					onNotify: (message, level, source) => {
+						this.extensionNotifyEmitter.emit({ sessionId, extensionPath: source, message, level });
+					},
+					onEditorText: (text, source) => this.extensionEditorTextEmitter.emit({ sessionId, text, source }),
+				}),
+				mode: "rpc",
+				onError: recordExtensionError,
+			});
+		} catch (error) {
+			dialogs.dispose();
+			throw error;
+		} finally {
+			this.constructionDialogs.delete(dialogs);
+		}
+
+		return dialogs;
+	}
+
+	private async getModelRuntime(): Promise<ModelRuntime> {
+		if (this.modelRuntime) return this.modelRuntime;
+		if (!this.modelPromise) {
+			this.modelPromise = ModelRuntime.create();
+		}
+		this.modelRuntime = await this.modelPromise;
+		return this.modelRuntime;
+	}
+
+	private readonly runningSubagents = new Map<string, SubagentRunHandle>();
+	private viewedSubagentId: string | undefined;
+
+	setViewedSubagent(sessionId?: string): void {
+		this.viewedSubagentId = sessionId;
+	}
+
+	private emitSubagentEvent(sessionId: string, event: SessionEvent, abort: () => Promise<void>): void {
+		this.emitEvent(sessionId, event, {
+			forward: this.viewedSubagentId === sessionId && this.registry.has(sessionId),
+			recordTrace: false,
+			abort,
+		});
+	}
+
+	private readonly liveTranscripts = new Map<string, LiveTranscript>();
+	private publishEvent(
+		sessionId: string,
+		event: SessionEvent,
+		forward = true,
+		rawUser?: object,
+		rawToolResult?: object,
+	): void {
+		if (["entry_appended", "message_end", "session_info_changed", "agent_settled"].includes(event.type)) {
+			const owner = this.registry.get(sessionId);
+			const source = this.runningSubagents.get(sessionId)?.getSource?.();
+			const manager =
+				source?.sessionManager ?? (owner && !owner.readOnly ? owner.session.sessionManager : undefined);
+			// 逐追加事件同步认证；无论有无检视，都不能将连续追加合并成不可认证的增量。
+			if (manager) {
+				const viewOwner = owner && this.sourceOwner(owner);
+				const hasView = !!viewOwner && this.sourceSnapshots.has(viewOwner);
+				if (event.type === "entry_appended" && viewOwner && hasView)
+					this.sourceSnapshots.noteAppend(
+						viewOwner,
+						event.entry,
+						manager.getEntryCount(),
+						manager.getSessionFile(),
+						manager,
+					);
+				this.sourceSnapshots.notePersisted(
+					manager,
+					manager.getSessionFile(),
+					event.type === "entry_appended" && !hasView ? event.entry : undefined,
+				);
+			}
+			queueMicrotask(() => {
+				const delayedManager = manager ?? this.runningSubagents.get(sessionId)?.getSource?.()?.sessionManager;
+				if (!delayedManager) return;
+				if (!manager) this.sourceSnapshots.notePersisted(delayedManager, delayedManager.getSessionFile());
+				if (
+					!owner ||
+					this.registry.get(sessionId) !== owner ||
+					!this.sourceSnapshots.has(this.sourceOwner(owner))
+				)
+					return;
+				this.sourceSnapshots.noteAppend(
+					this.sourceOwner(owner),
+					delayedManager.getEntry(delayedManager.getLeafId() ?? ""),
+					delayedManager.getEntryCount(),
+					delayedManager.getSessionFile(),
+					delayedManager,
+				);
+			});
+		}
+		let live = this.liveTranscripts.get(sessionId);
+		if (!live) {
+			live = new LiveTranscript();
+			this.liveTranscripts.set(sessionId, live);
+		}
+		// Capturing the branch on every delta would copy long history repeatedly. Only turn_start needs it.
+		live.apply(
+			event,
+			event.type === "turn_start"
+				? (this.runningSubagents.get(sessionId)?.getBranch() ??
+						this.registry.get(sessionId)?.session.sessionManager.getBranch() ??
+						[])
+				: [],
+			rawUser,
+			rawToolResult,
+		);
+		if (this.sessionCatalog && (event.type === "agent_settled" || event.type === "session_info_changed")) {
+			const file = this.registry.get(sessionId)?.session.sessionManager.getSessionFile();
+			if (file)
+				void this.sessionCatalog.invalidate(file).catch((error) => log.warn("catalog update failed", error));
+		}
+		if (forward) this.eventEmitter.emit({ sessionId, event, sequence: live.sequence });
+	}
+	getSessionEventSequence(sessionId: string): number {
+		return this.liveTranscripts.get(sessionId)?.sequence ?? 0;
+	}
+	getLoadedSessions(): import("@percho/shared").LoadedSessionSummary[] {
+		return this.registry.list().map((entry) => ({
+			meta: this.catalogMeta(this.registry.toMeta(entry)),
+			sequence: this.getSessionEventSequence(entry.session.sessionId),
+			followUpQueue: entry.session.getFollowUpMessages().map(composerQueueText),
+			permissionMode: entry.modeRef.current,
+			streaming: entry.session.isStreaming,
+			compacting: entry.session.isCompacting,
+			compactionPause: entry.session.compactionPause,
+		}));
+	}
+	getSessionBaseline(
+		sessionId: string,
+		options: { imageMode?: "references"; historyTurns?: number } = {},
+	): import("@percho/shared").SessionBaseline {
+		const entry = this.requireSession(sessionId);
+		const source =
+			options.imageMode === "references" || options.historyTurns !== undefined
+				? this.sourceSnapshot(entry)
+				: undefined;
+		let window: SelectedHistory | undefined;
+		const live = this.liveTranscripts.get(sessionId) ?? new LiveTranscript();
+		const endProjection = measureSessionSwitch("historyProjection");
+		const transcript = live.snapshot(
+			source?.branch ?? this.sessionBranch(entry),
+			{
+				ownerSessionId: entry.session.sessionId,
+				streaming: entry.session.isStreaming,
+				compacting: entry.session.isCompacting,
+			},
+			source
+				? (branch) => {
+						if (options.historyTurns !== undefined) {
+							window = this.historyPager.tail(
+								source,
+								branch,
+								{
+									turns: options.historyTurns,
+									hydrationToken: this.historyToken(entry.modeRef),
+									references: options.imageMode === "references",
+								},
+								(history, references) =>
+									references
+										? this.sourceSnapshots.project(source, true, history)
+										: toBranchSessionMessages(history, entry.session.sessionId),
+							);
+							return window.messages;
+						}
+						return this.sourceSnapshots.project(source, true, branch);
+					}
+				: undefined,
+			source && options.imageMode === "references"
+				? (sourceId, kind, images, details) =>
+						this.sourceSnapshots.projectTransient(source, sourceId, kind, images, details)
+				: undefined,
+		);
+		endProjection();
+		if (window) transcript.history = window.history;
+		const baseline: import("@percho/shared").SessionBaseline = {
+			hydrationToken: this.historyToken(entry.modeRef),
+			meta: this.catalogMeta(this.registry.toMeta(entry)),
+			sequence: live.sequence,
+			transcript: {
+				...transcript,
+				compactionPause: entry.session.compactionPause ?? null,
+				followUpQueue: entry.session.getFollowUpMessages().map(composerQueueText),
+				todos: this.readTodos(entry),
+			},
+			permissionMode: entry.modeRef.current,
+		};
+		if (window && Buffer.byteLength(JSON.stringify(baseline)) > RUNTIME_MESSAGE_BYTES - 4096)
+			throw new Error(
+				"HISTORY_PAGE_TOO_LARGE: complete history and active output exceed the logical message budget; nothing was truncated",
+			);
+		recordSessionSwitchPayload(baseline);
+		return baseline;
+	}
+	getSessionNavigation(sessionId: string): import("@percho/shared").SessionNavigation {
+		const entry = this.requireSession(sessionId),
+			source = this.sourceSnapshot(entry),
+			live = this.liveTranscripts.get(sessionId) ?? new LiveTranscript(),
+			prefix = live.persistentPrefix(source.branch);
+		return this.historyPager.navigation(source, prefix);
+	}
+	getSessionHistoryPage(sessionId: string, cursor: string): import("@percho/shared").SessionHistoryPage {
+		const entry = this.requireSession(sessionId),
+			source = this.sourceSnapshot(entry);
+		const live = this.liveTranscripts.get(sessionId) ?? new LiveTranscript();
+		const prefix = live.persistentPrefix(source.branch);
+		const selected = this.historyPager.older(
+			source,
+			prefix,
+			cursor,
+			{ hydrationToken: this.historyToken(entry.modeRef) },
+			(history, references) =>
+				references
+					? this.sourceSnapshots.project(source, true, history)
+					: toBranchSessionMessages(history, entry.session.sessionId),
+		);
+		return { messages: selected.uiMessages, history: selected.history };
+	}
+	private emitEvent(
+		sessionId: string,
+		event: SessionEvent,
+		options: { forward?: boolean; recordTrace?: boolean; abort?: () => Promise<void> } = {},
+	): void {
+		const rawUser =
+			event.type === "message_start" && event.message.role === "user" ? event.message : undefined;
+		const rawToolResult =
+			event.type === "message_end" && event.message.role === "toolResult" ? event.message : undefined;
+		if (event.type === "message_start" || event.type === "message_end")
+			event = { ...event, message: projectComposerMessage(event.message) };
+		if (event.type === "agent_end")
+			event = { ...event, messages: event.messages.map(projectComposerMessage) };
+		if (event.type === "queue_update")
+			event = {
+				...event,
+				steering: event.steering.map(composerQueueText),
+				followUp: event.followUp.map(composerQueueText),
+			};
+		this.eventRates.tick(sessionId);
+		if (
+			event.type === "turn_end" &&
+			event.message.role === "assistant" &&
+			event.message.stopReason === "error"
+		) {
+			// message_end 已持久化；只给转发副本加定位，不改 SDK 消息或磁盘内容。
+			const terminal = this.registry
+				.get(sessionId)
+				?.session.sessionManager.getBranch()
+				.findLast((entry) => entry.type === "message");
+			if (
+				terminal?.type === "message" &&
+				terminal.message.role === "assistant" &&
+				terminal.message.timestamp === event.message.timestamp
+			)
+				event = { ...event, retryEntryId: terminal.id };
+		}
+		// 会话标题全量落一行日志（决策 7：不截断）：用户拿 UI 里看到的标题（含自动命名的 …）
+		// 能直接 grep 主日志定位会话，不再只靠 prompt 行的 120 字符截断
+		if (event.type === "session_info_changed") log.info("session renamed", sessionId, { name: event.name });
+		// message_update 携带全量快照（partial + message），平方放大事故源头，先瘦身再分发
+		if (event.type === "message_update") event = slimMessageUpdate(event);
+		// toolResult 大结果四份快照重复携带（0.5.2 白屏事故降压层）：image base64 剥除 + 超长 text 截断
+		event = slimBulkyEvent(event);
+		// 流式熔断：病态输出（空白洪流/超量）trip 后 abort 会话，并丢弃后续增量（trace 与转发同步止血）
+		const verdict = this.streamGuard.inspect(sessionId, event);
+		if (verdict !== "pass") {
+			if (verdict !== "suppress") {
+				log.error("stream guard tripped, aborting session", sessionId, { verdict });
+				void (options.abort ? options.abort() : this.abort(sessionId)).catch(() => {});
+				// 熔断显形：合成 stream_guard_tripped UI 事件（subagent_mutex 同款：union + IPC 转发 +
+				// 不进 trace），reducer 产 warning 条——否则「回复戛然而止」零 UI 信号。
+				// 合成事件直接 emit，不喂回 streamGuard.inspect（防线不能自触发）。
+				this.publishEvent(sessionId, { type: "stream_guard_tripped", verdict }, options.forward);
+			}
+			return;
+		}
+		if (
+			options.recordTrace !== false &&
+			event.type !== "subagent_mutex" &&
+			event.type !== "stream_guard_tripped"
+		)
+			this.traces.record(sessionId, event);
+		this.publishEvent(sessionId, event, options.forward, rawUser, rawToolResult);
+	}
+
+	async init(): Promise<void> {
+		await this.getModelRuntime();
+	}
+
+	/** 项目文件列表（@ 补全数据源，相对路径、目录带尾 /，TTL 缓存） */
+	async listProjectFiles(cwd?: string): Promise<string[]> {
+		return walkProjectFiles(cwd || this.options.defaultCwd || process.cwd());
+	}
+
+	createSession(options: CreateSessionOptions): Promise<SessionMeta> {
+		if (this.projectDeletion?.isDeleting(options.cwd || this.options.defaultCwd || process.cwd()))
+			throw new Error("Project deletion is in progress");
+		return this.trackCreation(() => this.createSessionOnce(options));
+	}
+	private async createSessionOnce(options: CreateSessionOptions): Promise<SessionMeta> {
+		const runtime = await this.getModelRuntime();
+		this.assertRunning();
+		const requested = options.cwd || this.options.defaultCwd || process.cwd();
+		this.options.localSessionPaths?.assertCwd(requested);
+		const cwd = this.options.validateWorkspace ? await validateProjectDirectory(requested) : requested;
+		if (this.projectDeletion?.isDeleting(cwd)) throw new Error("Project deletion is in progress");
+		this.assertRunning();
+		let channelRoot: string | undefined;
+		let current: string | undefined;
+		try {
+			current = await realpath(cwd);
+		} catch (error) {
+			if (
+				options.channelProjectRoot ||
+				this.options.validateWorkspace ||
+				(error as NodeJS.ErrnoException).code !== "ENOENT"
+			)
+				throw error;
+			// Legacy embedders can construct in-memory sessions before their cwd exists.
+		}
+		if (current) {
+			// A separately selected nested directory is its own project unless the host explicitly binds it.
+			const bound = options.channelProjectRoot ? await realpath(options.channelProjectRoot) : undefined;
+			if (bound) {
+				const rel = relative(bound, current);
+				if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel))
+					throw new Error("Channel project root does not contain cwd");
+			}
+			channelRoot = await resolveChannelProject(current, bound);
+		}
+		const model =
+			options.provider && options.modelId ? runtime.getModel(options.provider, options.modelId) : undefined;
+		const session = await this.wireSession(
+			cwd,
+			undefined,
+			async (deps) => {
+				const { settingsManager, resourceLoader } = await deps.load();
+				return createAgentSession({
+					cwd,
+					modelRuntime: runtime,
+					model,
+					thinkingLevel: options.thinkingLevel as ThinkingLevel | undefined,
+					tools: this.options.tools,
+					customTools: this.buildCustomTools(
+						deps.gate,
+						deps.preferBuiltin,
+						deps.getPermissionMode,
+						deps.modeRef,
+					),
+					sessionManager: SessionManager.create(cwd),
+					settingsManager,
+					resourceLoader,
+					...codemodeSessionOptions(settingsManager, getAgentDir()),
+				});
+			},
+			channelRoot,
+		);
+		if (channelRoot) {
+			try {
+				await this.getChannelHost().bind(session.sessionId, channelRoot, resolve(cwd));
+			} catch (error) {
+				const entry = this.registry.get(session.sessionId);
+				if (entry) await this.disposeSession(entry);
+				throw error;
+			}
+		}
+		log.info("session created", session.sessionId, { cwd });
+		return this.toMetaOrThrow(session.sessionId);
+	}
+
+	/**
+	 * 打开会话（幂等 + single-flight，spec D4）：
+	 * - key = 规范化绝对路径 → 同一文件并发 open 共享一次构造；
+	 * - 已在 registry 的 sessionId 直接返回现有 entry 的最新 meta，**不构造第二实例**
+	 *   （短路在资源加载/扩展构造之前，重复 open 不再重复 subscribe/trace）；
+	 * - 失败（含构造失败）必清 in-flight key → 可重试。
+	 */
+	async openSession(filePath: string): Promise<SessionMeta> {
+		const key = this.options.localSessionPaths?.resolveFile(filePath) ?? resolve(filePath);
+		return this.trackCreation(() =>
+			this.openFlights.run(this.fileOperations.key(key), () =>
+				this.fileOperations.run([key], "open", async () => {
+					await (await this.archives()).assertOpen(key);
+					return this.openSessionOnce(key);
+				}),
+			),
+		);
+	}
+
+	private async openSessionOnce(filePath: string): Promise<SessionMeta> {
+		// 先按规范路径复用在册实例，不能为了查header再次完整解析图片文件。
+		const targetFile = this.fileOperations.key(filePath);
+		const registered = this.registry.list().find((entry) => {
+			if (!entry.session.sessionFile) return false;
+			try {
+				return this.fileOperations.key(entry.session.sessionFile) === targetFile;
+			} catch {
+				return false;
+			} // 无关的损坏来源不能阻止本次打开。
+		});
+		if (registered) {
+			if (this.projectDeletion?.isDeleting(registered.cwd))
+				throw new Error("Project deletion is in progress");
+			if (existsSync(filePath) && (await readSessionHeaderId(filePath)) !== registered.session.sessionId)
+				throw new Error("Session file identity changed");
+			const disposing = this.sessionDisposals.get(registered);
+			if (disposing) {
+				await disposing;
+				return this.openSessionOnce(filePath);
+			}
+			return this.catalogMeta(this.registry.toMeta(registered));
+		}
+		if (isSubagentSessionPath(filePath)) return this.openReadOnlySession(filePath);
+		const sourceVersion = this.sourceSnapshots.fileVersion(filePath);
+		const endParse = measureSessionSwitch("sdkParse");
+		const sessionManager = SessionManager.open(filePath);
+		if (this.deletingSessions.has(sessionManager.getSessionId()))
+			throw new Error("Session deletion is in progress");
+		if (this.projectDeletion?.isDeleting(sessionManager.getCwd()))
+			throw new Error("Project deletion is in progress");
+		this.sourceSnapshots.noteLoaded(sessionManager, filePath, sourceVersion);
+		endParse();
+		const existing = this.registry.get(sessionManager.getSessionId());
+		if (existing) {
+			const owned = existing.session.sessionManager.getSessionFile();
+			if (!owned || this.fileOperations.key(owned) !== this.fileOperations.key(filePath))
+				throw new Error("Session identity is ambiguous");
+			log.info("session open short-circuited", sessionManager.getSessionId(), { file: filePath });
+			return this.catalogMeta(this.registry.toMeta(existing));
+		}
+		const endRuntime = measureSessionSwitch("runtime");
+		const runtime = await this.getModelRuntime();
+		endRuntime();
+		this.assertRunning();
+		const cwd = sessionManager.getCwd() || process.cwd();
+		if (this.projectDeletion?.isDeleting(cwd)) throw new Error("Project deletion is in progress");
+		this.options.localSessionPaths?.assertCwd(cwd);
+		const readOnly = false;
+		const initialEntryCount = sessionManager.getEntryCount();
+		const binding = await this.getChannelHost().binding(sessionManager.getSessionId());
+		if (binding && binding.cwd !== resolve(cwd)) throw new Error("Session binding cwd changed");
+		let channelRoot = binding?.root;
+		if (!channelRoot) {
+			try {
+				channelRoot = await resolveChannelProject(cwd);
+			} catch (error) {
+				// Historical browsing must not require a vanished working directory.
+				if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+			}
+		}
+		const session = await this.wireSession(
+			cwd,
+			readOnly,
+			async (deps) => {
+				const { settingsManager, resourceLoader } = await deps.load();
+				return createAgentSession({
+					sessionManager,
+					modelRuntime: runtime,
+					// 与 create 对称应用工具白名单（F1 修复；SDK 仅在初始激活工具集层面消费，
+					// 会话文件不持久化工具开关，重开无状态冲突）
+					tools: this.options.tools,
+					settingsManager,
+					resourceLoader,
+					...codemodeSessionOptions(settingsManager, getAgentDir()),
+					customTools: this.buildCustomTools(
+						deps.gate,
+						deps.preferBuiltin,
+						deps.getPermissionMode,
+						deps.modeRef,
+					),
+				});
+			},
+			channelRoot,
+		);
+		if (channelRoot) {
+			try {
+				await this.getChannelHost().bind(session.sessionId, channelRoot, resolve(cwd));
+			} catch (error) {
+				const entry = this.registry.get(session.sessionId);
+				if (entry) await this.disposeSession(entry);
+				throw error;
+			}
+		}
+		// SDK 构造可在宿主订阅前补写模型/思考设置；只认证这些新条目的精确落盘增量。
+		this.sourceSnapshots.notePersisted(
+			sessionManager,
+			filePath,
+			sessionManager.getEntries().slice(initialEntryCount),
+		);
+		log.info("session opened", session.sessionId, { file: filePath });
+		return this.toMetaOrThrow(session.sessionId);
+	}
+
+	/**
+	 * create/open 共有接线：权限三件套（gate/confirmBridge/modeRef）→ 资源加载 → 会话构造
+	 * （差异项由 makeSession 提供：create 传 model/tools/thinkingLevel 与新 manager；open 传
+	 * 既有 manager + tools，model/thinkingLevel 有意不传——SDK 缺省时从会话文件恢复，
+	 * 传了反而覆盖用户原选择，见 sdk.js 恢复分支）→
+	 * subagent mutex 通知 → 扩展绑定 → 订阅/注册（gate/dialogs/modeRef 随 entry 单记录）→ trace。
+	 */
+	private async openReadOnlySession(file: string): Promise<SessionMeta> {
+		const sourceOwner = {},
+			target = this.fileOperations.key(file);
+		const running = [...this.runningSubagents.values()].find((handle) => {
+			const source = handle.getSource?.();
+			return source?.sessionFile && this.fileOperations.key(source.sessionFile) === target;
+		});
+		const live = running?.getSource?.();
+		const { owner: sessionId, header } = live
+			? this.sourceSnapshots.capture(sourceOwner, {
+					sessionId: live.sessionId,
+					file: live.sessionFile && existsSync(live.sessionFile) ? live.sessionFile : undefined,
+					branch: () => live.sessionManager.getBranch(),
+					entries: () => live.sessionManager.getEntries(),
+					header: () => live.sessionManager.getHeader(),
+					loadedFrom: live.sessionManager,
+				})
+			: this.sourceSnapshots.openReadOnly(sourceOwner, file);
+		// 回调只保留小header，不捕获完整初始快照，否则换版本后旧原图仍会被闭包持有。
+		const fallbackHeader = header && {
+			type: header.type,
+			id: header.id,
+			version: header.version,
+			cwd: header.cwd,
+			timestamp: header.timestamp,
+			parentSession: header.parentSession,
+		};
+		try {
+			if (this.registry.has(sessionId))
+				throw new Error("Session identity is already loaded from a different file");
+			const cwd = header?.cwd || process.cwd();
+			this.options.localSessionPaths?.assertCwd(cwd);
+			const modeRef: PermissionModeRef = { current: "default" },
+				gate = new PermissionGate(() => modeRef.current);
+			const dialogs = new ExtensionDialogHost({ onRequest: () => {}, onResolved: () => {} });
+			gate.bindSession(sessionId);
+			dialogs.bind(sessionId, cwd);
+			const view = new ReadOnlySessionView(sessionId, file, sourceOwner, {
+				running: () => this.runningSubagents.get(sessionId)?.getSource?.(),
+				snapshot: () => {
+					const active = this.runningSubagents.get(sessionId),
+						manager = active?.getSource?.()?.sessionManager;
+					if (!active && !existsSync(file)) throw new Error("Read-only source file is missing");
+					return this.sourceSnapshots.capture(sourceOwner, {
+						sessionId,
+						file: existsSync(file) ? file : undefined,
+						readOnly: !active,
+						branch: () => manager?.getBranch() ?? active?.getBranch() ?? [],
+						entries: () => manager?.getEntries() ?? active?.getBranch() ?? [],
+						header: () => manager?.getHeader() ?? fallbackHeader,
+						loadedFrom: manager,
+					});
+				},
+				exportHtml: exportReadOnlyHtml,
+			});
+			const entry = {
+				session: view,
+				cwd,
+				unsubscribe: () => {},
+				modeRef,
+				gate,
+				dialogs,
+				readOnly: true as const,
+			};
+			const meta = this.catalogMeta(this.registry.toMeta(entry));
+			this.registry.add(entry);
+			this.historyToken(modeRef);
+			return meta;
+		} catch (error) {
+			this.sourceSnapshots.release(sourceOwner);
+			throw error;
+		}
+	}
+
+	private async wireSession(
+		cwd: string,
+		readOnly: false | undefined,
+		makeSession: (deps: {
+			gate: PermissionGate;
+			getPermissionMode: () => PermissionMode;
+			modeRef: PermissionModeRef;
+			preferBuiltin: boolean;
+			/** 两阶段资源加载（信任决策走 projectLoader 既有链路）；懒执行：makeSession 决定时机 */
+			load: () => Promise<{ settingsManager: SettingsManagerType; resourceLoader: DefaultResourceLoader }>;
+		}) => Promise<CreateAgentSessionResult>,
+		channelRoot?: string,
+	): Promise<AgentSession> {
+		this.assertRunning();
+		const gate = new PermissionGate(
+			(req) => this.publishInteraction(this.permissionEmitter, req),
+			(result) => this.publishInteraction(this.permissionResolvedEmitter, result),
+		);
+		this.constructionGates.add(gate);
+		const modeRef: PermissionModeRef = { current: "default" };
+		if (channelRoot) this.channelRoots.set(modeRef, channelRoot);
+		const mcpOwner = this.mcpRuntime.owner(cwd);
+		this.mcpOwners.set(modeRef, mcpOwner);
+		let candidate: AgentSession | undefined;
+		let candidateDialogs: ExtensionDialogHost | undefined;
+		let registered = false,
+			released = false;
+		try {
+			// 权限扩展的确认通道直接桥到 gate（携带 kind/suggestDir 元数据，驱动「允许此目录」/持久化）
+			const confirmBridge: PermissionConfirm = (title, message, meta) => gate.confirm(title, message, meta);
+			// 会话权限模式引用：一律 default 起步（D1：不落盘、不继承），随工厂闭包注入求值链
+			let loaded: { settingsManager: SettingsManagerType; resourceLoader: DefaultResourceLoader } | undefined;
+			const load = async () => {
+				this.assertRunning();
+				const endResources = measureSessionSwitch("resourceLoad");
+				loaded ??= await this.projectLoader.load(cwd, {
+					confirm: confirmBridge,
+					modeRef,
+					mcpObserver: mcpOwner.observer,
+				});
+				endResources();
+				this.assertRunning();
+				return loaded;
+			};
+			const preferBuiltin = await this.subagentPreferBuiltin();
+			this.assertRunning();
+			const endCreate = measureSessionSwitch("createSession");
+			const { session, extensionsResult } = await makeSession({
+				gate,
+				preferBuiltin,
+				load,
+				getPermissionMode: () => modeRef.current,
+				modeRef,
+			});
+			endCreate();
+			candidate = session;
+			mcpOwner.bind(session.sessionId);
+			if (!readOnly) session.setCompactionPolicy(createCompactionRequestPolicy(getAgentDir()));
+			this.assertRunning();
+			const mutex = applySubagentMutex(session, extensionsResult, preferBuiltin);
+			if (mutex.shadowed.length > 0) {
+				log.info("third-party subagent tools shadowed", session.sessionId, mutex);
+				for (const shadowed of mutex.shadowed) {
+					this.emitEvent(session.sessionId, {
+						type: "subagent_mutex",
+						extensionPath: shadowed.extensionPath,
+						tools: shadowed.tools,
+					});
+				}
+			}
+			gate.bindSession(session.sessionId);
+			const endBind = measureSessionSwitch("bindExtensions");
+			const dialogs = await this.bindSessionExtensions(session, session.sessionId, cwd);
+			endBind();
+			candidateDialogs = dialogs;
+			this.assertRunning();
+			const unsubscribe = session.subscribe((event) => {
+				autoNameSession(
+					session,
+					event.type === "message_start" || event.type === "message_end"
+						? { ...event, message: projectComposerMessage(event.message) }
+						: event,
+				);
+				this.emitEvent(session.sessionId, event);
+			});
+			this.constructionGates.delete(gate);
+			try {
+				if (this.registry.has(session.sessionId))
+					throw new Error(`Session already registered: ${session.sessionId}`);
+				const register = () => {
+					this.assertRunning();
+					this.registry.add({
+						session,
+						unsubscribe,
+						cwd,
+						gate,
+						dialogs,
+						modeRef,
+						readOnly: readOnly || undefined,
+					});
+					registered = true;
+					this.media.openOwner(session.sessionId, modeRef);
+				};
+				if (readOnly) register();
+				else await this.cacheWarming.register(session, register);
+				// 这一代开始了：领取新代次（早报过的会话也在这里拿到最终代次；dispose 后重开会是新的一代）
+				this.channelSubs.noteSessionOpened(session.sessionId);
+			} catch (error) {
+				this.historyGate.cancel(session.sessionId, this.historyToken(modeRef));
+				try {
+					this.channelWatchCleanups.get(modeRef)?.();
+				} catch (cleanupError) {
+					log.warn("conflicting watcher cleanup failed", session.sessionId, cleanupError);
+				} finally {
+					this.channelWatchCleanups.delete(modeRef);
+				}
+				released = true;
+				// Release only the new instance: no holder-id cleanup or shutdown emission.
+				try {
+					releaseEntryResources({ unsubscribe, gate, dialogs });
+				} catch (cleanupError) {
+					log.warn("conflicting entry cleanup failed", session.sessionId, cleanupError);
+				}
+				try {
+					session.dispose();
+				} catch (cleanupError) {
+					log.warn("conflicting SDK dispose failed", session.sessionId, cleanupError);
+				}
+				log.error("session register conflicted; constructed instance disposed", {
+					sessionId: session.sessionId,
+				});
+				throw error;
+			}
+			if (!readOnly) await this.traces.start(session.sessionId, session.sessionManager.getSessionDir());
+			this.assertRunning();
+			return session;
+		} catch (error) {
+			mcpOwner.close();
+			if (this.constructionGates.delete(gate)) gate.dispose();
+			if (candidate && !registered && !released) {
+				const unregistered = candidate;
+				const attempt = async (cleanup: () => unknown) => {
+					try {
+						await cleanup();
+					} catch (failure) {
+						if (this.stopping) this.shutdownFailures.push(failure);
+						log.warn("unregistered session cleanup failed", failure);
+					}
+				};
+				await attempt(() => this.historyGate.cancel(unregistered.sessionId, this.historyToken(modeRef)));
+				await attempt(() => this.channelWatchCleanups.get(modeRef)?.());
+				this.channelWatchCleanups.delete(modeRef);
+				await attempt(() => candidateDialogs?.dispose());
+				await attempt(() => emitSessionShutdown(unregistered));
+				await attempt(() => unregistered.dispose());
+			}
+			throw error;
+		} finally {
+			this.constructionGates.delete(gate);
+		}
+	}
+
+	async listSessions(cwd?: string): Promise<SessionMeta[]> {
+		const target = cwd || this.options.defaultCwd || process.cwd();
+		const activeIds = this.activeSessionIds();
+		return (await this.catalogSessions(target)).filter((item) => !activeIds.has(item.sessionId));
+	}
+
+	/** Compatibility snapshot from the catalog, without reading session bodies. */
+	async listAllSessions(): Promise<SessionMeta[]> {
+		const activeIds = this.activeSessionIds();
+		return (await this.catalogSessions()).map((item) => ({ ...item, active: activeIds.has(item.sessionId) }));
+	}
+
+	private async catalogSessions(cwd?: string): Promise<SessionMeta[]> {
+		await this.archives();
+		await this.getSessionCatalog().refresh();
+		const items: SessionMeta[] = [];
+		let cursor: string | undefined;
+		let revision: string | undefined;
+		do {
+			const page = await this.getSessionCatalog().query({ cwd, limit: 100, cursor });
+			if (!page.complete || page.errors || (revision && page.revision !== revision))
+				throw new Error("Session catalog snapshot is incomplete or changed");
+			revision = page.revision;
+			items.push(...page.sessions);
+			cursor = page.nextCursor;
+		} while (cursor);
+		return items;
+	}
+
+	private activeSessionIds(): Set<string> {
+		return new Set(this.registry.list().map((e) => e.session.sessionId));
+	}
+
+	/**
+	 * 兼容旧宿主的订阅投影入口；新频道上报包含未读数的 reportEntries。
+	 * 只存 topic 名（不存消息内容）；空集表示没有可展示的订阅。
+	 */
+	reportChannelSubscriptions(sessionId: string, topics: ReadonlySet<string>): void {
+		this.channelSubs.report(sessionId, topics);
+	}
+
+	/** 单会话订阅快照（renderer 一次性查询 / reload 恢复用）：带 (generation, revision) 供 renderer 判新旧 */
+	async getChannelSubscriptions(sessionId: string): Promise<ChannelSubscriptionsSnapshot> {
+		const entry = this.registry.get(sessionId);
+		const before = this.channelSubs.snapshot(sessionId);
+		if (!entry) return before;
+		if (!readChannelWatchEnabled(getAgentDir())) {
+			this.channelSubs.reportEntries(sessionId, []);
+			return this.channelSubs.snapshot(sessionId);
+		}
+		if (entry.readOnly) return before;
+		const bound = this.channelRoots.get(entry.modeRef);
+		const root = await resolveChannelProject(entry.cwd, bound);
+		if (bound && root !== bound) throw new Error("Channel project root changed");
+		if (
+			!(
+				this.trustStore.get(root) ??
+				(root === resolve(entry.cwd) && entry.session.settingsManager?.isProjectTrusted?.())
+			)
+		)
+			return before;
+		let entries: Awaited<ReturnType<ChannelService["snapshot"]>>;
+		try {
+			entries = await (await this.channelService(entry.cwd, root, true)).snapshot(sessionId);
+		} catch (error) {
+			if (!(error instanceof Error) || error.message !== "Session is fenced") throw error;
+			entries = [];
+		}
+		if (!readChannelWatchEnabled(getAgentDir())) {
+			if (this.registry.get(sessionId) === entry) this.channelSubs.reportEntries(sessionId, []);
+			return this.channelSubs.snapshot(sessionId);
+		}
+		const after = this.channelSubs.snapshot(sessionId);
+		if (
+			this.registry.get(sessionId) === entry &&
+			before.generation === after.generation &&
+			before.revision === after.revision
+		)
+			this.channelSubs.reportEntries(sessionId, entries);
+		return this.channelSubs.snapshot(sessionId);
+	}
+
+	/**
+	 * 订阅快照变化事件（spec D1）：载荷是完整快照。renderer 先建立订阅再取快照，两条路径互相乱序时
+	 * 用 (generation, revision) 判新旧（见 `stores/channel-subscriptions.ts`）。
+	 */
+	onChannelSubscriptionsChanged(handler: (snapshot: ChannelSubscriptionsSnapshot) => void): () => void {
+		return this.channelSubs.subscribe(handler);
+	}
+
+	/**
+	 * 频道订阅不再阻止自动卸载，保留兼容查询并始终返回空集。
+	 */
+	getChannelSubscriptionSessionIds(): string[] {
+		return [];
+	}
+
+	/**
+	 * 关会话（默认**用户主动关**）：agent 还在跑（含等审批）时拒绝——run 中途把后端会话 dispose 会直接掐断本轮，
+	 * 内存策略（自动卸载）靠这道兵底兼固（策略层已保护，这里是最后一道门）。
+	 * 自动卸载走同一个方法（renderer 侧 `unloadSession`，intent="gc"）；频道订阅不阻止卸载。
+	 */
+	async closeSession(sessionId: string, intent: SessionCloseIntent = "user"): Promise<{ closed: boolean }> {
+		const entry = this.registry.get(sessionId);
+		if (entry && this.archiveFrozen.has(entry)) throw new Error("Archive cleanup is pending");
+		// 没有该会话 = 它本来就没在跑（幂等成功）：调用方该照常清掉自己的会话条目
+		if (!entry) return { closed: true };
+		const sourceFile = entry.session.sessionManager.getSessionFile();
+		if (sourceFile && this.archiveService?.peek(sessionId, sourceFile)?.blocked) return { closed: false };
+		if (sourceFile && this.fileOperations.has(sourceFile) && !this.sessionDisposals.has(entry))
+			return { closed: false };
+		if (entry.readOnly) {
+			await this.disposeSession(entry);
+			return { closed: true };
+		}
+		if (intent === "gc" && entry.session.pendingMessageCount > 0) {
+			return { closed: false };
+		}
+		if (entry.session.isStreaming) {
+			// 等审批也在此列（实测 isStreaming 两态都为 true）：用户切走/自动卸载都不能把这一轮掐掉
+			log.warn("closeSession ignored: streaming", sessionId);
+			return { closed: false };
+		}
+		if (intent === "gc") {
+			const lease = entry.session.tryAcquireIdleLease();
+			if (!lease) return { closed: false };
+			try {
+				await this.disposeSession(entry);
+			} finally {
+				lease.release();
+			}
+		} else {
+			await this.disposeSession(entry);
+		}
+		return { closed: true };
+	}
+
+	/** Registered-session-only auxiliary groups; conflict cleanup must not touch holder ids. */
+	private beforeSessionShutdown(entry: RegisteredSession, strict = false): void {
+		this.mcpOwners.get(entry.modeRef)?.close();
+		this.sourceSnapshots.release(this.sourceOwner(entry));
+		if (!entry.readOnly) this.media.closeOwner(entry.session.sessionId, entry.modeRef);
+		const failures: unknown[] = [];
+		try {
+			this.channelWatchCleanups.get(entry.modeRef)?.();
+		} catch (error) {
+			failures.push(error);
+		} finally {
+			if (!strict || failures.length === 0) this.channelWatchCleanups.delete(entry.modeRef);
+		}
+		if (failures.length) throw failures[0];
+	}
+
+	private afterSessionDispose(entry: RegisteredSession): void {
+		if (!entry.readOnly || !this.runningSubagents.has(entry.session.sessionId))
+			this.liveTranscripts.delete(entry.session.sessionId);
+		const id = entry.session.sessionId;
+		const failures: unknown[] = [];
+		try {
+			if (!entry.readOnly) this.channelSubs.dispose(id);
+		} catch (error) {
+			failures.push(error);
+		}
+		try {
+			this.streamGuard.cleanup(id);
+		} catch (error) {
+			failures.push(error);
+		}
+		try {
+			this.eventRates.delete(id);
+		} catch (error) {
+			failures.push(error);
+		}
+		if (failures.length) throw failures[0];
+	}
+
+	/** Archive keeps ownership after failure; the service retries the same entry. */
+	private async disposeSessionStrict(entry: RegisteredSession): Promise<void> {
+		this.archiveFrozen.add(entry);
+		const pending = this.sessionDisposals.get(entry);
+		if (pending) await pending;
+		if (this.registry.get(entry.session.sessionId) !== entry)
+			throw new Error("Archive session owner changed");
+		const disposal = (async () => {
+			this.beforeSessionShutdown(entry, true);
+			if (!this.archiveShutdown.has(entry)) {
+				const errors: ExtensionError[] = [];
+				if (!(entry.session instanceof ReadOnlySessionView)) this.shutdownErrors.set(entry.session, errors);
+				try {
+					await emitSessionShutdown(entry.session);
+				} finally {
+					if (!(entry.session instanceof ReadOnlySessionView)) this.shutdownErrors.delete(entry.session);
+				}
+				if (errors.length) throw new Error(`session_shutdown failed: ${errors[0]?.error}`);
+				this.archiveShutdown.add(entry);
+			}
+			if (!this.archiveSdkDisposed.has(entry)) {
+				entry.session.dispose();
+				this.archiveSdkDisposed.add(entry);
+			}
+			this.historyGate.cancel(entry.session.sessionId, this.historyToken(entry.modeRef));
+			this.afterSessionDispose(entry);
+			if (!entry.readOnly) await this.traces.stop(entry.session.sessionId);
+			this.registry.deleteStrict(entry.session.sessionId);
+		})();
+		this.sessionDisposals.set(entry, disposal);
+		try {
+			await disposal;
+		} finally {
+			this.sessionDisposals.delete(entry);
+		}
+	}
+
+	/** 真正的处置：dispose + registry/全局键控子系统清理（closeSession 与 deleteSession 共用） */
+	private disposeSession(entry: RegisteredSession): Promise<void> {
+		const pending = this.sessionDisposals.get(entry);
+		if (pending) return pending;
+		// Publish the identity-keyed Promise before running cleanup, including reentrant callers.
+		const disposal = Promise.resolve().then(() => this.disposeRegisteredSession(entry));
+		this.sessionDisposals.set(entry, disposal);
+		void disposal.catch(() => {
+			if (this.sessionDisposals.get(entry) === disposal) this.sessionDisposals.delete(entry);
+		});
+		return disposal;
+	}
+
+	private async disposeRegisteredSession(entry: RegisteredSession): Promise<void> {
+		const sessionId = entry.session.sessionId;
+		if (this.registry.get(sessionId) !== entry) return;
+		const failures: unknown[] = [];
+		try {
+			this.beforeSessionShutdown(entry);
+		} catch (error) {
+			failures.push(error);
+		}
+		// 先把 session_shutdown 送给扩展，再 dispose（详见 emitSessionShutdown 注释）：
+		// SDK 的 dispose() 不发这个事件，而官方 mcp 扩展只在它里面关 MCP stdio 子进程 ——
+		// 顺序反了就漏子进程，也会让扩展拿到的 ctx 已失效。
+		// 派发失败只记日志、不阻断处置（否则下面的 registry/gate/traces 清理全会漏掉）。
+		await emitSessionShutdown(entry.session).catch((error: unknown) => {
+			if (this.stopping) failures.push(error);
+			log.warn("session_shutdown 派发失败，继续处置会话", {
+				sessionId,
+				error: error instanceof Error ? error.message : String(error),
+			});
+		});
+		// Synchronous quit may have disposed this entry (or a new incarnation now owns the id).
+		if (this.registry.get(sessionId) !== entry) {
+			if (failures.length) throw failures[0];
+			return;
+		}
+		try {
+			entry.session.dispose();
+		} catch (error) {
+			failures.push(error);
+		}
+		// Normal close keeps history cancellation after SDK dispose and before entry release.
+		try {
+			this.historyGate.cancel(sessionId, this.historyToken(entry.modeRef));
+		} catch (error) {
+			failures.push(error);
+		}
+		// entry 级清理：unsubscribe + gate/dialogs dispose（pending 对话框按 sessionClosed 结算，
+		// 广播 resolved 让 renderer 撤卡；扩展 Promise 落取消值）
+		try {
+			this.registry.delete(sessionId);
+		} catch (error) {
+			failures.push(error);
+		}
+		try {
+			this.afterSessionDispose(entry);
+		} catch (error) {
+			failures.push(error);
+		}
+		try {
+			if (!entry.readOnly) await this.traces.stop(sessionId);
+		} catch (error) {
+			failures.push(error);
+		}
+		if (failures.length) throw failures[0];
+		log.info("session closed", sessionId);
+	}
+
+	/** 删除历史会话（pi 无删除 API，会话即磁盘 jsonl，直接删文件） */
+	async deleteSession(sessionId: string, sessionFile?: string): Promise<void> {
+		const cleanup = this.registry.get(sessionId);
+		// Capture a concurrent close's result before its failed promise is evicted from the owner cache.
+		const closing = cleanup && this.sessionDisposals.get(cleanup);
+		if (closing) await closing;
+		if (cleanup && this.archiveFrozen.has(cleanup)) {
+			const source = cleanup.session.sessionManager.getSessionFile();
+			if (!source) throw new Error("Archive cleanup is pending");
+			await (await this.archives()).retryCleanup(sessionId, source);
+		}
+		let file = sessionFile
+			? (this.options.localSessionPaths?.resolveFile(sessionFile, true) ?? sessionFile)
+			: this.registry.get(sessionId)?.session.sessionFile;
+		if (!file) {
+			const catalog = this.getSessionCatalog();
+			await this.archives();
+			await catalog.refresh();
+			const [verified] = await catalog.verify([{ sessionId }]);
+			if (!verified?.meta?.sessionFile || (verified.status !== "present" && verified.status !== "archived"))
+				throw new Error("Session identity is unavailable");
+			file = verified.meta.sessionFile;
+		}
+		const archiveState = await (await this.archives()).state(sessionId, file);
+		if (archiveState.phase === "prepared" || archiveState.cleanupPending)
+			throw new Error("Archive operation is unresolved");
+		if (this.deletingSessions.has(sessionId)) throw new Error("Session deletion is in progress");
+		this.deletingSessions.add(sessionId);
+		try {
+			const removedFile = await this.fileOperations.run(file ? [file] : [], "delete", () =>
+				this.deleteSessionUnlocked(
+					sessionId,
+					file,
+					cleanup && !this.archiveFrozen.has(cleanup) ? cleanup : undefined,
+					archiveState.operationId,
+				),
+			);
+			// Archive records acquire their own file lease; never re-enter it while holding delete's lease.
+			await (await this.archives()).removeRecord(sessionId, removedFile);
+			await this.sessionCatalog
+				?.remove(removedFile)
+				.catch((error) => log.warn("catalog deletion update failed", error));
+		} finally {
+			this.deletingSessions.delete(sessionId);
+		}
+	}
+	private async deleteSessionUnlocked(
+		sessionId: string,
+		sessionFile?: string,
+		expectedEntry?: RegisteredSession,
+		archiveOperationId?: string,
+	): Promise<string> {
+		const requested = sessionFile ?? this.registry.get(sessionId)?.session.sessionFile;
+		let controlledSource: string | undefined;
+		for (const [id, handle] of this.runningSubagents) {
+			const file = handle.getSource?.()?.sessionFile;
+			if (id !== sessionId && (!requested || !file || resolve(file) !== resolve(requested))) continue;
+			if (id !== sessionId || (requested && file && resolve(requested) !== resolve(file)))
+				throw new Error("Session owner does not match the running source");
+			controlledSource = file ?? requested;
+			if (!handle.completion)
+				throw new Error("Cannot safely delete a running subagent without completion tracking");
+			await handle.abort();
+			await handle.completion;
+			const current = this.runningSubagents.get(id);
+			if (current && current !== handle) throw new Error("Session runner changed during deletion");
+		}
+		const currentEntry = this.registry.get(sessionId);
+		if (expectedEntry && currentEntry && currentEntry !== expectedEntry)
+			throw new Error("Session owner changed");
+		const entry = currentEntry ?? expectedEntry;
+		if (entry && this.archiveFrozen.has(entry)) throw new Error("Archive cleanup is pending");
+		const disposal = entry && this.sessionDisposals.get(entry);
+		if (disposal) await disposal;
+		const replacement = this.registry.get(sessionId);
+		if (entry && replacement && replacement !== entry) throw new Error("Session owner changed");
+		const loadedFile = entry?.session.sessionManager.getSessionFile();
+		if (
+			loadedFile &&
+			sessionFile &&
+			this.fileOperations.key(loadedFile) !== this.fileOperations.key(sessionFile)
+		)
+			throw new Error("Session identity mismatch");
+		if (loadedFile && existsSync(loadedFile) && (await readSessionHeaderId(loadedFile)) !== sessionId)
+			throw new Error("Session file identity changed");
+		if (entry && !entry.readOnly && loadedFile) {
+			if (existsSync(loadedFile) && (await readSessionHeaderId(loadedFile)) !== sessionId)
+				throw new Error("Session file identity changed");
+			const catalog = this.getSessionCatalog();
+			// Bulk deletion already established a complete, frozen project scope.
+			if (!this.projectDeletion?.isDeleting(entry.cwd)) await catalog.refresh();
+			const [verified] = await catalog.verify([{ sessionId }]);
+			if (
+				!verified ||
+				(verified.status !== "missing" &&
+					!(
+						["present", "archived"].includes(verified.status) &&
+						verified.meta?.sessionFile &&
+						this.fileOperations.key(verified.meta.sessionFile) === this.fileOperations.key(loadedFile)
+					))
+			)
+				throw new Error("Session identity unavailable or ambiguous");
+		}
+		const childFile =
+			controlledSource ?? (sessionFile && isSubagentSessionPath(sessionFile) ? sessionFile : undefined);
+		if (!entry && childFile) {
+			if (
+				(!existsSync(childFile) && !controlledSource) ||
+				(existsSync(childFile) && (await readSessionHeaderId(childFile)) !== sessionId)
+			)
+				throw new Error("Session owner does not match the source header");
+			sessionFile = childFile;
+		}
+		if (!entry && !childFile) {
+			await this.archives();
+			const catalog = this.getSessionCatalog();
+			let [checked] = await catalog.verify([{ sessionId, sessionFile }]);
+			if (checked?.status === "unknown") {
+				await catalog.refresh();
+				[checked] = await catalog.verify([{ sessionId, sessionFile }]);
+			}
+			if (!checked || !["present", "archived", "missing"].includes(checked.status))
+				throw new Error("Session identity unavailable or ambiguous");
+			if (checked.meta?.sessionFile) {
+				if (
+					checked.meta.sessionId !== sessionId ||
+					(sessionFile &&
+						this.fileOperations.key(sessionFile) !== this.fileOperations.key(checked.meta.sessionFile))
+				)
+					throw new Error("Session source changed; confirm again");
+				sessionFile = checked.meta.sessionFile;
+			} else if (checked.status !== "missing" || !sessionFile)
+				throw new Error("Session identity unavailable or ambiguous");
+		}
+		const sessionDir = entry?.session.sessionManager.getSessionDir();
+		const requestedFile = sessionFile ?? loadedFile;
+		const file = requestedFile
+			? (this.options.localSessionPaths?.resolveFile(requestedFile, true) ?? requestedFile)
+			: undefined;
+		if (!file) throw new Error(`Session file not found: ${sessionId}`);
+		const existing = await this.getChannelHost().find(sessionId, file);
+		if (existsSync(file) && (await readSessionHeaderId(file)) !== sessionId)
+			throw new Error("Session file identity changed");
+		const channelService =
+			existing?.service ?? (await this.channelServiceForFile(file, entry?.cwd, sessionId));
+		const operationId = existing?.fence.kind === "delete" ? existing.fence.opId : randomUUID();
+		const fingerprint = async () => {
+			try {
+				const before = await stat(file);
+				const id = await readSessionHeaderId(file);
+				const after = await stat(file);
+				if (
+					id !== sessionId ||
+					before.dev !== after.dev ||
+					before.ino !== after.ino ||
+					before.ctimeMs !== after.ctimeMs ||
+					before.mtimeMs !== after.mtimeMs
+				)
+					throw new Error("Session file identity changed");
+				return {
+					dev: after.dev,
+					ino: after.ino,
+					ctimeMs: after.ctimeMs,
+					mtimeMs: after.mtimeMs,
+					id,
+					archiveOperationId: archiveOperationId ?? null,
+				};
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+				throw error;
+			}
+		};
+		const currentFingerprint = await fingerprint();
+		const host = this.getChannelHost();
+		if (existing?.fence.kind === "delete") {
+			const original = await host.deleteFingerprint(channelService.projectRoot, operationId);
+			if (
+				currentFingerprint &&
+				(existing.fence.state === "deleted" ||
+					!original ||
+					JSON.stringify(original) !== JSON.stringify(currentFingerprint))
+			)
+				throw new Error("Session file identity changed; confirm a new deletion");
+		} else {
+			await host.recordDeleteFingerprint(channelService.projectRoot, operationId, currentFingerprint);
+		}
+		await channelService.prepareMaintenance(sessionId, operationId, "delete", file);
+		// 显式删除是用户的明确意图（既有行为：即便正跑着也删），**绕开 closeSession 的 isStreaming 拒绝**，
+		// 否则会变成「拒绝 dispose 但磁盘文件照删」的跛脚状态（阶段 0 实测确认这条路径不先 abort）
+		if (entry) await this.disposeSession(entry);
+		if (!file) throw new Error(`Session file not found: ${sessionId}`);
+		// 文件可能还不存在：0 消息会话（首条 prompt 没过 preflight）只有**计划路径**，SDK 要等
+		// 追加第一条 entry 才落盘。这类会话在左栏有行（目录也记着它，见 renderer stores/projects.ts
+		// 的写穿），删掉它应当照常成功——幂等：本来就没有文件 = 已经是「不存在」状态。
+		const finalFingerprint = await fingerprint();
+		if (
+			finalFingerprint &&
+			(!currentFingerprint || JSON.stringify(finalFingerprint) !== JSON.stringify(currentFingerprint))
+		)
+			throw new Error("Session file identity changed; delete can be retried");
+		await unlink(file).catch((error: NodeJS.ErrnoException) => {
+			if (error.code !== "ENOENT") throw error;
+		});
+		this.sourceSnapshots.invalidateOwner(sessionId);
+		await this.media.deleteOwner(sessionId);
+		if (sessionDir) await TraceRecorder.removeAll(sessionDir, sessionId);
+		await channelService.completeMaintenance(sessionId, operationId, "deleted");
+		this.channelSubs.delete(sessionId);
+		log.info("session deleted", sessionId);
+		return file;
+	}
+
+	async prompt(
+		sessionId: string,
+		text: string,
+		images?: ImageInput[],
+		document?: ComposerDocument,
+	): Promise<void> {
+		const entry = this.requireWritable(sessionId);
+		this.options.localSessionPaths?.assertCwd(entry.cwd);
+		if (this.options.validateWorkspace) {
+			await validateProjectDirectory(entry.cwd);
+			if (document)
+				for (const part of parseComposerDocument(document).parts)
+					if (part.type === "file") await validateProjectReference(part.path, entry.cwd);
+			if (this.requireWritable(sessionId) !== entry)
+				throw new Error("Session changed while validating the project");
+		}
+		log.info("prompt", sessionId, { text: text.slice(0, 120), images: images?.length ?? 0 });
+		// session.prompt() 非流式路径会 await 整个 run（直到 agent_settled）；渲染端只需要
+		// “已受理/已入队”回执——用 preflightResult 提前返回，否则 IPC 挂一整轮，渲染端
+		// sending 状态被占住，运行中的 followUp 排队发送被防重发守卫静默拦截。
+		// preflight 前抛错（无模型/无 key/compaction 中）照常 reject 传给渲染端；
+		// ack 之后 run 期错误不再回传（走事件流呈现），then 的 reject 在已 resolve 后为 no-op。
+		// 1.0.4 契约：disposition ∈ "handled" | "queued" | "started"，三者都是「已受理」→ 全部 resolve；
+		// **被拒时 SDK 不再回调**（0.84.3 的 preflightResult(false) 已删），真实错误只经下面的 reject 回传。
+		// 三种 disposition 不往 IPC 传：渲染端的「已排队」区分靠 queue_update 事件，传个无人消费的值只是死契约。
+		const dispatch = (acceptedText = text) =>
+			new Promise<void>((resolve, reject) => {
+				this.assertRunning();
+				entry.session
+					.prompt(acceptedText, {
+						source: document ? "rpc" : undefined,
+						expandPromptTemplates: document ? false : undefined,
+						// 运行中发送走 followUp 排队（agent 完成后自动投递；steer 打断暂不支持）
+						// SDK 要求 streaming 时必传 streamingBehavior，否则抛错
+						streamingBehavior: "followUp",
+						images: images?.map((image) => ({
+							type: "image" as const,
+							data: image.data,
+							mimeType: image.mimeType,
+						})),
+						preflightResult: (disposition) => {
+							switch (disposition) {
+								case "handled": // 扩展命令已就地处理，本轮不会再有模型响应
+								case "queued": // steer/followUp 已入队
+								case "started": // 正常开跑
+									resolve();
+							}
+						},
+					})
+					.then(
+						() => resolve(),
+						(err) => reject(err),
+					);
+			});
+		const bridge = entry.session.resourceLoader && composerInputBridge(entry.session.resourceLoader);
+		if (document && !bridge) throw new Error("Composer input adapter unavailable");
+		if (bridge) await bridge.accept(entry.session.resourceLoader, document, dispatch);
+		else await dispatch();
+	}
+
+	/** SDK 补丁公开入口：目标核验/同步占位/持久化排除失败响应均由会话层完成。 */
+	async retryLastFailedTurn(sessionId: string, ref: { timestamp: number; entryId: string }): Promise<void> {
+		const entry = this.requireWritable(sessionId);
+		this.options.localSessionPaths?.assertCwd(entry.cwd);
+		if (this.options.validateWorkspace) {
+			await validateProjectDirectory(entry.cwd);
+			if (this.requireWritable(sessionId) !== entry)
+				throw new Error("Session changed while validating the project");
+		}
+		log.info("retry failed turn", sessionId, ref);
+		// 与 prompt 一样只等待受理；不把一整轮执行挂在 IPC 上，也不吞掉 preflight 拒绝。
+		await new Promise<void>((resolve, reject) => {
+			entry.session.retryLastFailedTurn(ref, { preflightResult: () => resolve() }).then(resolve, reject);
+		});
+	}
+
+	async abort(sessionId: string): Promise<void> {
+		const child = this.runningSubagents.get(sessionId);
+		if (child) {
+			await child.abort();
+			return;
+		}
+		const entry = this.registry.get(sessionId);
+		if (!entry) return;
+		log.info("abort", sessionId);
+		entry.gate.cancelPending();
+		entry.dialogs.cancelPending();
+		await entry.session.abort();
+	}
+
+	/** LAN 远程写端点前置检查（registry 直查，无磁盘 IO）。 */
+	checkSessionWritable(sessionId: string): "ok" | "not_found" | "read_only" {
+		const entry = this.registry.get(sessionId);
+		if (!entry) return "not_found";
+		if (entry.readOnly) return "read_only";
+		return "ok";
+	}
+
+	/** 清空运行中排队消息（steer+followUp 都清），返回被清内容；无会话返回空 */
+	async clearQueue(sessionId: string): Promise<QueuedMessages> {
+		const entry = this.registry.get(sessionId);
+		if (!entry) return { steering: [], followUp: [] };
+		if (entry.readOnly) throw new Error("Cannot clear the queue of a read-only view");
+		log.info("clearQueue", sessionId);
+		// Public previews honor drain modes and prefer steering. During this synchronous clear-all,
+		// preview all steering, clear that queue, then preview all follow-ups. No second queue is kept.
+		const agent = entry.session.agent;
+		const steeringMode = agent.steeringMode,
+			followUpMode = agent.followUpMode;
+		let steering: readonly unknown[] = [],
+			followUp: readonly unknown[] = [];
+		try {
+			agent.steeringMode = "all";
+			agent.followUpMode = "all";
+			if (entry.session.getSteeringMessages().length) {
+				steering = agent.peekQueuedMessages();
+				agent.clearSteeringQueue();
+			}
+			followUp = agent.peekQueuedMessages();
+		} finally {
+			agent.steeringMode = steeringMode;
+			agent.followUpMode = followUpMode;
+		}
+		const inputs = (messages: readonly unknown[]) =>
+			messages
+				.filter((m) => (m as RawMessage).role === "user")
+				.map((m) => {
+					const raw = m as RawMessage;
+					const text = blockText(raw.content);
+					return {
+						document: composerQueueDocument(text) ?? composerDocumentFromText(text),
+						images: blockImages(raw.content),
+					};
+				});
+		const cleared = entry.session.clearQueue();
+		return {
+			steering: cleared.steering.map(composerQueueText),
+			followUp: cleared.followUp.map(composerQueueText),
+			steeringInputs: inputs(steering),
+			followUpInputs: inputs(followUp),
+		};
+	}
+
+	/** 当前排队的 followUp 消息文本；无会话返回空 */
+	async getFollowUpMessages(sessionId: string): Promise<string[]> {
+		const entry = this.registry.get(sessionId);
+		if (!entry) return [];
+		return entry.session.getFollowUpMessages().map(composerQueueText);
+	}
+
+	async setModel(sessionId: string, provider: string, modelId: string): Promise<void> {
+		const entry = this.requireWritable(sessionId);
+		const runtime = await this.getModelRuntime();
+		this.assertRunning();
+		const model = runtime.getModel(provider, modelId);
+		if (!model) throw new Error(`Model not found: ${provider}/${modelId}`);
+		await entry.session.setModel(model);
+	}
+
+	async setThinkingLevel(sessionId: string, level: string): Promise<void> {
+		const entry = this.requireWritable(sessionId);
+		entry.session.setThinkingLevel(level as ThinkingLevel);
+	}
+
+	async compact(sessionId: string, customInstructions?: string): Promise<void> {
+		const entry = this.requireWritable(sessionId);
+		log.info("compact", sessionId);
+		await entry.session.compact(customInstructions);
+	}
+
+	async getStats(sessionId: string): Promise<SessionStats> {
+		const entry = this.requireSession(sessionId);
+		const stats = entry.session.getSessionStats();
+		return {
+			inputTokens: stats.tokens.input,
+			outputTokens: stats.tokens.output,
+			cost: stats.cost,
+		};
+	}
+
+	/** 每会话事件速率快照（心跳/临终快照数据源）：最近 60s 每秒事件数 + 最近事件时刻。
+	 * 顺带回收已结束会话（subagent 子会话不走 closeSession）的残留条目。 */
+	getEventRates(): Map<string, { window60s: number[]; lastEventAt: number }> {
+		this.eventRates.prune((id) => this.registry.has(id));
+		return this.eventRates.snapshot();
+	}
+
+	/** 全部活跃会话的运行态快照（只读观察者用）。 */
+	listActiveSessionRuntime(): { sessionId: string; streaming: boolean; compacting: boolean }[] {
+		return this.registry.list().map(({ session }) => ({
+			sessionId: session.sessionId,
+			streaming: session.isStreaming,
+			compacting: session.isCompacting,
+		}));
+	}
+
+	/** 全部未决权限请求的只读快照（LAN Observer 等被动观察者用）。 */
+	/** 全部未决权限请求快照（含 requestId；LAN 观察/远程应答与桌面共用） */
+	getPendingPermissionRequests(): PermissionRequest[] {
+		return this.registry.list().flatMap(({ gate }) => gate.listPending());
+	}
+
+	/** 当前模型上下文使用情况；刚压缩后 tokens 未知（null），会话无模型时 percent 为 null */
+	async getContextUsage(sessionId: string): Promise<ContextUsageInfo | null> {
+		const entry = this.requireSession(sessionId);
+		const usage = entry.session.getContextUsage();
+		if (!usage) return null;
+		return { tokens: usage.tokens, contextWindow: usage.contextWindow, percent: usage.percent };
+	}
+
+	/** opencode-go 套餐额度（实现在 settings/quota.ts：TTL 缓存 + 官方 API） */
+	async getQuota(): Promise<QuotaInfo | null> {
+		return this.quota.get();
+	}
+
+	/** 列出斜杠命令：内置（标记 supported）+ prompt 模板 + skill + 扩展命令 */
+	async listSlashCommands(sessionId: string): Promise<SlashCommandInfo[]> {
+		const entry = this.requireSession(sessionId);
+		return entry.readOnly ? [] : slashCommandsForSession(entry.session);
+	}
+
+	/**
+	 * 无会话列出斜杠命令（draft 新会话的补全数据源）：三类命令都只依赖
+	 * DefaultResourceLoader（扩展命令在加载期注册进 ext.commands），无需建会话。
+	 * 信任未决的项目不弹窗、按不信任只加载用户级资源（弹窗已在选目录时前置）。
+	 */
+	async listSlashCommandsForCwd(cwd?: string): Promise<SlashCommandInfo[]> {
+		const target = cwd || this.options.defaultCwd || process.cwd();
+		const { resourceLoader } = await this.projectLoader.load(target, { askTrust: false });
+		return slashCommandsForLoader(resourceLoader);
+	}
+
+	/** 项目信任前置决策（添加项目/切换 draft cwd 时由 renderer 调用） */
+	async ensureProjectTrust(cwd: string): Promise<boolean> {
+		this.assertRunning();
+		return this.projectLoader.ensureTrust(cwd);
+	}
+
+	/** 扩展显示名：`<inline:N>` 原样，目录式扩展取最后一段（剥 index.ts 后缀） */
+	private extensionDisplayName(path: string): string {
+		const cleaned = path.replace(/\/index\.(ts|js)$/, "");
+		const base = cleaned.split("/").filter(Boolean).pop();
+		return base ?? path;
+	}
+
+	private packageContext(sessionId?: string) {
+		if (!sessionId) return undefined;
+		const entry = this.requireSession(sessionId);
+		// 只读检视不持有项目设置/信任上下文，不能为扩展操作创建第二套运行实例。
+		return {
+			cwd: entry.cwd,
+			projectTrusted: !entry.readOnly && entry.session.settingsManager.isProjectTrusted(),
+		};
+	}
+
+	listConfiguredPackages(sessionId?: string) {
+		return this.packages.listConfiguredPackages(this.packageContext(sessionId));
+	}
+
+	removePackage(source: string, scope: "user" | "project", sessionId?: string) {
+		const context = scope === "project" ? this.packageContext(sessionId) : undefined;
+		return this.packages.removePackage(source, scope, context);
+	}
+
+	/** 读取会话已加载的资源（skills/扩展；设置页展示用） */
+	async getLoadedResources(sessionId: string): Promise<LoadedResources> {
+		const entry = this.requireSession(sessionId);
+		const session = entry.readOnly ? this.runningSubagents.get(sessionId)?.getSource?.() : entry.session;
+		if (!session) return { skills: [], skillDiagnostics: [], extensions: [], extensionErrors: [] };
+		const skillResult = session.resourceLoader.getSkills();
+		const extResult = session.resourceLoader.getExtensions();
+		return {
+			skills: skillResult.skills.map((skill) => ({
+				name: skill.name,
+				description: skill.description,
+				scope: skill.sourceInfo.scope,
+				source: skill.sourceInfo.source,
+				path: skill.filePath,
+				disableModelInvocation: skill.disableModelInvocation,
+			})),
+			skillDiagnostics: skillResult.diagnostics.map((d) => ({
+				type: d.type,
+				message: d.message,
+				path: d.path,
+			})),
+			extensions: extResult.extensions.map((ext) => ({
+				name: this.extensionDisplayName(ext.path),
+				path: ext.path,
+				scope: ext.sourceInfo.scope,
+				source: ext.sourceInfo.source,
+				hidden: ext.hidden === true,
+				toolsCount: ext.tools.size,
+				tools: [...ext.tools.keys()],
+				commands: [...ext.commands.keys()],
+				flagsCount: ext.flags.size,
+				shortcutsCount: ext.shortcuts.size,
+			})),
+			// 未接的官方内置扩展（如 llama.cpp 没有从包根导出）只降级为 info：不弹红、不阻塞会话。
+			// 官方一旦导出 builtInExtensions，把对应工厂补进 project/builtin-extensions.ts 即可消掉这条。
+			extensionErrors: extResult.errors.map((item) => ({
+				...item,
+				level: item.error.startsWith("Unknown built-in extension: builtin:")
+					? ("info" as const)
+					: ("error" as const),
+			})),
+		};
+	}
+
+	/**
+	 * 设置会话显示名：活跃会话走 SDK（自动发 session_info_changed）；历史会话离线写会话文件（无事件，渲染端本地更新标题）。
+	 * 历史会话优先 `SessionManager.findById(cwd, id)` 精确查表（1.0.4 新增：只扫该项目的会话目录、
+	 * 不加载正文），替掉原来的 `listAllSessions()` 全量枚举（会话多时读全部 header，数百毫秒）。
+	 */
+	async setSessionName(sessionId: string, name: string, cwd?: string): Promise<void> {
+		const entry = this.registry.get(sessionId);
+		if (entry) {
+			this.requireWritable(sessionId);
+			// 新建未发消息的会话改名**是合法操作**：sessionFile（路径）建会话时就有，SDK 把 session_info
+			// 追加进内存 fileEntries，首条 user 消息落盘时一起写入（不丢名）。所以这里不加 !sessionFile 拦。
+			await this.fileOperations.run(
+				entry.session.sessionFile ? [entry.session.sessionFile] : [],
+				"rename",
+				async () => {
+					if (this.requireWritable(sessionId) !== entry) throw new Error("Session changed");
+					if (entry.session.sessionFile)
+						await (await this.archives()).assertOpen(entry.session.sessionFile, sessionId);
+					if (this.requireWritable(sessionId) !== entry) throw new Error("Session changed");
+					entry.session.setSessionName(name);
+				},
+			);
+			return;
+		}
+		// 历史会话（顶栏没打开的）：离线追加 session_info（与 CLI /name 同源）
+		const file = await this.findUnloadedSessionFile(sessionId, cwd);
+		if (!file) throw new Error(`Session not found: ${sessionId}`);
+		// subagent 产物会话只读（与 listAllSessions 的 readOnly 判定同一谓词）
+		if (isSubagentSessionPath(file)) throw new Error("Session is read-only (subagent transcript)");
+		await this.fileOperations.run([file], "rename", async () => {
+			await (await this.archives()).assertOpen(file);
+			const [verified] = await this.getSessionCatalog().verify([{ sessionId, sessionFile: file }]);
+			if (
+				verified?.status !== "present" ||
+				!verified.meta ||
+				this.fileOperations.key(verified.meta.sessionFile ?? "") !== this.fileOperations.key(file)
+			)
+				throw new Error("Session identity unavailable or changed");
+			if (this.projectDeletion?.isDeleting(verified.meta.cwd))
+				throw new Error("Project deletion is in progress");
+			renameSessionFile(file, name);
+		});
+	}
+
+	/**
+	 * 未加载会话的文件路径：给了 cwd 就 `SessionManager.findById` 精确查表（只扫该项目的会话目录），
+	 * 否则回退全量枚举。
+	 *
+	 * 为何保留枚举兜底：LAN 历史透视（`/api/sessions/:id/transcript` → `peekSessionMessages`）只有
+	 * sessionId —— 路由是纯 id 形式，服务端拿不到会话的 cwd；要让 LAN 也走精确查表得给路由加
+	 * `?cwd=`（LAN 网页端手上确实有 brief.cwd）并改客户端，为这点延迟收益改 LAN 协议不划算
+	 * （已与 review 确认保留兜底）。UI 热路径（改名）永远带 cwd，不会走到枚举。
+	 */
+	private async findUnloadedSessionFile(sessionId: string, cwd?: string): Promise<string | undefined> {
+		await this.archives();
+		const [result] = await this.getSessionCatalog().verify([{ sessionId }]);
+		if (!result || result.status === "missing") return undefined;
+		if (result.status !== "present" || !result.meta?.sessionFile)
+			throw new Error("Session unavailable or archived");
+		if (cwd && result.meta.cwd !== cwd) return undefined;
+		await (await this.archives()).assertOpen(result.meta.sessionFile);
+		return this.options.localSessionPaths?.resolveFile(result.meta.sessionFile) ?? result.meta.sessionFile;
+	}
+
+	/** 导出会话内容（HTML/JSONL）；返回文件内容，由调用方保存 */
+	async exportSession(sessionId: string, format: "html" | "jsonl"): Promise<string> {
+		const file = this.requireSession(sessionId).session.sessionFile;
+		return this.fileOperations.run(file ? [file] : [], "export", () =>
+			this.exportSessionUnlocked(sessionId, format),
+		);
+	}
+	private async exportSessionUnlocked(sessionId: string, format: "html" | "jsonl"): Promise<string> {
+		const entry = this.requireSession(sessionId),
+			manager = entry.session.sessionManager;
+		if (entry.session.sessionFile) await (await this.archives()).assertOpen(entry.session.sessionFile);
+		if (format === "jsonl") {
+			const branch = await inlineSessionAssets(
+				manager.getBranch(),
+				manager.getSessionId(),
+				this.media,
+				RUNTIME_MESSAGE_BYTES - 4096,
+			);
+			return this.checkedExport(
+				`${[manager.getHeader(), ...branch].map((node) => JSON.stringify(node)).join("\n")}\n`,
+			);
+		}
+		const directory = await mkdtemp(
+			join(entry.readOnly ? dirname(entry.session.sessionFile) : manager.getSessionDir(), ".percho-export-"),
+		);
+		try {
+			await privateDirectory(directory, true);
+			const path = await entry.session.exportToHtml(join(directory, "session.html"));
+			const html = await readFile(path, "utf8");
+			const embedded =
+				/(<script id="session-data" type="application\/json">)([A-Za-z0-9+/=]+)(<\/script>)/.exec(html);
+			if (!embedded) throw new Error("Unsupported SDK HTML export format");
+			const data = JSON.parse(Buffer.from(embedded[2] ?? "", "base64").toString("utf8"));
+			if (!Array.isArray(data.entries)) throw new Error("SDK HTML session entries are unavailable");
+			const entries = await inlineSessionAssets(
+				data.entries as unknown[],
+				manager.getSessionId(),
+				this.media,
+				Math.floor(RUNTIME_MESSAGE_BYTES * 0.7),
+			);
+			data.perchoImageEntries = displayImageEntryIds(entries);
+			data.entries = entries.map((item) => {
+				const node = item as { type?: string; message?: unknown };
+				if (node.type !== "message") return item;
+				const projected = projectComposerMessage(node.message) as Record<string, unknown>;
+				const { perchoInput: _input, ...message } = projected;
+				return { ...node, message };
+			});
+			// 先await回填，再替换；绝不能向String.replace传async回调。
+			const body = `${embedded[1]}${Buffer.from(JSON.stringify(data)).toString("base64")}${embedded[3]}`;
+			const result = html.slice(0, embedded.index) + body + html.slice(embedded.index + embedded[0].length);
+			return this.checkedExport(result);
+		} finally {
+			await rm(directory, { recursive: true, force: true });
+		}
+	}
+	private checkedExport(content: string): string {
+		if (Buffer.byteLength(JSON.stringify(content), "utf8") + 4096 > RUNTIME_MESSAGE_BYTES)
+			throw new Error(
+				"Self-contained export exceeds the 64MiB transport budget; back up the full agent directory instead",
+			);
+		return content;
+	}
+
+	/** renderer 已落下首份完整历史；放行启动期频道 watcher + 离线对账。 */
+	markSessionHistoryReady(sessionId: string, hydrationToken?: string): void {
+		const entry = this.registry.get(sessionId);
+		if (entry && hydrationToken === this.historyToken(entry.modeRef))
+			this.historyGate.ack(sessionId, hydrationToken);
+	}
+
+	/** 读取会话树当前分支的完整历史（compaction 只裁模型上下文，不裁 UI 历史） */
+	async getSessionMessages(
+		sessionId: string,
+		options: { imageMode?: "references" } = {},
+	): Promise<SessionMessage[]> {
+		const entry = this.requireSession(sessionId);
+		const endProjection = measureSessionSwitch("historyProjection");
+		const result =
+			options.imageMode === "references"
+				? this.sourceSnapshots.project(this.sourceSnapshot(entry))
+				: toBranchSessionMessages(this.sessionBranch(entry), entry.session.sessionId);
+		endProjection();
+		recordSessionSwitchPayload(result);
+		return result;
+	}
+
+	getSessionSourceStats() {
+		return this.sourceSnapshots.stats();
+	}
+
+	async getSessionImage(
+		sessionId: string,
+		imageId: string,
+		revision: string,
+	): Promise<ImageInput & { byteLength: number }> {
+		const entry = this.requireSession(sessionId);
+		if (this.sessionDisposals.has(entry)) throw new Error("Image owner is closing");
+		if (imageId.startsWith("asset:")) return this.media.read(sessionId, imageId, revision);
+		return this.sourceSnapshots.resolve(this.sourceOwner(entry), sessionId, imageId, revision);
+	}
+
+	private sourceOwner(entry: RegisteredSession): object {
+		return entry.session instanceof ReadOnlySessionView ? entry.session.sourceOwner : entry;
+	}
+
+	private sourceSnapshot(entry: RegisteredSession) {
+		if (entry.session instanceof ReadOnlySessionView) return entry.session.snapshot;
+		const running = this.runningSubagents.get(entry.session.sessionId);
+		const manager = running ?? entry.session.sessionManager;
+		const file = entry.session.sessionFile;
+		return this.sourceSnapshots.capture(entry, {
+			sessionId: entry.session.sessionId,
+			file: file && existsSync(file) ? file : undefined,
+			branch: () => manager.getBranch(),
+			entries: () => (running ? running.getBranch() : entry.session.sessionManager.getEntries()),
+			readOnly: !!entry.readOnly && !running,
+			loadedFrom: entry.session.sessionManager,
+		});
+	}
+
+	/** 检视副本不会随运行实例更新；结束后的只读源按指纹复用一次纯解析。 */
+	private sessionBranch(entry: RegisteredSession): Readonly<ReturnType<SessionManager["getBranch"]>> {
+		if (!entry.readOnly || !entry.session.sessionFile) return entry.session.sessionManager.getBranch();
+		return this.sourceSnapshot(entry).branch;
+	}
+
+	/**
+	 * LAN 历史会话只读透视：活跃会话走 registry（同 getSessionMessages）；
+	 * 未打开的会话纯解析文件（不开 SessionManager，零副作用零写盘）。不存在返回 null。
+	 */
+	async peekSessionMessages(sessionId: string, cwd?: string): Promise<SessionMessage[] | null> {
+		if (this.registry.get(sessionId)) return this.getSessionMessages(sessionId);
+		const file = await this.findUnloadedSessionFile(sessionId, cwd);
+		if (!file) return null;
+		try {
+			const content = await readFile(file, "utf8");
+			return readSessionMessagesFromContent(content);
+		} catch {
+			return null;
+		}
+	}
+
+	/**
+	 * 读取会话当前 todo 列表：扫**会话分支**（`getBranch()` = 权威历史，含被压缩掉的部分）
+	 * 找最后一条 todo 工具结果的 details。没有返回 []。
+	 * 1.0.4 起**不能**再扫 `session.messages`：那是 `agent.state.messages` = 压缩后的请求投影，
+	 * 压缩一发生 todo 工具结果就没了（旧实现靠 todo-reminder 注入的 custom message 兜底，
+	 * 但那条只在 wire 上、不落 entry；现在 reminder 只服务模型上下文）。
+	 */
+	async getTodos(sessionId: string): Promise<TodoItem[]> {
+		const entry = this.requireSession(sessionId);
+		return this.readTodos(entry);
+	}
+	private readTodos(entry: RegisteredSession): TodoItem[] {
+		const branch = this.sessionBranch(entry);
+		for (let i = branch.length - 1; i >= 0; i--) {
+			const item = branch[i];
+			if (item?.type !== "message") continue;
+			const m = item.message as RawMessage;
+			if (m.role === "toolResult" && m.toolName === TODO_TOOL_NAME && !m.isError) {
+				const todos = extractTodos(m.details);
+				if (todos) return todos;
+			}
+		}
+		return [];
+	}
+
+	/**
+	 * 在指定 assistant 消息处分叉：新会话文件以其为结尾（原文件与原会话都保留），
+	 * 打开新会话并返回其 meta（调用方决定新开会话标签还是原位切换）。
+	 * ref.entryId 精确定位；缺省时按 ref.text 从分支尾部向前匹配最近一条同文 assistant 消息
+	 * （刚完成的流式消息还没有 entryId，走文本兜底）。
+	 */
+	async forkSession(sessionId: string, ref: { entryId?: string; text?: string }): Promise<SessionMeta> {
+		const entry = this.requireWritable(sessionId);
+		if (entry.session.isStreaming || entry.session.isCompacting) {
+			throw new Error("Cannot fork while the agent is running or context is compacting");
+		}
+		const sourceManager = entry.session.sessionManager;
+		const targetId = resolveForkEntryId(sourceManager, ref);
+		const file = sourceManager.getSessionFile();
+		if (!file || !existsSync(file)) {
+			throw new Error("This session has not been saved yet. Send a message first.");
+		}
+		const approved = this.options.localSessionPaths?.resolveFile(file) ?? file;
+		return this.fileOperations.run([approved], "fork", async () => {
+			await (await this.archives()).assertOpen(approved);
+			if (this.archiveFrozen.has(entry)) throw new Error("Archive cleanup is pending");
+			const newPath = await prepareMediaFork(
+				sourceManager,
+				approved,
+				targetId,
+				this.media,
+				join(dirname(this.media.rootDirectory), "session-media-forks"),
+				() => !this.stopping,
+			);
+			const binding = await this.getChannelHost().binding(sessionId);
+			if (binding) {
+				const forkId = await readSessionHeaderId(newPath);
+				await this.getChannelHost().bind(forkId, binding.root, binding.cwd);
+			}
+			log.info("fork session", sessionId, { targetId, newPath });
+			return this.openSession(newPath);
+		});
+	}
+
+	/** 撤回的 custom entry 标记类型：追加在回退点后使 leaf 移动落盘持久（重启后撤回仍生效） */
+	static readonly RECALLED_MARKER_TYPE = "message-recalled";
+
+	/**
+	 * 撤回一条用户消息：navigateTree 把会话 leaf 回退到该消息之前（被撤回内容在文件中
+	 * 保留为侧枝，不删除），同时重建内存 LLM 上下文；随后追加 message-recalled custom entry
+	 * （不进上下文、不进消息列表）把 leaf 移动持久化，避免重启后旧分支回来。
+	 * 文本与图片从目标 entry 提取后返回，调用方放回输入框继续编辑。
+	 *
+	 * ❗ 纪律（1.0.4）：**任何直接改 SessionManager leaf 的路径**（branch/resetLeaf/navigateTree 之外的
+	 * 手写回退）都必须在改完 leaf 后自己调 `session.refreshContext()`——navigateTree 内部末尾会刷，
+	 * 绕过它就没别人刷，`session.messages`（= agent.state.messages，UI messageCount 与 compaction 判定都读它）
+	 * 会停在旧值 = 幽灵消息。本文件只有下面的「悬挂用户消息」分支属于这类，新增请照此办理。
+	 */
+	async recallMessage(
+		sessionId: string,
+		ref: { entryId?: string; text?: string; timestamp?: number },
+	): Promise<{ text: string; images: ImageInput[]; document?: ComposerDocument }> {
+		const entry = this.requireWritable(sessionId);
+		if (entry.session.isStreaming || entry.session.isCompacting) {
+			throw new Error("Cannot recall while the agent is running or context is compacting");
+		}
+		const sm = entry.session.sessionManager;
+		const targetId = resolveRecallEntryId(sm, ref);
+		const target = sm.getEntry(targetId) as Extract<SessionEntry, { type: "message" }>;
+		const message = target.message as RawMessage;
+		// 文本/图片从目标 entry 提取（navigateTree 只返回 editorText，图片会丢）
+		const sourceText = blockText(message.content);
+		const document = readComposerDocument(message);
+		const invocation = parseExpandedSkillInvocation(sourceText);
+		const text = document
+			? composerDocumentText(document)
+			: invocation
+				? formatSkillCommand(invocation)
+				: sourceText;
+		const images = blockImages(message.content);
+		if (sm.getLeafId() === targetId) {
+			// 悬挂的用户消息（发出后无任何回复，entry 即当前 leaf）：navigateTree 视为 no-op，
+			// 手动回退 leaf。
+			// 1.0.4 起不要再手写 `agent.state.messages = sm.buildSessionContext().messages`：
+			// 请求上下文由 SessionManager 投影在 prepareRequest 里逐次重建（SDK 内部 _refreshFinalizedContext 收尾）。
+			if (target.parentId) sm.branch(target.parentId);
+			else sm.resetLeaf();
+			// 但这条分支绕过了 navigateTree 的收尾（navigateTree 末尾会 _refreshFinalizedContext），
+			// 不刷新会让 session.messages（= agent.state.messages）停在撤回前：下一轮 prompt 的
+			// compaction 判定（_findLastAssistantMessage）与 UI 的 messageCount 会读到幽灵消息。
+			// 用官方公开原语刷新（与 navigateTree 内部同一件事）。
+			entry.session.refreshContext();
+		} else {
+			const result = await entry.session.navigateTree(targetId);
+			if (result.cancelled) throw new Error("Recall was cancelled by an extension");
+		}
+		// 持久化回退点：custom entry 不参与 LLM 上下文，只把 leaf 移动写进文件
+		// （否则撤回只存在内存，重启后旧分支回来）
+		sm.appendCustomEntry(PiBackend.RECALLED_MARKER_TYPE, { recalledEntryId: targetId });
+		log.info("recall message", sessionId, { targetId });
+		return { text, images, ...(document ? { document } : {}) };
+	}
+
+	async listModels(): Promise<AvailableModel[]> {
+		const [providers, prefs, runtime] = await Promise.all([
+			this.settings.listProviders(),
+			this.modelPrefs.getPrefs(),
+			this.getModelRuntime(),
+		]);
+		return providers.flatMap((provider) =>
+			provider.configured
+				? provider.models
+						.filter((model) => isModelVisible(prefs, provider.id, model.id))
+						.map((model) => {
+							// 该模型实际支持的思考深度（SDK 按 reasoning/thinkingLevelMap 判定；不推理的模型只有 off）
+							// + 图片输入能力（input 含 image；查不到则缺省，UI fail-open）
+							let thinkingLevels: string[] | undefined;
+							let imageInput: boolean | undefined;
+							try {
+								const m = runtime.getModel(provider.id, model.id);
+								if (m) {
+									thinkingLevels = getSupportedThinkingLevels(m);
+									imageInput = m.input.includes("image");
+								}
+							} catch {
+								thinkingLevels = undefined;
+								imageInput = undefined;
+							}
+							return {
+								provider: provider.id,
+								providerName: provider.name,
+								id: model.id,
+								label: model.name,
+								authed: true,
+								thinkingLevels,
+								imageInput,
+							};
+						})
+				: [],
+		);
+	}
+
+	async listSubagents(): Promise<SubagentInfo[]> {
+		const agents = await discoverAgents(this.options.defaultCwd ?? process.cwd(), { projectTrusted: false });
+		return agents
+			.filter((agent) => agent.source !== "project")
+			.map(({ name, description, source, thinking, thinkingWarning, denyWarnings }) => ({
+				name,
+				description,
+				source: source === "builtin" ? "builtin" : "user",
+				...(thinking ? { thinking } : {}),
+				...(thinkingWarning ? { thinkingWarning } : {}),
+				...(denyWarnings ? { denyWarnings } : {}),
+			}));
+	}
+
+	onEvent(handler: (sessionId: string, event: SessionEvent, sequence?: number) => void): () => void {
+		return this.eventEmitter.subscribe(({ sessionId, event, sequence }) =>
+			handler(sessionId, event, sequence),
+		);
+	}
+
+	onPermissionRequest(handler: (req: PermissionRequest) => void): () => void {
+		return this.permissionEmitter.subscribe(handler);
+	}
+
+	/** 权限请求被桌面端实际应答后通知被动观察者。 */
+	onPermissionResolved(handler: (result: PermissionResolved) => void): () => void {
+		return this.permissionResolvedEmitter.subscribe(handler);
+	}
+
+	onTrustResolved(handler: (event: TrustResolved) => void): () => void {
+		return this.trustResolvedEmitter.subscribe(handler);
+	}
+	onTrustRequest(handler: (req: TrustRequest) => void): () => void {
+		return this.trustEmitter.subscribe(handler);
+	}
+
+	/** MCP 完整运行实例快照订阅。 */
+	onMcpServersChanged(handler: (payload: McpServersChangedPayload) => void): () => void {
+		return this.mcpServersChangedEmitter.subscribe(handler);
+	}
+
+	onLoginEvent(handler: (payload: LoginEventPayload) => void): () => void {
+		return this.loginEmitter.subscribe(handler);
+	}
+
+	onWenyouCanvasEvent(handler: (payload: WenyouCanvasEvent) => void): () => void {
+		return this.wenyouCanvasEmitter.subscribe(handler);
+	}
+
+	/**
+	 * MCP 配置列表（spec §5：全局 + 项目级；项目级仅受信时读）。
+	 * 只做 JSON 读写 + 形状校验，连接与 `${VAR}` 展开都交给官方 mcp 扩展。
+	 */
+	async getMcpConfig(
+		options: { cwd?: string; instanceId?: string | null } = {},
+	): Promise<McpConfigListResult> {
+		const cwd = options.cwd;
+		const config = await listMcpServers({ cwd, projectTrusted: this.isProjectTrusted(cwd) });
+		return projectMcpRuntime(
+			{ ...config, contextCwd: cwd, restartRequired: this.mcpRestartRequired },
+			this.mcpRuntime.snapshot(),
+			options.instanceId,
+		);
+	}
+
+	async importMcpServers(input: { json: string; cwd?: string }): Promise<McpMutationResult> {
+		const cwd = input.cwd;
+		await importMcpServers({ ...input, cwd }, { projectTrusted: this.isProjectTrusted(cwd) });
+		this.mcpRestartRequired = true;
+		return { config: await this.getMcpConfig({ cwd }) };
+	}
+
+	/** 新增或编辑配置，只在重启后生效。 */
+	async upsertMcpServer(input: McpUpsertInput): Promise<McpMutationResult> {
+		const cwd = input.cwd;
+		if (input.scope === "project" && !cwd) throw new Error("项目级 MCP 配置需要项目目录");
+		const projectTrusted = this.isProjectTrusted(cwd);
+		await upsertMcpServer({ ...input, cwd }, { projectTrusted });
+		this.mcpRestartRequired = true;
+		return { config: await this.getMcpConfig({ cwd }) };
+	}
+
+	/** 删除配置，不改变现有连接。 */
+	async removeMcpServer(input: {
+		scope: "user" | "project";
+		cwd?: string;
+		name: string;
+	}): Promise<McpMutationResult> {
+		const cwd = input.cwd;
+		if (input.scope === "project") {
+			if (!cwd) throw new Error("项目级 MCP 配置需要项目目录");
+			if (!this.isProjectTrusted(cwd)) throw new Error("项目未受信，不能修改 MCP 配置");
+		}
+		await removeMcpServer({ ...input, cwd, projectTrusted: this.isProjectTrusted(cwd) });
+		this.mcpRestartRequired = true;
+		return { config: await this.getMcpConfig({ cwd }) };
+	}
+
+	/** Reconnect exactly the observed server using the official extension command. */
+	async reconnectMcpServer(input: { instanceId: string; name: string }): Promise<void> {
+		const instance = this.mcpRuntime
+			.snapshot()
+			.instances.find((item) => item.instanceId === input.instanceId);
+		const entry = instance && this.registry.get(instance.sessionId);
+		if (!instance || !entry || entry.readOnly || this.stopping || this.sessionDisposals.has(entry))
+			throw new Error("MCP 实例已失效，请重新选择会话");
+		const server = instance.servers.find((item) => item.name === input.name);
+		if (!instance.available || !server || !isMcpReconnectable(server.state))
+			throw new Error("MCP 服务器当前无法重连，请等待连接完成或检查服务器状态");
+		if (!entry.session.extensionRunner.getCommand("mcp")) throw new Error("MCP 重连命令不可用");
+		if (!entry.session.isStreaming && !entry.session.isCompacting) {
+			const lease = entry.session.tryAcquireIdleLease();
+			if (!lease) throw new Error("会话正在切换，请稍后重试 MCP 重连");
+			lease.release();
+		}
+		await entry.session.prompt(`/mcp reconnect ${input.name}`);
+		const result = this.mcpRuntime
+			.snapshot()
+			.instances.find((item) => item.instanceId === input.instanceId)
+			?.servers.find((item) => item.name === input.name);
+		if (!result || this.stopping || this.sessionDisposals.has(entry))
+			throw new Error("MCP 实例已失效，请重新选择会话");
+		if (["failed", "needs-auth", "disconnected", "closed", "disabled"].includes(result.state ?? ""))
+			throw new Error(result.error || "MCP 服务器重连失败");
+	}
+
+	/** Use the SDK command only for the currently observed owner and server. */
+	async mcpLogin(input: { instanceId: string; name: string }): Promise<void> {
+		const instance = this.mcpRuntime
+			.snapshot()
+			.instances.find((item) => item.instanceId === input.instanceId);
+		const entry = instance && this.registry.get(instance.sessionId);
+		if (!instance || !entry || entry.readOnly || this.stopping || this.sessionDisposals.has(entry))
+			throw new Error("MCP 实例已失效，请重新选择会话");
+		if (
+			!instance.available ||
+			!instance.servers.some((server) => server.name === input.name && server.state === "needs-auth")
+		)
+			throw new Error("MCP 服务器当前不需要登录或状态不可用");
+		if (!this.options.openExternal) throw new Error("此环境无法打开授权页面，请在服务器侧使用维护入口登录");
+		// The observed original name has already passed the official SDK loader's validation.
+		if (!entry.session.extensionRunner.getCommand("mcp")) throw new Error("MCP 登录命令不可用");
+		// During agent_settled the SDK defers prompt; a later reload could remove the command.
+		// The public lease excludes that window, and is released before prompt synchronously.
+		if (!entry.session.isStreaming) {
+			const lease = entry.session.tryAcquireIdleLease();
+			if (!lease) throw new Error("会话正在切换，请稍后重试 MCP 登录");
+			lease.release();
+		}
+		await entry.session.prompt(`/mcp login ${input.name}`);
+	}
+
+	/**
+	 * 项目是否受信（项目级 mcp.json 只在受信项目读，与官方 trust-manager 同款）。
+	 * **同步且无副作用**：列表型 API 不能在这里弹信任窗（那是 session 打开时的行为）——
+	 * 已存决策为准；未决且项目确有需信任资源时，只有 default `always` 才算受信（否则面板显示「未受信」）。
+	 */
+	private isProjectTrusted(cwd: string | undefined): boolean {
+		if (!cwd) return false;
+		if (!hasTrustRequiringProjectResources(cwd)) return true; // 没有项目级资源 = 无需信任
+		const decision = this.trustStore.get(cwd);
+		if (decision !== null) return decision;
+		const settingsManager = SettingsManager.create(cwd, getAgentDir(), { projectTrusted: false });
+		return settingsManager.getDefaultProjectTrust() === "always";
+	}
+
+	/**
+	 * 包安装/卸载使用的空闲会话重载实现。
+	 * `cwd` 给定 = 只重载该项目下的会话（项目级配置只影响它们）；缺省 = 全局配置，重载全部。
+	 *
+	 * 预检运行状态并将跳过的会话回报 UI；SDK 的 reload 也会在 shutdown 前拒绝忙碌会话，
+	 * 因此预检之后状态变化不会静默中断在途任务。
+	 */
+	private async reloadIdleSessions(cwd: string | undefined): Promise<SessionReloadReport> {
+		this.assertRunning();
+		const skipped: SessionReloadReport["skipped"] = [];
+		let reloaded = 0;
+		for (const entry of this.registry.list()) {
+			if (entry.readOnly || (cwd && entry.cwd !== cwd)) continue;
+			const { isStreaming, isCompacting } = entry.session;
+			if (isStreaming || isCompacting) {
+				skipped.push({
+					sessionId: entry.session.sessionId,
+					reason: isStreaming ? "streaming" : "compacting",
+				});
+				continue;
+			}
+			try {
+				this.assertRunning();
+				await entry.session.reload();
+				this.mcpOwners.get(entry.modeRef)?.ensurePresent();
+				reloaded++;
+			} catch (err) {
+				log.warn("session reload failed", entry.session.sessionId, err);
+				skipped.push({
+					sessionId: entry.session.sessionId,
+					reason: entry.session.isStreaming
+						? "streaming"
+						: entry.session.isCompacting
+							? "compacting"
+							: "failed",
+				});
+			}
+		}
+		return { reloaded, skipped };
+	}
+
+	/** 扩展对话框请求/结算/通知/草稿预填订阅（main 进程转发 renderer 用） */
+	onExtensionDialogRequest(handler: (req: ExtensionDialogRequest) => void): () => void {
+		return this.extensionDialogRequestEmitter.subscribe(handler);
+	}
+
+	onExtensionDialogResolved(handler: (result: ExtensionDialogResolved) => void): () => void {
+		return this.extensionDialogResolvedEmitter.subscribe(handler);
+	}
+
+	onExtensionNotify(handler: (event: ExtensionNotifyEvent) => void): () => void {
+		return this.extensionNotifyEmitter.subscribe(handler);
+	}
+
+	onExtensionEditorText(handler: (event: ExtensionEditorTextEvent) => void): () => void {
+		return this.extensionEditorTextEmitter.subscribe(handler);
+	}
+
+	/** renderer 应答扩展对话框（requestId 含 sessionId 全局唯一；非本宿主实例静默忽略，仿 respondPermission 遍历） */
+	respondExtensionDialog(requestId: string, answer: ExtensionDialogRespond): void {
+		for (const dialogs of this.constructionDialogs) dialogs.respond(requestId, answer);
+		for (const { dialogs } of this.registry.list()) {
+			dialogs.respond(requestId, answer);
+		}
+	}
+
+	respondPermission(requestId: string, answer: PermissionAnswer): void {
+		if (answer === "allowDir" || answer === "allowAlways") {
+			// 持久化决策（仅内置权限扩展的请求带 meta）：
+			// allowDir → 根加入 workspaces.json（本次与后续均按界内处置）；
+			// allowAlways → 模式键记入当前项目的 allowed[]（跨会话生效）
+			for (const { gate } of this.registry.list()) {
+				const req = gate.getRequest(requestId);
+				if (!req) continue;
+				// 先放行 agent 再持久化（D3）：持久化失败（如 workspaces.json 损坏拒写）只丢记忆不挂会话，
+				// log.error 留痕——fail-open 与 enabled=false 整体放行的既有语义一致
+				gate.respond(requestId, answer);
+				const entry = this.registry.get(gate.getSessionId());
+				if (entry) {
+					try {
+						const agentDir = getAgentDir();
+						if (answer === "allowDir" && req.meta?.suggestDir) {
+							addWorkspaceRoot(agentDir, entry.cwd, req.meta.suggestDir);
+						} else if (answer === "allowAlways" && req.meta) {
+							addAllowedPattern(agentDir, entry.cwd, req.title);
+						}
+					} catch (err) {
+						log.error("权限决策持久化失败（agent 已放行，本次决策不记忆）", requestId, err);
+					}
+				}
+				return;
+			}
+			return;
+		}
+		for (const { gate } of this.registry.list()) {
+			if (!gate.getRequest(requestId)) continue;
+			gate.respond(requestId, answer);
+		}
+	}
+
+	/** 权限门控配置（enabled 解析保留；UI 已无开关入口，仅手改 permissions.json 可关 = 隐藏逃生舱） */
+	getPermissionConfig(): { enabled: boolean } {
+		return { enabled: loadPermissionConfig(getAgentDir()).enabled };
+	}
+
+	/** 会话权限模式（default 缺省 fail-safe；关 tab 重开后端已归零，renderer 对齐用） */
+	getSessionPermissionMode(sessionId: string): PermissionMode {
+		return this.registry.get(sessionId)?.modeRef.current ?? "default";
+	}
+
+	/** 切换会话权限模式（内存态即时生效，不落盘；会话不存在时抛可读错误） */
+	setSessionPermissionMode(sessionId: string, mode: PermissionMode): void {
+		const entry = this.registry.get(sessionId);
+		if (!entry) throw new Error(`Session not found: ${sessionId}`);
+		entry.modeRef.current = mode;
+		log.info("permission mode", sessionId, { mode });
+	}
+
+	getCodemodeConfig(): { enabled: boolean; only: boolean } {
+		return readCodemodeConfig(getAgentDir());
+	}
+	async setCodemodeOnly(only: boolean): Promise<void> {
+		await writeCodemodeOnly(getAgentDir(), only);
+	}
+
+	getCacheWarming() {
+		return this.cacheWarming.get();
+	}
+	setCacheWarming(mode: import("@percho/shared").CacheWarmingMode) {
+		return this.cacheWarming.set(mode);
+	}
+
+	async setCodemodeEnabled(enabled: boolean): Promise<void> {
+		await writeCodemodeEnabled(getAgentDir(), enabled);
+	}
+
+	/** channel-watch 总开关（设置 UI 用；键在 ~/.percho/agent/settings.json，缺省=开） */
+	getChannelWatchConfig(): { enabled: boolean } {
+		return { enabled: readChannelWatchEnabled(getAgentDir()) };
+	}
+
+	/** 写频道开关，下一次会话加载生效；保留成员数据，关闭时隐藏状态和工具。损坏拒写时上抛。 */
+	setChannelWatchEnabled(enabled: boolean): void {
+		try {
+			writeChannelWatchEnabled(getAgentDir(), enabled);
+		} catch (err) {
+			log.error("settings.json 写入失败（channel-watch 开关未保存）", err);
+			throw err; // ipcMain.handle，reject 传回 renderer
+		}
+		log.info("channel watch enabled", enabled);
+	}
+
+	respondTrust(requestId: string, answer: TrustAnswer): void {
+		this.trustGate.respond(requestId, answer);
+	}
+
+	dispose(): void {
+		this.stopping = true;
+		void this.stopChannels().then((results) => {
+			for (const result of results)
+				if (result.status === "rejected") log.warn("Channel shutdown failed", result.reason);
+		});
+		void this.sessionCatalog?.dispose().catch((error) => log.warn("catalog shutdown failed", error));
+		void this.mediaMaintenance?.dispose().catch((error) => log.warn("maintenance shutdown failed", error));
+		for (const child of this.runningSubagents.values()) {
+			void child.abort().catch((error) => log.warn("subagent shutdown abort failed", error));
+			child.dispose();
+		}
+		this.registry.disposeAll({
+			beforeShutdown: (entry) => {
+				this.beforeSessionShutdown(entry);
+			},
+			afterDispose: (entry) => {
+				const id = entry.session.sessionId;
+				try {
+					this.historyGate.cancel(id, this.historyToken(entry.modeRef));
+				} catch (error) {
+					log.warn("history cancel failed", id, error);
+				}
+				this.afterSessionDispose(entry);
+			},
+		});
+		this.historyGate.dispose();
+		this.sourceSnapshots.dispose();
+		this.eventEmitter.clear();
+		this.permissionEmitter.clear();
+		this.permissionResolvedEmitter.clear();
+		this.trustEmitter.clear();
+		this.trustResolvedEmitter.clear();
+		this.loginEmitter.clear();
+		this.extensionDialogRequestEmitter.clear();
+		this.extensionDialogResolvedEmitter.clear();
+		this.extensionNotifyEmitter.clear();
+		this.extensionEditorTextEmitter.clear();
+		this.trustGate.dispose();
+		this.login.dispose();
+		this.traces.disposeAll();
+		log.info("backend disposed");
+	}
+
+	private requireSession(sessionId: string) {
+		const entry = this.registry.get(sessionId);
+		if (!entry) throw new Error(`Session not found: ${sessionId}`);
+		if (this.archiveFrozen.has(entry)) throw new Error("Archive cleanup is pending");
+		return entry;
+	}
+
+	/** 只读会话（subagent 产物检视）写操作统一守卫；可写时返回 entry */
+	private requireWritable(sessionId: string) {
+		this.assertRunning();
+		const entry = this.requireSession(sessionId);
+		if (entry.readOnly) throw new Error("Session is read-only (subagent transcript)");
+		if (this.projectDeletion?.isDeleting(entry.cwd)) throw new Error("Project deletion is in progress");
+		return entry;
+	}
+
+	private catalogMeta(meta: SessionMeta): SessionMeta {
+		const state = meta.sessionFile ? this.archiveService?.peek(meta.sessionId, meta.sessionFile) : undefined;
+		return state
+			? {
+					...meta,
+					archiveRevision: state.revision,
+					archivedAt: state.archived ? state.archivedAt : undefined,
+					archiveCleanupPending: state.cleanupPending,
+				}
+			: meta;
+	}
+	private toMetaOrThrow(sessionId: string): SessionMeta {
+		const entry = this.registry.get(sessionId);
+		if (!entry) throw new Error(`Session not found: ${sessionId}`);
+		return this.catalogMeta(this.registry.toMeta(entry));
+	}
+}
+
+export type { EventForwarder, Model };

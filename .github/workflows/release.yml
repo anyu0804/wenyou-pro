@@ -1,0 +1,117 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version, e.g. 0.6.6-beta.1 or 0.6.6"
+        required: true
+        type: string
+      publish:
+        description: "Publish after all platforms pass (otherwise build only)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# Never run two publishers for the same ref concurrently. Do not interrupt an upload.
+concurrency:
+  group: percho-release
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.plan.outputs.version }}
+      tag: ${{ steps.plan.outputs.tag }}
+      channel: ${{ steps.plan.outputs.channel }}
+      sourceCommit: ${{ steps.plan.outputs.sourceCommit }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - id: plan
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+          PERCHO_BUILD_RELEASE_TAG: ${{ github.event_name == 'push' && github.ref_name || '' }}
+          PERCHO_BUILD_SOURCE_COMMIT: ${{ github.sha }}
+        run: node scripts/release-info.mjs
+
+  runtime:
+    needs: prepare
+    uses: ./.github/workflows/remote-runtime.yml
+    with:
+      release_tag: ${{ needs.prepare.outputs.tag }}
+
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm run test
+
+  build:
+    needs: [prepare, runtime, check]
+    uses: ./.github/workflows/desktop-package.yml
+    with:
+      release_tag: ${{ needs.prepare.outputs.tag }}
+
+  publish:
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      PERCHO_BUILD_RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+      PERCHO_BUILD_SOURCE_COMMIT: ${{ needs.prepare.outputs.sourceCommit }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: remote-runtime-*
+          path: .local/release-bundle
+          merge-multiple: true
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: desktop-*
+          path: .local/release-bundle
+          merge-multiple: true
+      - name: Verify complete release bundle
+        run: node scripts/publish-release.mjs .local/release-bundle
+      - name: Upload draft and publish complete release
+        if: github.event_name == 'push' || inputs.publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: node scripts/publish-release.mjs .local/release-bundle --publish
+
+  website:
+    needs: [prepare, publish]
+    if: needs.prepare.outputs.channel == 'stable' && (github.event_name == 'push' || inputs.publish)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Cloudflare Pages deploy hook
+        env:
+          HOOK: ${{ secrets.CF_PAGES_DEPLOY_HOOK }}
+        run: |
+          if [ -n "$HOOK" ]; then
+            curl -fsS -X POST "$HOOK"
+          else
+            echo "CF_PAGES_DEPLOY_HOOK not set, skipping"
+          fi
