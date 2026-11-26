@@ -482,8 +482,14 @@ describe("formatReleaseNotes, formatMacReleaseNotes, formatLinuxReleaseNotes, an
 		assert.ok(body.includes("256x256"));
 		assert.ok(body.includes("跨世界动态沙盘物理隔离"));
 		assert.ok(body.includes("FMG .map"));
-		assert.ok(body.includes("正史提案门禁"));
-		assert.ok(body.includes("maxViewer"));
+		assert.ok(body.includes("三段式 L1 局势简报"));
+		assert.ok(body.includes("宋体"));
+		assert.ok(body.includes(".docx"));
+		assert.ok(body.includes("设定实册与编年史只读速览"));
+		assert.ok(body.includes("增量游标"));
+		assert.equal(body.includes("正史提案门禁"), false);
+		assert.equal(body.includes("maxViewer"), false);
+		assert.equal(body.includes("所有对外导出包会自动物理隔离"), false);
 		assert.ok(body.includes("Python 3.13"));
 		assert.ok(body.includes("40030=0"));
 		assert.ok(body.includes("20,000"));
@@ -522,6 +528,14 @@ describe("formatReleaseNotes, formatMacReleaseNotes, formatLinuxReleaseNotes, an
 		assert.ok(body.includes("key_map.json"));
 		assert.ok(body.includes("~/.wenyou-pro/"));
 		assert.ok(body.includes("~/Library/Application Support/Wenyou Pro/"));
+		assert.ok(body.includes("三段式 L1 局势简报"));
+		assert.ok(body.includes("宋体"));
+		assert.ok(body.includes(".docx"));
+		assert.ok(body.includes("设定实册与编年史只读速览"));
+		assert.ok(body.includes("增量游标"));
+		assert.equal(body.includes("正史提案门禁"), false);
+		assert.equal(body.includes("maxViewer"), false);
+		assert.equal(body.includes("所有对外导出包会自动物理隔离"), false);
 
 		assert.equal(body.includes("%USERPROFILE%"), false);
 		assert.doesNotMatch(body, /[A-Za-z]:\\Users\\/i);

@@ -19,7 +19,7 @@ export interface BridgeSyncContextPayload {
   worldId: string;
   worldTitle: string;
   currentEra: string;
-  viewer: string;
+  viewer?: string;
   workspaceKey?: string;
 }
 
@@ -173,9 +173,7 @@ export interface MapBridgeHandle {
   destroy(): void;
 }
 
-const LOOPBACK_ORIGIN_RE = /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/i;
-
-/** 仅放行 loopback 开发源、Electron file:// 与内置协议源（wenyou-sandbox://、app://）。 */
+/** 放行合法 http(s):// 宿主源（含回环与局域网/远端域名或 IP）、Electron file:// 与内置协议源（wenyou-sandbox://、app://）。 */
 export function isAllowedHostOrigin(origin: string): boolean {
   if (
     origin === 'null' ||
@@ -186,7 +184,23 @@ export function isAllowedHostOrigin(origin: string): boolean {
   ) {
     return true;
   }
-  return LOOPBACK_ORIGIN_RE.test(origin);
+  try {
+    const parsed = new URL(origin);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
+    return (
+      Boolean(parsed.hostname) &&
+      parsed.pathname === '/' &&
+      !parsed.search &&
+      !parsed.hash &&
+      !parsed.username &&
+      !parsed.password &&
+      !origin.endsWith('/') &&
+      !origin.includes('?') &&
+      !origin.includes('#')
+    );
+  } catch {
+    return false;
+  }
 }
 
 /** 非 null/file origin 一律传精确 origin；仅嵌入态 file:// 或初始 ready 使用 '*'。 */
@@ -207,7 +221,7 @@ function isSyncContextPayload(value: unknown): value is BridgeSyncContextPayload
     typeof value.worldId === 'string' &&
     typeof value.worldTitle === 'string' &&
     typeof value.currentEra === 'string' &&
-    typeof value.viewer === 'string'
+    (value.viewer === undefined || typeof value.viewer === 'string')
   );
 }
 
@@ -269,7 +283,7 @@ export function initMapBridge(options: InitMapBridgeOptions = {}): MapBridgeHand
     }
     const era = ctx.currentEra ? ` · ${ctx.currentEra}` : '';
     contextBadgeEl.textContent = `宿主：${ctx.worldTitle || ctx.worldId}${era}`;
-    contextBadgeEl.title = `worldId=${ctx.worldId} viewer=${ctx.viewer}`;
+    contextBadgeEl.title = ctx.viewer ? `worldId=${ctx.worldId} viewer=${ctx.viewer}` : `worldId=${ctx.worldId}`;
   };
 
   const emitReady = async (type: 'ready' | 'pong', requestId?: string, explicitOrigin?: string | null): Promise<void> => {

@@ -83,45 +83,6 @@ export function getEchelonSymbol(echelon?: string, troops?: number | null): stri
   return echelon ? echelon.trim() : '';
 }
 
-/** 战术图腾推导结果 */
-export interface TacticalTotemSpec {
-  name: string;
-  glyph: string;
-  subType: string;
-}
-
-/**
- * 根据兵种关键词或玩家需求标签自动推导中心战术图腾
- */
-export function resolveRequirementTotem(tag?: string, branch?: string): TacticalTotemSpec {
-  const combined = `${tag ?? ''} ${branch ?? ''}`.trim();
-  if (/空骑|狮鹫|飞龙|飞禽|羽林|天马|翼/.test(combined)) {
-    return { name: '空骑', glyph: '🦅', subType: 'air' };
-  }
-  if (/水师|舟师|舰|水军|海|水战/.test(combined)) {
-    return { name: '水师', glyph: '⚓', subType: 'naval' };
-  }
-  if (/重装|重甲|甲士|陷阵|盾|枪盾|卫士/.test(combined)) {
-    return { name: '重装步兵', glyph: '🛡️', subType: 'heavy-infantry' };
-  }
-  if (/炮|火器|神机|弓|弩|射手|铳/.test(combined)) {
-    return { name: '远程火器', glyph: '🏹', subType: 'artillery' };
-  }
-  if (/骑|马|骠|铁骑|游骑|骁骑/.test(combined)) {
-    return { name: '骑兵', glyph: '🐎', subType: 'cavalry' };
-  }
-  if (/禁军|近卫|亲军|皇室|统帅|中军/.test(combined)) {
-    return { name: '近卫禁军', glyph: '👑', subType: 'guard' };
-  }
-  if (/法|奥术|道士|术士|方士|法师/.test(combined)) {
-    return { name: '法术奥术', glyph: '✨', subType: 'arcane' };
-  }
-  if (/工兵|后勤|辎重|械|粮草/.test(combined)) {
-    return { name: '工兵后勤', glyph: '⚙️', subType: 'support' };
-  }
-  return { name: '主战步兵', glyph: '⚔️', subType: 'infantry' };
-}
-
 /** 兵牌 Canvas 渲染选项 */
 export interface UnitSymbolRenderOptions {
   width?: number;

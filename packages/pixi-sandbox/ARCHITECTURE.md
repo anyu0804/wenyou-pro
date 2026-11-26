@@ -1,7 +1,7 @@
 # 模块地图（ARCHITECTURE.md）
 
 > 面向对象：接手本工程的 AI 协作开发者与人类维护者。
-> 分工：《沙盘功能添加与AI协作开发者指南.md》讲图层树、appStore 事件与新增功能 SOP（先读它）；本文件补齐**文件级地图**——src/ 下 51 个文件各自管什么、按功能域怎么分组、哪些是契约与红线。
+> 分工：《沙盘功能添加与AI协作开发者指南.md》讲图层树、appStore 事件与新增功能 SOP（先读它）；本文件补齐**文件级地图**——src/ 下 50 个文件各自管什么、按功能域怎么分组、哪些是契约与红线。
 > 维护规则：**新增、删除、拆分 src/ 文件时必须同步更新本表**；改动 `battle-contract.ts`、`store.ts`、`theater-cache.ts` 任意一处后必须跑 `npm run check`。
 
 ## 总览
@@ -19,7 +19,7 @@
 | 文件 | 职责 |
 | --- | --- |
 | `main.ts` | 组装根：创建 Pixi Application、按 Z 序挂图层、视口平移/滚轮缩放/空格漫游、按序 initXxx 各模块；启动失败兜底 UI（导出原始缓存 / 忽略缓存空沙盘重启）。 |
-| `bridge.ts` | 嵌入宿主桥接器（`wenyou-map-bridge/v1`）：仅在 iframe 嵌入态向 `window.parent` 双向通信，校验 loopback / Electron `file://` 宿主来源，承接 `ping`/`sync_context`/`load_project`/`request_export_project` 并转发 `ready`/`selection_changed`/`focus_source`。 |
+| `bridge.ts` | 嵌入宿主桥接器（`wenyou-map-bridge/v1`）：仅在 iframe 嵌入态向 `window.parent` 双向通信，放行合法 `http(s)://`（含回环与局域网）、Electron `file://` 与内置协议（`wenyou-sandbox://`、`app://`）宿主来源，承接 `ping`/`sync_context`（`viewer` 可选）/`load_project`/`request_export_project` 并转发 `ready`/`selection_changed`/`focus_source`。 |
 | `store.ts` | 全局中枢：`appStore`（mapData、interactionMode、事件总线、toMapCoords/findCellAt）+ terrain/tactical/garrison 三个全局 Container + 共享类型导出。 |
 | `map-viewport.ts` | `worldViewport` 与 `fieldBattleOverlay` 两个全局容器的定义（仅 4 行，被所有渲染层引用，改名需全局替换）。 |
 | `input-owner.ts` | 输入归属两态开关（`map` / `fieldbattle`）：野战窗口打开时主地图快捷键让位。 |
@@ -70,7 +70,7 @@
 | `garrison-panel.ts` | 兵牌编辑与自定义徽记设计器弹窗（openGarrisonCustomModal）。 |
 | `map-unit-edit-target.ts` | FB-E 桥：供兵牌设计器读写主地图部队数据的编辑目标。 |
 
-### G. 战场域核心（battle-*，16 个）
+### G. 战场域核心（battle-*，15 个）
 
 > 纯逻辑与面板层。`battle-contract.ts` 是唯一类型契约，所有 battle-* 与 field-battle-* 都依赖它。
 
@@ -84,13 +84,12 @@
 | `battle-collections.ts` | 数组 upsert 等集合小工具。 |
 | `battle-actions.ts` | 编辑应用与撤销/重做栈（applyBattleEdits/undo/redo/preview）、getBattleWorkspace 当前工作区。 |
 | `battle-editor.ts` | 几何变换（平移/旋转朝向 → edit batch）与 BattleEditor 类。 |
-| `battle-import.ts` | AI 候选导入解析与筛选、AI 提案模板生成。 |
+| `battle-import.ts` | 战役候选 JSON 导入解析与筛选。 |
 | `battle-export.ts` | 战场 PNG 导出：绘制到画布、图例与比例尺注记、证据收集。 |
 | `battle-storage.ts` | 持久化结构：emptyBattleState、旧档迁移、工作区校验。 |
 | `battle-orbat.ts` | ORBAT（编队组织树）构建与查询：树构建、人员汇总、折叠态、批量解析。 |
 | `battle-orbat-editor.ts` | ORBAT 编辑器 UI（全项目最大文件）：编队树编辑、单位增删改、断言与证据录入。 |
 | `battle-panel.ts` | 战场面板总 UI：战场列表、进入编辑、撤销重做入口。 |
-| `battle-review.ts` | AI 提案审核面板（回调注入 getWorkspace/applyBatch）。 |
 | `battle-layer.ts` | 战场在主地图上的渲染层：renderBattle、兵牌徽记与朝向。 |
 
 ### H. 野战窗口（field-battle-*，9 个）

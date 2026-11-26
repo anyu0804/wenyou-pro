@@ -171,26 +171,3 @@ export function selectBattleCandidates(batch: BattleCandidateBatch, selectedIds:
   previewBattleEdits(workspace, selected);
   return selected;
 }
-
-/** 给既有 AI 会话的任务包；保留稳定 ID、原始字段来源和未知，绝不生成世界事实。 */
-export function createBattleAiTemplate(workspace: BattleWorkspace): object {
-  return {
-    format: 'wenyou-battle-ai-task', version: 1, mapId: workspace.mapId,
-    instructions: [
-      '这是用户当前场景的编辑任务包，不是已核验史实。只根据用户补充的原文与明确假设提出草案。',
-      '返回 responseTemplate 格式的 JSON；原样保留 mapId，引用现有稳定 ID，禁止按同名猜测合并。',
-      '每个 ready 项的 edits 必须独立成立；新建单位和其部署放在同一项。对象更新提交完整对象，不做字段合并。',
-      '用来源原文、excerpt、basis、note 说明每个字段；新原文分配新 sourceId，不改写旧来源。',
-      '资料缺失保留 unknown 或 unresolved 并写 reason；未知人数不补 0，未知位置不补坐标，不从番号猜编制。',
-      '地图是 x 向右、y 向下的平面坐标；0 朝上、90 朝右。尺度仅在明示标定范围内适用，未校准不能转换米。',
-      '允许 upsert-unit/remove-unit/set-deployment/upsert-battlefield/remove-battlefield/upsert-source 六种编辑。',
-      '部署面保留全部环、孔洞及分离区域；障碍不能靠桥点或通行线自动忽略。输出只作人工审阅草案。',
-    ],
-    task: '请在此填写本次修改要求与原文；未填写时不要自行创建候选事实。',
-    workspace: structuredClone(workspace),
-    responseTemplate: {
-      format: 'wenyou-battle-candidates', version: 1, mapId: workspace.mapId, sources: [],
-      items: [{ id: 'needs-user-input', state: 'unresolved', instruction: '等待本次原文和修改要求', evidence: [], reason: '任务包尚未补充本次原文及目标' }],
-    },
-  };
-}

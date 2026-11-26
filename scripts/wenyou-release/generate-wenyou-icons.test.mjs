@@ -7,11 +7,9 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import {
 	buildBaseIconSvg,
 	buildChannelIconSvg,
-	buildLanIconSource,
 	encodeIco,
 	ICO_SIZES,
 	isDirectScriptExecution,
-	LAN_ICON_SIZE,
 	MAIN_PNG_SIZE,
 	PNG_SIGNATURE,
 	parseIco,
@@ -20,13 +18,11 @@ import {
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const BUILD_DIR = join(REPO_ROOT, "packages/desktop/build");
-const LAN_ICON_PATH = join(REPO_ROOT, "packages/desktop/src/main/lan-icon.ts");
 const GENERATOR_PATH = join(REPO_ROOT, "scripts/wenyou-release/generate-wenyou-icons.mjs");
 
 // 旧版 Percho 灰色正四棱锥图标指纹，用于防止回归
 const LEGACY_ICO_SHA256 = "ae5f0d50aa8d59631673b0296985da03764af9d58b7e9e351eadf0682cfb76a6";
 const LEGACY_PNG_SHA256 = "42b7694133630028db47f013e4ea8eb8a3dbd819c846f1288aba793ce327e9cb";
-const LEGACY_LAN_ICON_PREFIX = "iVBORw0KGgoAAAANSUhEUgAAAgAAAAIACAMAAADDpiTI";
 
 function sha256Hex(buffer) {
 	return createHash("sha256").update(buffer).digest("hex");
@@ -99,8 +95,8 @@ describe("SVG builders and binary ICO codec", () => {
 		assert.throws(() => encodeIco([{ size: 32, png: makeFakePng(64, 64) }]), /do not match declared size/);
 		assert.throws(() => encodeIco([{ size: 512, png: makeFakePng(512, 512) }]), /Invalid ICO frame size/);
 		assert.throws(() => parseIco(Buffer.alloc(4)), /shorter than 6-byte/);
-		assert.throws(() => buildLanIconSource(Buffer.from("not-a-png")), /too short/);
-		assert.throws(() => buildLanIconSource(Buffer.alloc(40, 0x41)), /signature mismatch/);
+		assert.throws(() => parsePngHeader(Buffer.from("not-a-png")), /too short/);
+		assert.throws(() => parsePngHeader(Buffer.alloc(40, 0x41)), /signature mismatch/);
 	});
 
 	test("isDirectScriptExecution matches case-insensitively on Windows drive/path casing", () => {
@@ -197,28 +193,12 @@ describe("Generated Wenyou Pro icon artifacts on disk", () => {
 		}
 	});
 
-	test("packages/desktop/src/main/lan-icon.ts decodes to a valid updated 512x512 PNG", async () => {
-		const source = await readFile(LAN_ICON_PATH, "utf8");
-		const match = /export const LAN_ICON_PNG_BASE64\s*=\s*"([A-Za-z0-9+/=]+)"/.exec(source);
-		assert.ok(match, "lan-icon.ts must export LAN_ICON_PNG_BASE64 string literal");
-		const base64 = match[1];
-		assert.ok(
-			!base64.startsWith(LEGACY_LAN_ICON_PREFIX),
-			"LAN_ICON_PNG_BASE64 must be updated from legacy Percho pyramid icon",
-		);
-		const decoded = Buffer.from(base64, "base64");
-		const header = parsePngHeader(decoded);
-		assert.equal(header.width, LAN_ICON_SIZE);
-		assert.equal(header.height, LAN_ICON_SIZE);
-	});
-
 	test("generated scripts and SVGs do not leak hardcoded personal user paths", async () => {
 		const filesToCheck = [
 			GENERATOR_PATH,
 			join(BUILD_DIR, "icon.svg"),
 			join(BUILD_DIR, "icon-beta.svg"),
 			join(BUILD_DIR, "icon-dev.svg"),
-			LAN_ICON_PATH,
 		];
 		for (const filePath of filesToCheck) {
 			const text = await readFile(filePath, "utf8");

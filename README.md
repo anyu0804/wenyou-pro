@@ -4,7 +4,7 @@
 <h1 align="center">Wenyou Pro (司命 · 文游 Pro)</h1>
 <p align="center">
   Standalone desktop Agent workbench for grand-strategy text roleplay, alternate-history campaigns, and tabletop GMs / advisors.<br>
-  Combines autonomous campaign archive maintenance, physical perspective isolation, an offline Pixi tactical sandbox, zero-AI-cliché native <code>.docx</code> policy drafting, and three-tier group-chat memory.
+  Combines autonomous campaign archive maintenance, an offline Pixi tactical sandbox, natural-paragraph Songti <code>.docx</code> policy drafting, and three-tier group-chat memory.
 </p>
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/github/license/anyu0804/wenyou-pro?style=flat-square" alt="License"></a>
@@ -23,19 +23,18 @@
 
 ## Why Wenyou Pro?
 
-Long-running grand-strategy text roleplay and alternate-history campaigns typically suffer from two extremes: purely manual spreadsheets and static paint maps collapse under ledger fatigue and timeline contradictions after dozens of turns, while unguarded LLM chat readily hallucinates troop counts, leaks GM backstage plots, or overwrites canon lore.
+Long-running grand-strategy text roleplay and alternate-history campaigns typically suffer from two extremes: purely manual spreadsheets and static paint maps collapse under ledger fatigue and timeline contradictions after dozens of turns, while unguarded LLM chat readily loses track of prior rulings, invents troop counts, or drifts away from campaign records.
 
-**Wenyou Pro (司命 · 文游 Pro)** builds upon the open-source [`Jaxton07/percho`](https://github.com/Jaxton07/percho) (MIT) desktop foundation and [`@earendil-works/pi-coding-agent`](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) (Pi SDK), anchoring every campaign in a deterministic local file Vault guarded by hard architectural gates:
+**Wenyou Pro (司命 · 文游 Pro)** builds upon the open-source [`Jaxton07/percho`](https://github.com/Jaxton07/percho) (MIT) desktop foundation and [`@earendil-works/pi-coding-agent`](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) (Pi SDK), anchoring every campaign in a deterministic local file Vault:
 
-- **Autonomous Campaign Archive & Vault Maintenance**: In GM mode, the Agent can directly read and update campaign dossiers (`01-设定与国力实册/`, `04-编年史与条约/`, `manifest.json`) while ingesting group chats and decrees, tagging major updates with clickable `[sourceId]` citations and keeping archive browsing and leak-checked bundle export in the right-hand workbench.
-- **Physical `maxViewer` Clamping & `:::secret[...]` Redaction**: Supports `gm`, `public`, and `faction:<id>` perspectives. Non-GM scopes are physically blocked from reading `private/`, `.wenyou/`, `00-群聊收集/`, and restricted intelligence; restricted `:::secret[...]` blocks are stripped end-to-end and verified via `exportPreflight` before exporting player-facing materials.
-- **Built-in Offline Pixi Strategic Sandbox & FMG `.map` Parser**: Served offline via the privileged `wenyou-sandbox://` protocol with workspace-hash-isolated IndexedDB storage so multiple campaign worlds never cross-contaminate. Parses FMG v1.108 / 1.139 / 1.154 `.map` files (including multiline `<svg>` and elevation rows) as well as static image hex-grid theaters; supports state/province brushing synced to burg ownership, ORBAT unit trees with double-count protection, battle deployment, independent field-battle snapshots, and side-by-side / curtain atlas comparison.
-- **Zero-AI-Cliché Handwritten Policy Desk & Native `.docx` Builder**: A deterministic, zero-LLM policy linter blocks Markdown tables, deeply nested bullet lists, boilerplate AI clichés, cross-faction spoilers, and timeline anachronisms. Generates clean, centered-title, natively numbered `.docx` decrees using an in-house zero-dependency OpenXML builder.
+- **Autonomous Campaign Archive & Read-Only Lore/Chronicle Browser**: The Agent reads and maintains campaign dossiers (`01-设定与国力实册/`, `04-编年史与条约/`, `manifest.json`) while ingesting group chats and decrees, tagging key facts with clickable `[sourceId]` citations. The right-hand workbench provides a dedicated read-only **Lore & Chronicles (`设定与编年史`)** viewer for quick reference alongside chat.
+- **Built-in Offline Pixi Strategic Sandbox & FMG `.map` Parser**: Served offline via the privileged `wenyou-sandbox://` protocol (and compatible with `http(s)` local/LAN hosts) with workspace-hash-isolated IndexedDB storage so multiple campaign worlds never cross-contaminate. Parses FMG v1.108 / 1.139 / 1.154 `.map` files (including multiline `<svg>` and elevation rows) as well as static image hex-grid theaters; supports state/province brushing synced to burg ownership, ORBAT unit trees with double-count protection, battle deployment, independent field-battle snapshots, and side-by-side / curtain atlas comparison.
+- **Natural-Paragraph Songti `.docx` Policy Desk**: Bundled writing guidance helps the Agent draft plain, natural-paragraph strategic decrees free of bloated markdown tables. Generates clean, centered-title, natively numbered Songti `.docx` files via an in-house zero-dependency OpenXML builder (blank author metadata by default, with optional `author` override) and previews archived policies directly inside the Policy Desk panel.
 - **Windows Zero-Copy Read-Only NTQQ VFS + macOS/Linux Offline Chat Ingest**:
-  - **Windows**: Ships a zero-dependency page-level read-only SQLCipher VFS (accelerated via Win32 CNG `bcrypt.dll`) plus one-click key extraction that **never locks or mutates** QQ's encrypted source databases, handling dual-range `rowid` fallback scans and self-sent messages (`40030=0`);
+  - **Windows**: Ships a zero-dependency page-level read-only SQLCipher VFS (accelerated via Win32 CNG `bcrypt.dll`) plus one-click key extraction that **never locks or mutates** QQ's encrypted source databases, handling dual-range `rowid` fallback scans, self-sent messages (`40030=0`), and up to 20,000-message rumor traceability;
   - **macOS / Linux**: Drop exported `.txt` / `.json` chat logs into `00-群聊收集/` for offline ingestion (power users with `key_map.json` can also use native CommonCrypto / OpenSSL read-only VFS);
-  - All platforms share the **L0 raw evidence & dual cursors → L1 situation briefings & rolling ledger (`[未定案草案]` draft isolation) → L2 world dossiers & chronicles** three-tier memory architecture with one-click source-context lookup.
-- **BYOK / Official CLI Subscriptions / MCP Multi-Channel Engine**: Inherits the full Pi SDK & Percho runtime—BYOK API keys (Anthropic, OpenAI, Gemini, DeepSeek, etc.), custom base-URL relay gateways, in-app OAuth subscription sign-in, MCP server integration, built-in subagents, context evaporation, SSH remote workspaces, and LAN companion viewing. User data is isolated under `~/.wenyou-pro/agent/`.
+  - All platforms share the **L0 raw evidence & incremental dual cursors → L1 three-section situation briefings & rolling ledger (`[未定案草案]` draft markers) → L2 world dossiers & chronicles** three-tier memory architecture with one-click source-context lookup.
+- **BYOK / OAuth Subscriptions / MCP Multi-Channel Engine**: Inherits the Pi SDK & Percho runtime—BYOK API keys (Anthropic, OpenAI, Gemini, DeepSeek, etc.), custom base-URL relay gateways, in-app OAuth subscription sign-in, MCP server integration, user-defined `.md` subagents, and context evaporation. User data is isolated under `~/.wenyou-pro/agent/`.
 
 ---
 
@@ -59,7 +58,7 @@ Prebuilt cross-platform packages and checksums are published on [GitHub Releases
 >   ```
 > - **Windows**: Click **More info → Run anyway** if Windows SmartScreen prompts on first launch.
 > - **Linux**: Run `chmod +x Wenyou-Pro-<version>-linux-x86_64.AppImage` before executing.
-> - Standalone builds intentionally set `disableAutoUpdate: true` to stay offline-first and avoid polling third-party update feeds; upgrade manually from [Releases](https://github.com/anyu0804/wenyou-pro/releases) and verify `SHA256SUMS`.
+> - Standalone builds stay offline-first by default; download upgrades from [Releases](https://github.com/anyu0804/wenyou-pro/releases) and verify `SHA256SUMS`.
 
 ---
 
@@ -85,9 +84,9 @@ npm run test          # Release contract tests & Vitest workspace suites
 
 ### Documentation Map
 
-- **[DIRECTORY_INDEX.md](DIRECTORY_INDEX.md)** — Authoritative repository directory map, four-package source index, release toolchain, and Vault permission matrix
+- **[DIRECTORY_INDEX.md](DIRECTORY_INDEX.md)** — Authoritative repository directory map, four-package source index, release toolchain, and Vault directory layout
 - **[docs/INDEX.md](docs/INDEX.md)** — Developer topic map, Wenyou workbench code entry points, and base runtime guides
-- **[ACCEPTANCE.md](ACCEPTANCE.md)** — Protocol allowlists, `maxViewer` gates, sandbox isolation, map contract, and cross-platform troubleshooting criteria
+- **[ACCEPTANCE.md](ACCEPTANCE.md)** — Protocol security, sandbox isolation, map contract, and cross-platform troubleshooting criteria
 - **[CONTRIBUTING.md](CONTRIBUTING.md)** — Contribution workflow, coding conventions, pre-PR gates, and releasing guide
 - **[SECURITY.md](SECURITY.md)** — Private vulnerability reporting, credential boundaries, and Vault isolation scope
 

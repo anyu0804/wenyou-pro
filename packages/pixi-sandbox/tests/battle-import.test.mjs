@@ -186,28 +186,6 @@ test('真实统一提交将来源和编辑同批应用，撤销恢复两者', ()
   actions.resetBattleHistory();
 });
 
-test('当前战区任务模板保留真实稳定 ID、来源、未知和局部尺度，响应模板可直接解析', () => {
-  const state = workspace();
-  const template = importer.createBattleAiTemplate(state);
-  assert.equal(template.mapId, state.mapId);
-  assert.deepEqual(template.workspace, state);
-  assert.notEqual(template.workspace, state);
-  assert.equal(template.workspace.garrisons.find(unit => unit.id === 'r33').personnel.count.state, 'unknown');
-  assert.match(template.instructions.join('\n'), /未校准不能转换米/);
-  assert.match(template.instructions.join('\n'), /不是已核验史实/);
-  const response = parse(template.responseTemplate, state);
-  assert.equal(response.items[0].state, 'unresolved');
-});
-
-test('public 合成示例不接受其他地图身份', async () => {
-  const contents = await readFile(new URL('../public/battle-ai-template.json', import.meta.url), 'utf8');
-  const parsed = importer.parseBattleCandidates(contents, workspace());
-  assert.equal(parsed.items[0].state, 'unresolved');
-  const realState = workspace();
-  realState.mapId = 'real-user-map';
-  assert.throws(() => importer.parseBattleCandidates(contents, realState), /文件与当前战区不一致/);
-});
-
 test('A 包自带候选样例可解析并可选中，声明来源与引用一致', async () => {
   const contents = await readFile(new URL('../work-packages/BATTLE-1/A/samples/river-valley-candidates.json', import.meta.url), 'utf8');
   const state = workspace();

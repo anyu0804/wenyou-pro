@@ -63,21 +63,31 @@ function resetAppStore() {
   appStore.selectedTacticalId = null;
 }
 
-test('origin 校验与回复目标计算：仅允许 loopback、Electron file:// 与内置协议源', () => {
+test('origin 校验与回复目标计算：放行合法 http(s)://（含局域网）、Electron file:// 与内置协议源', () => {
   assert.equal(isAllowedHostOrigin('http://127.0.0.1:5173'), true);
   assert.equal(isAllowedHostOrigin('http://localhost:3000'), true);
   assert.equal(isAllowedHostOrigin('http://[::1]:5174'), true);
+  assert.equal(isAllowedHostOrigin('http://192.168.1.10:5173'), true);
+  assert.equal(isAllowedHostOrigin('http://10.0.0.5:7331'), true);
+  assert.equal(isAllowedHostOrigin('https://wenyou.local:8443'), true);
+  assert.equal(isAllowedHostOrigin('https://sandbox.example.com'), true);
   assert.equal(isAllowedHostOrigin('null'), true);
   assert.equal(isAllowedHostOrigin(''), true);
   assert.equal(isAllowedHostOrigin('file://'), true);
   assert.equal(isAllowedHostOrigin('wenyou-sandbox://app'), true);
   assert.equal(isAllowedHostOrigin('app://renderer'), true);
 
-  assert.equal(isAllowedHostOrigin('https://evil.example'), false);
-  assert.equal(isAllowedHostOrigin('http://127.0.0.1.evil.example'), false);
-  assert.equal(isAllowedHostOrigin('http://192.168.1.10:5173'), false);
+  assert.equal(isAllowedHostOrigin('javascript:alert(1)'), false);
+  assert.equal(isAllowedHostOrigin('ftp://192.168.1.10:21'), false);
+  assert.equal(isAllowedHostOrigin('chrome-extension://abcdef'), false);
+  assert.equal(isAllowedHostOrigin('data:text/html,hi'), false);
+  assert.equal(isAllowedHostOrigin('http://192.168.1.10:5173/path'), false);
+  assert.equal(isAllowedHostOrigin('http://192.168.1.10:5173/'), false);
+  assert.equal(isAllowedHostOrigin('http://user:pass@192.168.1.10:5173'), false);
+  assert.equal(isAllowedHostOrigin('not-a-url'), false);
 
   assert.equal(resolveReplyTargetOrigin('http://127.0.0.1:5179'), 'http://127.0.0.1:5179');
+  assert.equal(resolveReplyTargetOrigin('http://192.168.1.10:5173'), 'http://192.168.1.10:5173');
   assert.equal(resolveReplyTargetOrigin('wenyou-sandbox://app'), 'wenyou-sandbox://app');
   assert.equal(resolveReplyTargetOrigin('app://renderer'), 'app://renderer');
   assert.equal(resolveReplyTargetOrigin('null'), '*');
@@ -132,9 +142,9 @@ test('嵌入握手、上下文同步与非法来源/非法协议忽略', async (
     },
   });
 
-  // 忽略非法协议、非 parent 来源、外部域名 origin
+  // 忽略非法协议、非 parent 来源、非法 scheme origin
   win.dispatchMessage({ source: {}, origin: 'http://127.0.0.1:5173', data: { protocol: WENYOU_MAP_BRIDGE_PROTOCOL, type: 'ping' } });
-  win.dispatchMessage({ source: parent, origin: 'https://attacker.test', data: { protocol: WENYOU_MAP_BRIDGE_PROTOCOL, type: 'ping' } });
+  win.dispatchMessage({ source: parent, origin: 'ftp://attacker.test', data: { protocol: WENYOU_MAP_BRIDGE_PROTOCOL, type: 'ping' } });
   win.dispatchMessage({ source: parent, origin: 'http://127.0.0.1:5173', data: { protocol: 'wrong-protocol/v1', type: 'ping' } });
   await flushMicrotasks();
   assert.equal(sent.length, 1);
@@ -163,19 +173,19 @@ test('嵌入握手、上下文同步与非法来源/非法协议忽略', async (
   assert.equal(sent[2].targetOrigin, '*');
   assert.equal(sent[2].message.requestId, 'req-file-1');
 
-  // sync_context -> context_acked + 轻标记更新
+  // sync_context（不含 viewer）+ 局域网 origin -> context_acked + 轻标记更新
   win.dispatchMessage({
     source: parent,
-    origin: 'http://127.0.0.1:5179',
+    origin: 'http://192.168.1.25:5179',
     data: {
       protocol: WENYOU_MAP_BRIDGE_PROTOCOL,
       type: 'sync_context',
-      payload: { worldId: 'w-north', worldTitle: '北境诸侯', currentEra: '永安三年', viewer: 'gm' },
+      payload: { worldId: 'w-north', worldTitle: '北境诸侯', currentEra: '永安三年' },
     },
   });
   await flushMicrotasks();
   assert.equal(sent.length, 4);
-  assert.equal(sent[3].targetOrigin, 'http://127.0.0.1:5179');
+  assert.equal(sent[3].targetOrigin, 'http://192.168.1.25:5179');
   assert.deepEqual(sent[3].message, {
     protocol: WENYOU_MAP_BRIDGE_PROTOCOL,
     type: 'context_acked',
@@ -185,10 +195,25 @@ test('嵌入握手、上下文同步与非法来源/非法协议忽略', async (
     worldId: 'w-north',
     worldTitle: '北境诸侯',
     currentEra: '永安三年',
-    viewer: 'gm',
   });
   assert.equal(badgeNodes.length, 1);
   assert.match(badgeNodes[0].textContent, /北境诸侯/);
+  assert.equal(badgeNodes[0].title, 'worldId=w-north');
+
+  // sync_context（显式携带可选 viewer）仍向下兼容
+  win.dispatchMessage({
+    source: parent,
+    origin: 'http://127.0.0.1:5179',
+    data: {
+      protocol: WENYOU_MAP_BRIDGE_PROTOCOL,
+      type: 'sync_context',
+      payload: { worldId: 'w-north', worldTitle: '北境诸侯', currentEra: '永安四年', viewer: 'gm' },
+    },
+  });
+  await flushMicrotasks();
+  assert.equal(sent.length, 5);
+  assert.equal(sent[4].targetOrigin, 'http://127.0.0.1:5179');
+  assert.equal(badgeNodes[0].title, 'worldId=w-north viewer=gm');
 
   bridge.destroy();
   assert.equal(badgeNodes[0].isConnected, false);

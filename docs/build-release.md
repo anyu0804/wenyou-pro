@@ -50,7 +50,7 @@ npx asar extract "packages/desktop/dist/releases/0.6.6-beta.1/darwin/build.noind
 - main 的 workspace backend/shared 需按现有 Vite 配置打入 bundle，避免被 externalize 当普通外部包；SDK 保持既有 external 边界。
 - electron-builder 从 desktop 依赖树收包，需要的生产依赖不能只放根 devDependencies。Electron 使用精确版本。
 - `PI_PACKAGE_DIR` 指向随包 `pi-package`，相关 docs/examples、主题和导出资源需一起带入；不要只复制文档漏掉运行时资源。
-- esbuild 等需要 spawn 的二进制不能在 asar 内执行；保留 `asarUnpack` 和 `ESBUILD_BINARY_PATH` 处理。
+- 纯前端构建依赖放在 `devDependencies` 由 Vite 打包进 `out/renderer/`，不在生产 `app.asar` 中携带 `esbuild`、`qrcode`、`monaco-editor`、`stream-monaco`、`mermaid`、`katex`、`shiki`、`react-dom` 等已裁剪或纯前端依赖；`after-pack.cjs` 裁剪 `locales/` 仅保留 `zh-CN.pak` 与 `en-US.pak`。
 - 项目要求 Node >=22.19；Electron 二进制缺失时先核对安装脚本授权与依赖安装日志，不要改应用代码绕过。
 - Release 构建出现 V8 heap OOM 时检查 workflow 的 Node 堆上限；这是构建峰值，不是应用运行时内存。别把 Rollup annotation warning 当根因。
 - `patches/` 由 patch-package 在 postinstall 应用。修改依赖后更新补丁，升级依赖时重核官方实现与补丁必要性。
