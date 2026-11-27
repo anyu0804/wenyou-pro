@@ -5,10 +5,11 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createLogger, initLogging, localSessionPaths, PiBackend } from "@percho/backend";
 import { WENYOU_ASSET_PROTOCOL, WENYOU_SANDBOX_PROTOCOL } from "@percho/shared";
-import { app, BrowserWindow, Menu, nativeTheme, net, protocol, screen, shell } from "electron";
+import { app, BrowserWindow, dialog, Menu, nativeTheme, net, protocol, screen, shell } from "electron";
 import { releaseChannel } from "./app-identity";
 import { backgroundsDir } from "./background";
 import { registerIpc } from "./ipc";
+import { acquireSingleInstanceGuard, installMainProcessErrorGuard } from "./process-error-guard";
 import { remoteConnectionManager } from "./remote-connection";
 import { attachRendererWatchdog } from "./renderer-watchdog";
 import { prepareLocalStorage } from "./storage-startup";
@@ -24,7 +25,18 @@ import { applyChromeTheme, createWindow, markQuitting, resolveTheme } from "./wi
 import { sanitizeWindowBounds } from "./window-bounds";
 
 const log = createLogger("main");
-let backend: PiBackend;
+let backend: PiBackend | undefined;
+
+// 启动第一时间安装全局异常与原生 ErrorBox 弹窗守卫，阻止主进程异常演变为模态弹窗风暴
+installMainProcessErrorGuard({ dialog, process, log });
+
+// 在 app.whenReady() 之前申请单实例锁：同 userData 二次拉起直接退出且不触碰窗口与存储目录
+const hasSingleInstanceLock = acquireSingleInstanceGuard({
+	app,
+	getWindows: () => BrowserWindow.getAllWindows(),
+	log,
+	onBeforeExit: markQuitting,
+});
 
 /**
  * 追加进每次会话系统提示词的桌面端段落（精简明确）：
@@ -38,99 +50,104 @@ const WENYOU_DESKTOP_PROMPT: string[] = [
 /** renderer 加载自定义背景图的协议（pi-bg://background/<文件名>，只读 userData/backgrounds/） */
 const BG_PROTOCOL = "pi-bg";
 
-protocol.registerSchemesAsPrivileged([
-	{ scheme: BG_PROTOCOL, privileges: { standard: true, secure: true, supportFetchAPI: true } },
-	{
-		scheme: WENYOU_ASSET_PROTOCOL,
-		privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, stream: true },
-	},
-	{
-		scheme: WENYOU_SANDBOX_PROTOCOL,
-		privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, stream: true },
-	},
-]);
+if (hasSingleInstanceLock) {
+	protocol.registerSchemesAsPrivileged([
+		{ scheme: BG_PROTOCOL, privileges: { standard: true, secure: true, supportFetchAPI: true } },
+		{
+			scheme: WENYOU_ASSET_PROTOCOL,
+			privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, stream: true },
+		},
+		{
+			scheme: WENYOU_SANDBOX_PROTOCOL,
+			privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, stream: true },
+		},
+	]);
 
-// Windows/Linux 不显示默认应用菜单（File/Edit/...）；macOS 菜单在系统菜单栏且承担复制粘贴等快捷键，保留
-if (process.platform !== "darwin") Menu.setApplicationMenu(null);
-// 系统深浅色变化（或用户切换主题导致 themeSource 变更）→ 同步窗口底色与 Windows 窗口按钮覆盖层
-nativeTheme.on("updated", () => applyChromeTheme(nativeTheme.themeSource));
+	// Windows/Linux 不显示默认应用菜单（File/Edit/...）；macOS 菜单在系统菜单栏且承担复制粘贴等快捷键，保留
+	if (process.platform !== "darwin") Menu.setApplicationMenu(null);
+	// 系统深浅色变化（或用户切换主题导致 themeSource 变更）→ 同步窗口底色与 Windows 窗口按钮覆盖层
+	nativeTheme.on("updated", () => applyChromeTheme(nativeTheme.themeSource));
 
-app.whenReady().then(async () => {
-	// 必须早于 prepareLocalStorage：它会创建并加载首个文档，后补 handler 对该文档不生效。
-	// 自定义背景图协议：pi-bg://background/<文件名> → userData/backgrounds/<文件名>（文件名白名单防路径穿越）
-	protocol.handle(BG_PROTOCOL, (request) => {
-		let name: string;
-		try {
-			name = decodeURIComponent(new URL(request.url).pathname).replace(/^\/+/, "");
-		} catch {
-			return new Response("invalid background url", { status: 400 });
-		}
-		if (!name || name === "." || name === ".." || !/^[\w.-]+$/.test(name)) {
-			return new Response("invalid background name", { status: 400 });
-		}
-		return net.fetch(pathToFileURL(join(backgroundsDir(), name)).toString());
-	});
-	// 文游工作区高清地图/静态图集只读流式协议（realpath 沙箱校验，禁 private/ 与 .wenyou/）
-	registerWenyouAssetProtocolHandler();
-	// 文游内置 Pixi 互动沙盘特权静态协议（免双开直载 resources/pixi-sandbox）
-	registerWenyouSandboxProtocolHandler();
-
-	if (releaseChannel === "dev") app.dock?.setIcon(join(__dirname, "../../build/icon-dev.png"));
-	const uiState = await loadUiState();
-	nativeTheme.themeSource = uiState?.theme ?? "system";
-	const initialBounds = sanitizeWindowBounds(
-		uiState?.windowBounds ?? null,
-		screen.getAllDisplays().map((display) => display.workArea),
-	);
-	const storage = await prepareLocalStorage(resolveTheme(uiState?.theme), initialBounds);
-	try {
+	app.whenReady().then(async () => {
+		// 必须早于 prepareLocalStorage 创建窗口：先初始化文件日志并挂载渲染进程看护，
+		// 避免主窗口 webContents 漏绑 console-message / render-process-gone 导致渲染错误从不落盘。
 		initLogging(join(app.getPath("userData"), "logs"));
-		log.info("app ready", { version: app.getVersion(), userData: app.getPath("userData") });
-		if (!process.env.WENYOU_NTQQ_ASSETS_DIR) {
-			process.env.WENYOU_NTQQ_ASSETS_DIR = wenyouNtqqAssetsDir();
-		}
+		attachRendererWatchdog(() => backend);
 
-		backend = new PiBackend({
-			localSessionPaths: localSessionPaths(storage.record, storage.selection.legacyRoots),
-			// 桌面端集成：文游随包技能与系统提示词段落
-			// MCP OAuth 授权页交给系统浏览器（官方内置 mcp 扩展用；缺省则扩展自行回落到平台默认浏览器）
-			openExternal: (url) => shell.openExternal(url),
-			desktopIntegration: {
-				appendSystemPrompt: WENYOU_DESKTOP_PROMPT,
-				additionalSkillPaths: [wenyouSkillsDir()],
-			},
-		});
-		await backend.init();
-		attachRendererWatchdog(backend);
-
-		registerIpc(backend);
-		await initUpdater();
-		scheduleAutoUpdateCheck();
-		storage.launchWorkbench();
-
-		app.on("activate", () => {
-			const [win] = BrowserWindow.getAllWindows();
-			// macOS 关窗只是隐藏窗口：点 Dock 图标要把原窗口（含会话与草稿）原样带回来
-			if (win) {
-				if (win.isMinimized()) win.restore();
-				win.show();
-				win.focus();
-				return;
+		// 必须早于 prepareLocalStorage：它会创建并加载首个文档，后补 handler 对该文档不生效。
+		// 自定义背景图协议：pi-bg://background/<文件名> → userData/backgrounds/<文件名>（文件名白名单防路径穿越）
+		protocol.handle(BG_PROTOCOL, (request) => {
+			let name: string;
+			try {
+				name = decodeURIComponent(new URL(request.url).pathname).replace(/^\/+/, "");
+			} catch {
+				return new Response("invalid background url", { status: 400 });
 			}
-			createWindow(resolveTheme(uiState?.theme), initialBounds);
+			if (!name || name === "." || name === ".." || !/^[\w.-]+$/.test(name)) {
+				return new Response("invalid background name", { status: 400 });
+			}
+			return net.fetch(pathToFileURL(join(backgroundsDir(), name)).toString());
 		});
-	} catch (error) {
-		storage.failWorkbench(error);
-	}
-});
+		// 文游工作区高清地图/静态图集只读流式协议（realpath 沙箱校验，禁 private/ 与 .wenyou/）
+		registerWenyouAssetProtocolHandler();
+		// 文游内置 Pixi 互动沙盘特权静态协议（免双开直载 resources/pixi-sandbox）
+		registerWenyouSandboxProtocolHandler();
 
-app.on("window-all-closed", () => {
-	if (process.platform !== "darwin") app.quit();
-});
+		if (releaseChannel === "dev") app.dock?.setIcon(join(__dirname, "../../build/icon-dev.png"));
+		const uiState = await loadUiState();
+		nativeTheme.themeSource = uiState?.theme ?? "system";
+		const initialBounds = sanitizeWindowBounds(
+			uiState?.windowBounds ?? null,
+			screen.getAllDisplays().map((display) => display.workArea),
+		);
+		const storage = await prepareLocalStorage(resolveTheme(uiState?.theme), initialBounds);
+		try {
+			log.info("app ready", { version: app.getVersion(), userData: app.getPath("userData") });
+			if (!process.env.WENYOU_NTQQ_ASSETS_DIR) {
+				process.env.WENYOU_NTQQ_ASSETS_DIR = wenyouNtqqAssetsDir();
+			}
 
-app.on("before-quit", () => {
-	// 先放行 close 拦截：否则 macOS 下 ⌘Q 会被当成「关窗 → 隐藏」而退不掉
-	markQuitting();
-	void remoteConnectionManager.shutdown();
-	backend?.dispose();
-});
+			backend = new PiBackend({
+				localSessionPaths: localSessionPaths(storage.record, storage.selection.legacyRoots),
+				// 桌面端集成：文游随包技能与系统提示词段落
+				// MCP OAuth 授权页交给系统浏览器（官方内置 mcp 扩展用；缺省则扩展自行回落到平台默认浏览器）
+				openExternal: (url) => shell.openExternal(url),
+				desktopIntegration: {
+					appendSystemPrompt: WENYOU_DESKTOP_PROMPT,
+					additionalSkillPaths: [wenyouSkillsDir()],
+				},
+			});
+			await backend.init();
+
+			registerIpc(backend);
+			await initUpdater();
+			scheduleAutoUpdateCheck();
+			storage.launchWorkbench();
+
+			app.on("activate", () => {
+				const [win] = BrowserWindow.getAllWindows();
+				// macOS 关窗只是隐藏窗口：点 Dock 图标要把原窗口（含会话与草稿）原样带回来
+				if (win && !win.isDestroyed()) {
+					if (win.isMinimized()) win.restore();
+					win.show();
+					win.focus();
+					return;
+				}
+				createWindow(resolveTheme(uiState?.theme), initialBounds);
+			});
+		} catch (error) {
+			storage.failWorkbench(error);
+		}
+	});
+
+	app.on("window-all-closed", () => {
+		if (process.platform !== "darwin") app.quit();
+	});
+
+	app.on("before-quit", () => {
+		// 先放行 close 拦截：否则 macOS 下 ⌘Q 会被当成「关窗 → 隐藏」而退不掉
+		markQuitting();
+		void remoteConnectionManager.shutdown();
+		backend?.dispose();
+	});
+}

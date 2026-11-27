@@ -39,36 +39,72 @@ export function subagentPermissionMode(parent: PermissionMode, declared?: Permis
 	return parent === "default" ? "default" : (declared ?? "fullAccess");
 }
 
+function isGitBinaryToken(rawToken: string, unescapedToken: string): boolean {
+	const matches = (value: string): boolean => {
+		const stripped = value.replace(/["']/g, "");
+		const last = stripped.split(/[\\/]/).pop() ?? "";
+		return last.toLowerCase().replace(/\.exe$/, "") === "git";
+	};
+	return matches(unescapedToken) || matches(rawToken);
+}
+
+function normalizePathText(value: string): string {
+	return value.replace(/\\/g, "/").toLowerCase();
+}
+
+function matchesDenyPattern(pattern: string, tool: string, text: string | null): boolean {
+	if (patternMatchesToolCall(pattern, tool, text)) return true;
+	if (tool === "powershell") {
+		if (pattern === "bash") return true;
+		if (pattern.startsWith("bash: ")) {
+			return patternMatchesToolCall(`powershell: ${pattern.slice("bash: ".length)}`, "powershell", text);
+		}
+	}
+	return false;
+}
+
 /** 候选已包含命令链、shell -c 载荷和命令替换；这里只解析程序与紧随的子命令。 */
 export function forbiddenGitCommand(command: string): string | undefined {
 	for (const candidate of collectBashCandidates(command).flatMap(splitShellSegments)) {
-		const tokens =
-			candidate
-				.match(/(?:[^\s"'\\]|\\.|"[^"]*"|'[^']*')+/g)
-				?.map((token) => token.replace(/\\(.)/g, "$1").replace(/["']/g, "")) ?? [];
-		while (/^[\w]+=/u.test(tokens[0] ?? "")) tokens.shift();
-		if (basename(tokens[0] ?? "") !== "git") continue;
-		if (tokens.slice(1).some((token) => /^-[cC]|^--(?:git-dir|work-tree)(?:=|$)/.test(token)))
-			return candidate;
-		const subcommand = tokens[1];
+		const rawTokens = candidate.match(/(?:[^\s"'\\]|\\.|"[^"]*"|'[^']*')+/g) ?? [];
+		const tokens = rawTokens.map((token) => token.replace(/\\(.)/g, "$1").replace(/["']/g, ""));
+		let start = 0;
+		while (start < tokens.length && /^[\w]+=/u.test(tokens[start] ?? "")) start++;
+		const cmdToken = tokens[start] ?? "";
+		const rawCmdToken = rawTokens[start] ?? "";
+		if (
+			!isGitBinaryToken(rawCmdToken, cmdToken) &&
+			basename(cmdToken)
+				.toLowerCase()
+				.replace(/\.exe$/, "") !== "git"
+		)
+			continue;
+		const rest = tokens.slice(start + 1);
+		if (rest.some((token) => /^-[cC]|^--(?:git-dir|work-tree)(?:=|$)/i.test(token))) return candidate;
+		const subcommand = rest[0];
 		if (!READ_ONLY_GIT_COMMANDS.some((name) => name === subcommand)) return candidate;
 	}
 	return undefined;
 }
 
-/** 工具调用边界；SDK 自身持久化不经过这里。bash 的目录保护刻意只做文本匹配。 */
+/** 工具调用边界；SDK 自身持久化不经过这里。bash / powershell 的目录保护刻意只做文本匹配。 */
 export function subagentBoundaryViolation(
 	policy: SubagentPolicy,
 	tool: string,
 	text: string | null,
 	cwd: string,
 ): string | undefined {
-	const deny = policy.deny.find((pattern) => patternMatchesToolCall(pattern, tool, text));
+	const deny = policy.deny.find((pattern) => matchesDenyPattern(pattern, tool, text));
 	if (deny) return `deny: ${deny}`;
-	if (tool === "bash" && text) {
+	if ((tool === "bash" || tool === "powershell") && text) {
 		const git = forbiddenGitCommand(text);
 		if (git) return `git: ${git}`;
-		if (text.includes(policy.agentDir) || PROTECTED_STATE_FILENAMES.some((name) => text.includes(name)))
+		const normalizedText = normalizePathText(text);
+		const normalizedAgentDir = normalizePathText(policy.agentDir).replace(/\/+$/, "");
+		if (
+			(normalizedAgentDir.length > 0 && normalizedText.includes(normalizedAgentDir)) ||
+			PROTECTED_STATE_FILENAMES.some((name) => normalizedText.includes(name.toLowerCase()))
+		)
 			return "Percho state is read-only (bash text match)";
 	}
 	if ((tool === "edit" || tool === "write") && text) {

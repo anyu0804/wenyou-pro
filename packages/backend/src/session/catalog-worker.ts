@@ -114,10 +114,10 @@ function meta(row: Row): SessionMeta {
 async function initialize() {
 	await mkdir(dirname(indexPath), { recursive: true });
 	const open = () => {
-		const instance = new DatabaseSync(indexPath);
+		const instance = new DatabaseSync(indexPath, { timeout: 5000 });
 		try {
 			instance.exec(
-				"PRAGMA quick_check; CREATE TABLE IF NOT EXISTS sessions (path TEXT PRIMARY KEY, id TEXT NOT NULL, cwd TEXT NOT NULL, name TEXT, created REAL NOT NULL, modified REAL NOT NULL, count INTEGER NOT NULL, fingerprint TEXT NOT NULL, readOnly INTEGER NOT NULL, archivedAt REAL, archiveRevision INTEGER, archiveCleanupPending INTEGER); CREATE INDEX IF NOT EXISTS sessions_id ON sessions(id)",
+				"PRAGMA busy_timeout = 5000; PRAGMA quick_check; CREATE TABLE IF NOT EXISTS sessions (path TEXT PRIMARY KEY, id TEXT NOT NULL, cwd TEXT NOT NULL, name TEXT, created REAL NOT NULL, modified REAL NOT NULL, count INTEGER NOT NULL, fingerprint TEXT NOT NULL, readOnly INTEGER NOT NULL, archivedAt REAL, archiveRevision INTEGER, archiveCleanupPending INTEGER); CREATE INDEX IF NOT EXISTS sessions_id ON sessions(id)",
 			);
 			const check = instance.prepare("PRAGMA quick_check").get() as { quick_check: string };
 			if (check.quick_check !== "ok") throw new Error(check.quick_check);

@@ -153,6 +153,7 @@ import { LoginService } from "./settings/login";
 import { ModelPrefsService } from "./settings/model-prefs";
 import { makeQuotaService } from "./settings/quota";
 import { SettingsService } from "./settings/settings";
+import { resolveSessionTools } from "./shell-fallback";
 import { slashCommandsForLoader, slashCommandsForSession } from "./slash-commands";
 import { privateDirectory } from "./storage/private-directory";
 import type { LocalSessionPaths } from "./storage/session-paths";
@@ -1508,7 +1509,11 @@ export class PiBackend {
 					modelRuntime: runtime,
 					model,
 					thinkingLevel: options.thinkingLevel as ThinkingLevel | undefined,
-					tools: this.options.tools,
+					tools: resolveSessionTools({
+						explicitTools: this.options.tools,
+						defaultTools: settingsManager.getDefaultTools?.(),
+						shellPath: settingsManager.getShellPath?.(),
+					}),
 					customTools: this.buildCustomTools(
 						deps.gate,
 						deps.preferBuiltin,
@@ -1626,7 +1631,11 @@ export class PiBackend {
 					modelRuntime: runtime,
 					// 与 create 对称应用工具白名单（F1 修复；SDK 仅在初始激活工具集层面消费，
 					// 会话文件不持久化工具开关，重开无状态冲突）
-					tools: this.options.tools,
+					tools: resolveSessionTools({
+						explicitTools: this.options.tools,
+						defaultTools: settingsManager.getDefaultTools?.(),
+						shellPath: settingsManager.getShellPath?.(),
+					}),
 					settingsManager,
 					resourceLoader,
 					...codemodeSessionOptions(settingsManager, getAgentDir()),

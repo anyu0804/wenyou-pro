@@ -87,4 +87,11 @@ describe("Git bound to its repository", () => {
 		expect(await getGitBranch(`${root}/empty`)).toBe("main");
 		await expect(getGitBranch(`${root}/missing`)).rejects.toThrow();
 	});
+	it("gracefully falls back when git executable is missing on PATH while still rejecting missing cwd", async () => {
+		vi.stubEnv("PATH", "");
+		expect(await getGitBranch(repo)).toBeNull();
+		expect(await listGitBranches(repo)).toEqual({ current: null, branches: [] });
+		await expect(checkoutBranch(repo, "main")).rejects.toThrow("当前系统未安装 Git，无法切换分支");
+		await expect(getGitBranch(`${root}/missing`)).rejects.toThrow();
+	});
 });

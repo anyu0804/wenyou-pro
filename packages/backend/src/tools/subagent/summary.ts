@@ -24,7 +24,7 @@ export function summarizeSubagentRun(
 		for (const message of messages) {
 			if (message.kind !== "assistant") continue;
 			for (const tool of message.tools) {
-				if (tool.name !== "bash") continue;
+				if (tool.name !== "bash" && tool.name !== "powershell") continue;
 				const args = JSON.parse(tool.args) as { command?: unknown };
 				if (typeof args.command === "string")
 					commands.push({ command: args.command, isError: tool.state === "error" });

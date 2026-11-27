@@ -11,33 +11,33 @@ export async function resolveChannelProject(cwd: string, boundRoot?: string): Pr
 	const env = { ...process.env };
 	for (const key of Object.keys(env)) if (key.toUpperCase().startsWith("GIT_")) delete env[key];
 	env.LC_ALL = "C";
-	let root: string | undefined;
+	let topLevel: string | undefined;
 	try {
 		const result = await exec("git", ["rev-parse", "--show-toplevel"], {
 			cwd: current,
 			env,
 			shell: false,
 			timeout: 5000,
+			windowsHide: true,
 		});
-		root = await realpath(result.stdout.trim());
+		topLevel = result.stdout.trim();
 	} catch (error) {
-		// Only Git's explicit non-repository response permits a fallback.
+		// Only Git's explicit non-repository response or missing git executable permits a fallback.
+		// `realpath(cwd)` above has already verified that `cwd` itself exists.
 		const failure = error as { code?: unknown; stderr?: unknown };
-		if (
-			failure.code !== 128 ||
-			typeof failure.stderr !== "string" ||
-			!(
-				/^fatal: not a git repository(?: \(or any of the parent directories\): \.git)?\s*$/i.test(
-					failure.stderr,
-				) ||
+		const isMissingGitBinary = failure.code === "ENOENT";
+		const isNotGitRepository =
+			failure.code === 128 &&
+			typeof failure.stderr === "string" &&
+			(/^fatal: not a git repository(?: \(or any of the parent directories\): \.git)?\s*$/i.test(
+				failure.stderr,
+			) ||
 				/^fatal: not a git repository \(or any parent up to mount point [^\r\n]+\)\r?\nStopping at filesystem boundary \(GIT_DISCOVERY_ACROSS_FILESYSTEM not set\)\.\s*$/i.test(
 					failure.stderr,
-				)
-			)
-		)
-			throw error;
+				));
+		if (!isMissingGitBinary && !isNotGitRepository) throw error;
 	}
-	if (root) return root;
+	if (topLevel) return realpath(topLevel);
 	if (!boundRoot) return current;
 	const bound = await realpath(boundRoot);
 	const rel = relative(bound, current);

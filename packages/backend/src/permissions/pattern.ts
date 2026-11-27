@@ -30,8 +30,8 @@ export interface PermissionOutside {
 
 const ACTIONS: ReadonlySet<string> = new Set(["allow", "ask", "deny"]);
 
-/** 通配匹配：* 任意字符序列，? 单字符，其余字面；整串匹配，大小写敏感 */
-export function matchPattern(pattern: string, text: string): boolean {
+/** 通配匹配：* 任意字符序列，? 单字符，其余字面；整串匹配，默认大小写敏感（powershell 传 true） */
+export function matchPattern(pattern: string, text: string, caseInsensitive = false): boolean {
 	const regex = pattern
 		.split("")
 		.map((ch) => {
@@ -40,11 +40,15 @@ export function matchPattern(pattern: string, text: string): boolean {
 			return ch.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 		})
 		.join("");
-	return new RegExp(`^${regex}$`).test(text);
+	return new RegExp(`^${regex}$`, caseInsensitive ? "i" : undefined).test(text);
 }
 
 /** 动作严格度：deny > ask > allow（命令链任一段取最严，危险命令无法藏在链里） */
 const ACTION_PRIORITY: Record<PermissionAction, number> = { allow: 0, ask: 1, deny: 2 };
+
+function isShellTool(toolName: string): toolName is "bash" | "powershell" {
+	return toolName === "bash" || toolName === "powershell";
+}
 
 /**
  * 单段求值：默认值 → "*" 全局动作 → 工具动作 → 工具模式表（后命中覆盖）。
@@ -66,9 +70,10 @@ function evaluateSingle(
 	if (ACTIONS.has(toolRule as string)) {
 		return toolRule as PermissionAction;
 	}
+	const caseInsensitive = toolName === "powershell";
 	if (typeof toolRule === "object" && matchText !== null) {
 		for (const [pattern, patternAction] of Object.entries(toolRule)) {
-			if (ACTIONS.has(patternAction) && matchPattern(pattern, matchText)) {
+			if (ACTIONS.has(patternAction) && matchPattern(pattern, matchText, caseInsensitive)) {
 				action = patternAction;
 			}
 		}
@@ -77,7 +82,7 @@ function evaluateSingle(
 }
 
 /**
- * bash 命令链求值：所有候选（见 collectBashCandidates）分别求值，动作取最严
+ * bash / powershell 命令链求值：所有候选（见 collectBashCandidates）分别求值，动作取最严
  * （deny > ask > allow）——`cd x && ls && rm -rf y`、`echo $(rm -rf y)` 均无法绕过。
  * segment 返回命中最终动作的候选（供弹窗标题定位危险命令；无分隔符时即整串）。
  * segmentOverride（可选）：候选求值后的段动作改写钩子（临时区豁免用，spec §5.4）——返回
@@ -90,12 +95,13 @@ export function evaluateBashCommand(
 	command: string,
 	fallback: PermissionAction = "ask",
 	segmentOverride?: (segment: string) => PermissionAction | null,
+	toolName: "bash" | "powershell" = "bash",
 ): { action: PermissionAction; segment: string } {
 	// 从最松（allow）起步，候选结果各自已含 fallback，取最严者
 	let action: PermissionAction = "allow";
 	let segment = command;
 	for (const candidate of collectBashCandidates(command)) {
-		let a = evaluateSingle(rules, "bash", candidate, fallback);
+		let a = evaluateSingle(rules, toolName, candidate, fallback);
 		if (segmentOverride) {
 			const override = segmentOverride(candidate);
 			// deny 地板：改写只体现 temporary 分区动作，原 deny 永不被覆盖
@@ -111,7 +117,7 @@ export function evaluateBashCommand(
 }
 
 /**
- * 规则求值：bash 走命令链切段（evaluateBashCommand），其余工具单段求值。
+ * 规则求值：bash / powershell 走命令链切段（evaluateBashCommand），其余工具单段求值。
  */
 export function evaluateRules(
 	rules: PermissionRules,
@@ -119,8 +125,8 @@ export function evaluateRules(
 	matchText: string | null,
 	fallback: PermissionAction = "ask",
 ): PermissionAction {
-	if (toolName === "bash" && matchText !== null) {
-		return evaluateBashCommand(rules, matchText, fallback).action;
+	if (isShellTool(toolName) && matchText !== null) {
+		return evaluateBashCommand(rules, matchText, fallback, undefined, toolName).action;
 	}
 	return evaluateSingle(rules, toolName, matchText, fallback);
 }
@@ -130,6 +136,7 @@ export function matchTextFor(toolName: string, input: Record<string, unknown>): 
 	const value = (() => {
 		switch (toolName) {
 			case "bash":
+			case "powershell":
 				return input.command;
 			case "read":
 			case "edit":
@@ -208,14 +215,14 @@ const PATH_PATTERN_TOOLS = new Set(["read", "edit", "write", "ls", "show_image"]
  */
 export function suggestPattern(toolName: string, input: Record<string, unknown>): string {
 	const matchText = matchTextFor(toolName, input);
-	if (toolName === "bash" && matchText) {
+	if (isShellTool(toolName) && matchText) {
 		const tokens = matchText.trim().split(/\s+/);
 		const first = tokens[0] ?? "";
 		const second = tokens[1] ?? "";
 		if (first && /^(?:[a-zA-Z][a-zA-Z0-9-]*|-[a-zA-Z][a-zA-Z0-9-]*)$/.test(second)) {
-			return `bash: ${first} ${second}*`;
+			return `${toolName}: ${first} ${second}*`;
 		}
-		return `bash: ${first}*`;
+		return `${toolName}: ${first}*`;
 	}
 	if (matchText) {
 		if (PATH_PATTERN_TOOLS.has(toolName)) {
@@ -228,8 +235,8 @@ export function suggestPattern(toolName: string, input: Record<string, unknown>)
 
 /**
  * 项目级记忆匹配（workspaces.json 的 allowed[] 模式键 vs 本次工具调用）。
- * 键格式同 suggestPattern："bash: git push*" / "write: /dir/*" / "my_tool"（无匹配文本）。
- * bash 与命令链求值同构：任一切段/替换/包装候选命中即算命中（`cd x && git push` 命中 `bash: git push*`）。
+ * 键格式同 suggestPattern："bash: git push*" / "powershell: Remove-Item -Recurse*" / "write: /dir/*" / "my_tool"。
+ * bash / powershell 与命令链求值同构：任一切段/替换/包装候选命中即算命中（powershell 大小写不敏感）。
  */
 export function patternMatchesToolCall(pattern: string, toolName: string, matchText: string | null): boolean {
 	const idx = pattern.indexOf(": ");
@@ -238,8 +245,9 @@ export function patternMatchesToolCall(pattern: string, toolName: string, matchT
 	if (pTool !== toolName) return false;
 	if (pText === null) return true;
 	if (matchText === null) return false;
-	if (toolName === "bash") {
-		return collectBashCandidates(matchText).some((c) => matchPattern(pText, c));
+	if (isShellTool(toolName)) {
+		const caseInsensitive = toolName === "powershell";
+		return collectBashCandidates(matchText).some((c) => matchPattern(pText, c, caseInsensitive));
 	}
 	return matchPattern(pText, matchText);
 }

@@ -110,8 +110,19 @@ function titleBarOverlay(theme: "dark" | "light"): Electron.TitleBarOverlay {
 export function applyChromeTheme(mode: ThemeMode): void {
 	const resolved = resolveTheme(mode);
 	for (const win of BrowserWindow.getAllWindows()) {
-		win.setBackgroundColor(windowBackground(resolved));
-		if (process.platform === "win32") win.setTitleBarOverlay(titleBarOverlay(resolved));
+		if (win.isDestroyed()) continue;
+		try {
+			win.setBackgroundColor(windowBackground(resolved));
+		} catch {
+			// 无边框窗口过渡态或外部自动化接管期间可能抛原生异常，忽略以防主进程异常弹窗
+		}
+		if (process.platform === "win32" && !win.isDestroyed()) {
+			try {
+				win.setTitleBarOverlay(titleBarOverlay(resolved));
+			} catch {
+				// Windows 无边框窗口覆盖层在过渡态下可能抛原生异常
+			}
+		}
 	}
 }
 
@@ -178,11 +189,16 @@ export function createWindow(
 
 	attachComposerEditMenu(window);
 	window.on("ready-to-show", () => {
+		if (window.isDestroyed()) return;
 		window.show();
 		// macOS 首次 show() 会把窗口 x 抬到 ≥221 DIP（≈15% 屏宽，详见 docs/PITFALLS.md 与 IMPL-NOTES X1）——
 		// 传参没错，是系统的窗口位置约束。**已显示的窗口 setBounds 不受此限**，所以显示后校准一次。
 		// show() 与本句同一 tick 完成（中间没有渲染机会），不会看到「先从 221 跳到目标位」（实测见 IMPL-NOTES）。
-		if (bounds && (window.getBounds().x !== bounds.x || window.getBounds().y !== bounds.y)) {
+		if (
+			bounds &&
+			!window.isDestroyed() &&
+			(window.getBounds().x !== bounds.x || window.getBounds().y !== bounds.y)
+		) {
 			window.setBounds(bounds);
 		}
 	});
