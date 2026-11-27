@@ -134,10 +134,16 @@ export function assertValidVersion(version) {
 }
 
 export function validateVerifyPlatform(platform) {
-	if (platform !== "win" && platform !== "mac") {
-		throw new Error(`Invalid verify platform "${String(platform)}" (expected win or mac)`);
+	if (platform !== "win" && platform !== "mac" && platform !== "linux") {
+		throw new Error(`Invalid verify platform "${String(platform)}" (expected win, mac, or linux)`);
 	}
 	return platform;
+}
+
+export function formatLinuxArtifactArch(arch) {
+	if (arch === "x64") return "x86_64";
+	if (arch === "arm64") return "arm64";
+	throw new Error(`Invalid Linux verify arch "${String(arch)}" (expected x64 or arm64)`);
 }
 
 export function resolveVerifyPlatform({ platform, releaseDir, hostPlatform = process.platform } = {}) {
@@ -149,11 +155,16 @@ export function resolveVerifyPlatform({ platform, releaseDir, hostPlatform = pro
 		if (/(?:^|[-_])mac(?:[-_](?:arm64|x64))?$/i.test(dirName)) {
 			return "mac";
 		}
+		if (/(?:^|[-_])linux(?:[-_](?:x64|arm64))?$/i.test(dirName)) {
+			return "linux";
+		}
 		if (/(?:^|[-_])win(?:[-_]x64)?$/i.test(dirName)) {
 			return "win";
 		}
 	}
-	return hostPlatform === "darwin" ? "mac" : "win";
+	if (hostPlatform === "darwin") return "mac";
+	if (hostPlatform === "linux") return "linux";
+	return "win";
 }
 
 export function resolveVerifyArchitectures(platform, arch) {
@@ -164,6 +175,11 @@ export function resolveVerifyArchitectures(platform, arch) {
 			throw new Error(`Invalid Windows verify arch "${String(arch)}" (expected x64)`);
 		}
 		return ["x64"];
+	}
+	if (validPlatform === "linux") {
+		const requested = arch ?? "x64";
+		if (requested === "x64" || requested === "arm64") return [requested];
+		throw new Error(`Invalid Linux verify arch "${String(arch)}" (expected x64 or arm64)`);
 	}
 	const requested = arch ?? "all";
 	if (requested === "all") return ["arm64", "x64"];
@@ -180,6 +196,21 @@ export function getExpectedArtifactNames(version, options = {}) {
 		return {
 			setupExe,
 			portableZip,
+			sha256Sums: "SHA256SUMS.txt",
+			readme: "使用说明.txt",
+		};
+	}
+
+	if (platform === "linux") {
+		const archs = resolveVerifyArchitectures("linux", options.arch);
+		const appImageFiles = archs.map(
+			(a) => `Wenyou-Pro-${version}-linux-${formatLinuxArtifactArch(a)}.AppImage`,
+		);
+		return {
+			platform: "linux",
+			archs,
+			appImageFiles,
+			artifacts: appImageFiles,
 			sha256Sums: "SHA256SUMS.txt",
 			readme: "使用说明.txt",
 		};
@@ -590,9 +621,10 @@ export async function verifyReadmeFile(readmePath, version, options = {}) {
 		}
 	}
 
-	if (platform === "mac" && /%USERPROFILE%|%APPDATA%|%LOCALAPPDATA%/i.test(text)) {
+	if (platform !== "win" && /%USERPROFILE%|%APPDATA%|%LOCALAPPDATA%/i.test(text)) {
+		const label = platform === "mac" ? "macOS" : "Linux";
 		throw new Error(
-			`${names.readme} for macOS must not contain Windows environment path placeholders (%USERPROFILE%/%APPDATA%)`,
+			`${names.readme} for ${label} must not contain Windows environment path placeholders (%USERPROFILE%/%APPDATA%)`,
 		);
 	}
 
@@ -1129,6 +1161,49 @@ export async function verifyUnpackedApp(appDir, version, options = {}) {
 	};
 }
 
+export async function resolveLinuxUnpackedDir(rawDir, arch = "x64") {
+	const candidates =
+		arch === "arm64"
+			? [join(rawDir, "linux-arm64-unpacked"), join(rawDir, "linux-unpacked")]
+			: [join(rawDir, "linux-unpacked"), join(rawDir, "linux-x64-unpacked")];
+
+	for (const candidate of candidates) {
+		try {
+			const info = await stat(candidate);
+			if (info.isDirectory()) return candidate;
+		} catch {
+			// try next candidate
+		}
+	}
+	throw new Error(
+		`Missing Linux unpacked app directory for ${arch}: expected ${candidates.map((p) => sanitizePathForDisplay(p)).join(" or ")}`,
+	);
+}
+
+export async function verifyLinuxUnpackedApp(appDir, version, options = {}) {
+	assertValidVersion(version);
+	await assertDirectoryExists(appDir, `Linux unpacked appDir (${sanitizePathForDisplay(appDir)})`);
+
+	const executablePath = join(appDir, "wenyou-pro");
+	const exeInfo = await assertNonEmptyFile(executablePath, "wenyou-pro");
+
+	const resourcesDir = join(appDir, "resources");
+	await assertDirectoryExists(resourcesDir, "resources");
+
+	const archivePath = join(resourcesDir, "app.asar");
+	const asarReport = await verifyAppAsar(archivePath, version, options);
+	const extraResources = await verifyExtraResources(resourcesDir, { platform: "linux" });
+	const locales = await verifyUnpackedLocales(appDir);
+
+	return {
+		appDir: sanitizePathForDisplay(appDir),
+		executableSize: exeInfo.size,
+		...asarReport,
+		extraResources,
+		locales,
+	};
+}
+
 export async function resolveMacAppBundlePath(rawDir, arch) {
 	const candidates =
 		arch === "arm64"
@@ -1311,7 +1386,11 @@ export async function verifyWenyouRelease(options = {}) {
 		: resolve(
 				repoRoot,
 				"dist",
-				platform === "win" ? `wenyou-pro-${version}-win-x64` : `wenyou-pro-${version}-mac`,
+				platform === "win"
+					? `wenyou-pro-${version}-win-x64`
+					: platform === "mac"
+						? `wenyou-pro-${version}-mac`
+						: `wenyou-pro-${version}-linux-${archs[0]}`,
 			);
 	const extractCheck = Boolean(options.extractCheck);
 	const names = getExpectedArtifactNames(version, { platform, arch: options.arch });
@@ -1363,6 +1442,27 @@ export async function verifyWenyouRelease(options = {}) {
 		};
 	}
 
+	if (platform === "linux") {
+		const rawDir = join(releaseDir, "raw");
+		const unpackedDir = await resolveLinuxUnpackedDir(rawDir, archs[0]);
+		const unpacked = await verifyLinuxUnpackedApp(unpackedDir, version, {
+			repoRoot,
+			asarModule: options.asarModule,
+		});
+
+		return {
+			ok: true,
+			platform: "linux",
+			archs,
+			version,
+			releaseDir: sanitizePathForDisplay(releaseDir),
+			topLevel,
+			sha256,
+			readme,
+			unpacked,
+		};
+	}
+
 	// macOS verification
 	const rawDir = join(releaseDir, "raw");
 	const appBundles = {};
@@ -1406,13 +1506,13 @@ function printUsage() {
 			"Usage: node scripts/wenyou-release/verify-package.mjs [options]",
 			"",
 			"Options:",
-			"  --platform <win|mac>   Target platform (default: auto-detected from --release-dir or host OS)",
-			"  --arch <x64|arm64|all> Target architecture (mac default: all; win default: x64)",
-			"  --version <ver>        Target release version (default: packages/desktop/package.json)",
-			"  --release-dir <dir>    Release directory (default: dist/wenyou-pro-<ver>-win-x64 or -mac)",
-			"  --extract-check        [Windows] Extract Portable.zip to a clean temp dir and re-verify closure",
-			"  --repo-root <dir>      Override repository root path",
-			"  -h, --help             Show this help message",
+			"  --platform <win|mac|linux> Target platform (default: auto-detected from --release-dir or host OS)",
+			"  --arch <x64|arm64|all>     Target architecture (mac default: all; win/linux default: x64)",
+			"  --version <ver>            Target release version (default: packages/desktop/package.json)",
+			"  --release-dir <dir>        Release directory (default: dist/wenyou-pro-<ver>-win-x64, -mac, or -linux-<arch>)",
+			"  --extract-check            [Windows] Extract Portable.zip to a clean temp dir and re-verify closure",
+			"  --repo-root <dir>          Override repository root path",
+			"  -h, --help                 Show this help message",
 		].join("\n"),
 	);
 }

@@ -69,16 +69,9 @@ function editableState(state: TheaterState): CachedTheater {
   if (map.source.overlayAlpha !== undefined) {
     source.overlayAlpha = map.source.overlayAlpha;
   }
-  if (map.source.kmPerPixel !== undefined) {
-    source.kmPerPixel = map.source.kmPerPixel;
-  } else if (map.source.baseKind === 'image') {
-    source.kmPerPixel = undefined;
-  }
-  if (map.source.mapWidthKm !== undefined) {
-    source.mapWidthKm = map.source.mapWidthKm;
-  } else if (map.source.baseKind === 'image') {
-    source.mapWidthKm = undefined;
-  }
+  // 无论 FMG 底图还是图片底图，清空比例尺时都显式写入 undefined 覆盖 __base__ 缓存中的旧值
+  source.kmPerPixel = map.source.kmPerPixel;
+  source.mapWidthKm = map.source.mapWidthKm;
   if (map.source.retouchStrokes !== undefined) {
     source.retouchStrokes = structuredClone(map.source.retouchStrokes);
   }
@@ -116,8 +109,11 @@ export async function readTheater(mapId: string): Promise<TheaterState | undefin
     }
     // 缓存版本始终比 TheaterState 高 1：v5 快照对应 v4 状态，v4 快照对应 v3 状态。
     // 缺可编辑段或版本未知的记录仍合并基底，由下面的结构检查统一报错。
+    const mergedSource = { ...base.source, ...saved.mapData?.source };
+    if (mergedSource.kmPerPixel === undefined) delete mergedSource.kmPerPixel;
+    if (mergedSource.mapWidthKm === undefined) delete mergedSource.mapWidthKm;
     saved = { ...saved, version: cacheVersion === 5 ? 4 : cacheVersion === 4 ? 3 : cacheVersion === 3 ? 2 : cacheVersion, mapData: { ...base, ...saved.mapData,
-      source: { ...base.source, ...saved.mapData?.source }, cells: { ...base.cells, ...saved.mapData?.cells } } };
+      source: mergedSource, cells: { ...base.cells, ...saved.mapData?.cells } } };
   }
   if (![1, 2, 3, 4].includes(saved.version) || saved.mapData?.source?.mapId !== mapId ||
       !(saved.mapData.cells.h instanceof Uint8Array) ||
@@ -151,8 +147,11 @@ export function captureTheater(): TheaterState {
   };
   const edits = structuredClone(editableState(state));
   // 几何、原图和未编辑的地理资料保持共享，只复制本次可编辑状态。
+  const mergedSource = { ...state.mapData.source, ...edits.mapData.source };
+  if (mergedSource.kmPerPixel === undefined) delete mergedSource.kmPerPixel;
+  if (mergedSource.mapWidthKm === undefined) delete mergedSource.mapWidthKm;
   return { ...state, ...edits, version: 4, mapData: { ...state.mapData, ...edits.mapData,
-    source: { ...state.mapData.source, ...edits.mapData.source },
+    source: mergedSource,
     cells: { ...state.mapData.cells, ...edits.mapData.cells } } };
 }
 

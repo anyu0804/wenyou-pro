@@ -19,15 +19,16 @@ export function releasePlan(version, sourceCommit, requiredChannel) {
 export async function currentRelease({ version, channel } = {}) {
 	const desktop = JSON.parse(await readFile(resolve(root, "packages/desktop/package.json"), "utf8"));
 	const tag = process.env.PERCHO_BUILD_RELEASE_TAG || undefined;
-	if (tag && !tag.startsWith("v")) throw new Error("Release tags must start with v");
-	if (version && tag && tag !== `v${version}`) throw new Error("Version and release tag disagree");
+	const tagMatch = tag ? /^(?:wenyou-)?v(.+)$/.exec(tag) : null;
+	if (tag && !tagMatch) throw new Error("Release tags must start with v or wenyou-v");
+	if (version && tagMatch && tagMatch[1] !== version) throw new Error("Version and release tag disagree");
 	const commit = execFileSync("git", ["-c", `safe.directory=${root}`, "rev-parse", "HEAD"], {
 		cwd: root,
 		encoding: "utf8",
 	}).trim();
 	if (process.env.PERCHO_BUILD_SOURCE_COMMIT && process.env.PERCHO_BUILD_SOURCE_COMMIT !== commit)
 		throw new Error("Release source commit does not match the checkout");
-	return releasePlan(version ?? tag?.slice(1) ?? desktop.version, commit, channel);
+	return releasePlan(version ?? tagMatch?.[1] ?? desktop.version, commit, channel);
 }
 
 export function nativeApp(output, platform, arch, productName) {
@@ -41,11 +42,11 @@ export function nativeApp(output, platform, arch, productName) {
 export function appExecutable(app, platform, productName, channel) {
 	if (platform === "darwin") return resolve(app, "Contents/MacOS", productName);
 	if (platform === "win32") return resolve(app, `${productName}.exe`);
-	return resolve(app, channel === "beta" ? "percho-beta" : "percho");
+	return resolve(app, channel === "beta" ? "percho-beta" : "wenyou-pro");
 }
 
 export function artifactNames(release, platform, architectures) {
-	const prefix = release.prerelease ? `percho-beta-${release.version}` : "percho";
+	const prefix = release.prerelease ? `percho-beta-${release.version}` : "wenyou-pro";
 	if (platform === "darwin")
 		return architectures.flatMap((arch) => [`${prefix}-mac-${arch}.dmg`, `${prefix}-mac-${arch}.zip`]);
 	if (platform === "win32") return [`${prefix}-windows-x64.exe`, `${prefix}-windows-x64.zip`];

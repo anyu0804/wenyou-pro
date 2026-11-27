@@ -72,7 +72,7 @@ npm run dev
 如需启用可选的世界资料接口（支持 `immortal-game1` 与 `civ4-game2`），在启动服务的同一终端中设置 `WENYOU_WORLDS_ROOT` 指向实际的 `worlds` 目录即可；未配置不影响沙盘与工程导入导出：
 
 ```powershell
-$env:WENYOU_WORLDS_ROOT = 'D:/path/to/wenyou-world-data/worlds'
+$env:WENYOU_WORLDS_ROOT = './path/to/wenyou-world-data/worlds'
 npm run dev
 ```
 
@@ -88,19 +88,18 @@ npm run dev
 | 撤销与重做 | `Ctrl+Z` / `Ctrl+Y`（或 `Ctrl+Shift+Z`） | 主地图按当前工具归属撤回画笔或战术标绘；战场窗口使用独立撤销栈 |
 | 战场窗口 | 单击地图战场按钮 / 双击 / 右键 | 打开窗口 / 重命名 / 重命名或删除战场 |
 
-完整玩家向操作步骤见 [使用说明.md](./使用说明.md)。
+完整项目使用说明与验收标准见 [README.zh.md](../../README.zh.md) 与 [ACCEPTANCE.md](../../ACCEPTANCE.md)。
 
 ---
 
 ## 目录结构与模块分工
 
 ```text
-wenyou-pixi-app/
+packages/pixi-sandbox/
 ├── index.html                  # 页面入口与基础样式
-├── server.mjs                  # 独立发布包静态服务（默认 5174，支持 gzip/ETag 与边界校验）
-├── serve-dist.mjs              # 源码目录日常秒开服务（固定 5173，托管 dist/）
+├── package.json                # 独立构建、类型检查与测试脚本
+├── vite.config.ts              # Vite 构建配置（含 build:desktop 输出到桌面端内置资源）
 ├── world-data.mjs              # 可选世界资料 API 数据读取器
-├── 启动静态沙盘.cmd             # Windows 日常静态秒开脚本（纯 ASCII）
 ├── src/                        # 50 个 TypeScript 源码模块
 │   ├── main.ts                 # 唯一组装根：Pixi Application、图层 Z 序与按序初始化
 │   ├── store.ts                # 全局状态与事件总线（appStore）
@@ -115,15 +114,12 @@ wenyou-pixi-app/
 │   ├── garrison-*.ts           # 兵牌层、兵牌设计器弹窗与军标渲染（military-symbols.ts）
 │   ├── battle-*.ts             # 团级战役契约、几何求解、ORBAT 编辑器、候选 JSON 导入与 PNG 导出
 │   └── field-battle-*.ts       # 独立局部战场涂选、地形裁剪、窗口与场景
-├── tests/                      # 测试文件及固定回归 fixture
+├── tests/                      # 21 组纯 Node 单测、浏览器验收测试及固定回归 fixture
 ├── public/                     # 静态附属文件（第三方声明）
-├── ARCHITECTURE.md             # 50 个源文件的完整职责地图与开发红线
-├── 沙盘功能添加与AI协作开发者指南.md # 图层树、事件约定与新增功能步骤
-├── 使用说明.md                  # 面向玩家的中文操作手册
-└── walkthrough.md              # 按版本追加的交付与排障日志
+└── ARCHITECTURE.md             # 50 个源文件的完整职责地图与开发红线
 ```
 
-修改 `src/` 前请先阅读 [ARCHITECTURE.md](./ARCHITECTURE.md) 与 [沙盘功能添加与AI协作开发者指南.md](./沙盘功能添加与AI协作开发者指南.md)。
+修改 `src/` 前请先阅读 [ARCHITECTURE.md](./ARCHITECTURE.md) 与全仓索引 [DIRECTORY_INDEX.md](../../DIRECTORY_INDEX.md)。
 
 ---
 
@@ -135,10 +131,12 @@ wenyou-pixi-app/
 | --- | --- |
 | `npm run typecheck` | TypeScript 严格模式类型检查（`tsc --noEmit`） |
 | `npm run build` | 类型检查并产出生产静态包到 `dist/` |
+| `npm run build:desktop` | 类型检查并编译桌面端内置沙盘资源至 `packages/desktop/resources/pixi-sandbox/` |
 | `npm test` | 运行基础单元测试（`tests/unit.test.mjs`，覆盖解析、分层、工程往返与城市名双开关） |
+| `npm run test:ci` | **CI 默认纯 Node 单测全集**：顺序运行全部 21 个纯 Node 单元测试文件（不含 Playwright 浏览器与打包 E2E） |
 | `npm run test:battle` | 运行 12 组团级战役域测试（编制、几何、部署求解、导入导出、军标与面板） |
 | `npm run test:browser` | 运行 3 组 Playwright 浏览器端到端回归（`bugfix`、`theater-switch`、`export-import`） |
-| `npm run check` | **修改 `src/` 后的最低验收门槛**：依次运行 `typecheck`、`test`、`test:battle`、`test:browser` 与 `tests/field-battle-acceptance.test.mjs`（11 组野战场景） |
+| `npm run check` | **修改 `src/` 后的完整本地验收门槛**：依次运行 `typecheck`、`test`、`test:battle`、`test:browser` 与 `tests/field-battle-acceptance.test.mjs`（11 组野战场景） |
 | `npm run test:package` | 发布包全量验收（`tests/battle-release.test.mjs`），在全新解压的 Release 目录上运行 |
 | `npm run setup:browser` | 安装 Playwright 测试用独立 Chromium Headless Shell |
 
@@ -158,30 +156,22 @@ TMP=.tmp-build/tmp TEMP=.tmp-build/tmp npm run check
 
 ---
 
-## 独立发布包构建与验收
+## 独立发布包验收说明
 
-发布目录位于上级目录（当前为 `../Wenyou-Pixi-v0.9.1-Release/` 及同名 `.zip`，历史发布包统一归档在 `../_archive/releases/`）。单个发布包包含：
-
-- `runtime/node.exe`：独立 Node 运行时（当前为 `v24.22.1`）
-- `www/`：由 `npm run build` 完整产出的 `dist/`（含 `index.html`、`assets/*`、`THIRD-PARTY-NOTICES.txt`）
-- `server.mjs` 与 `world-data.mjs`：离线静态服务与可选世界资料读取器
-- `启动沙盘.bat`：纯 ASCII + CRLF 编码的 Windows 启动脚本
-- `VERSION.txt`、`使用说明.md`、`walkthrough.md`：版本标记与说明文档（UTF-8）
-
-打包完成后，将最终 `.zip` 解压到全新目录并设置 `PACKAGED_RELEASE_DIR` 运行包验收，确认内置运行时、资源依赖闭包、全量 HTTP 200 及核心浏览器工作流均正常：
+如需针对独立解压目录运行发布包 E2E 回归（`tests/battle-release.test.mjs`），将 `PACKAGED_RELEASE_DIR` 指向解压后的目录再运行：
 
 ```powershell
-$env:PACKAGED_RELEASE_DIR = 'D:/temp/verify/Wenyou-Pixi-v0.9.1-Release'
+$env:PACKAGED_RELEASE_DIR = './path/to/extracted/Wenyou-Pixi-Release'
 npm run test:package
 ```
 
 ---
 
-## 版本演进
+## 版本演进与开源致谢
 
 - **v0.9.1**：修复新版 FMG `.map` 中 `nameBases` 含裸换行导致的解析错位；新增同 `mapId` 重导入覆盖确认与「删除战区」回空沙盘功能；主地图与野战窗口同步新增城市名手动大小（`50%–240%`）与动态双开关；扩大兵牌缩放至 `35%–240%` 并新增字体颜色自定义、移除战术图腾；放大标准/紧凑兵牌修复重叠溢出，修复野战按钮重复「战场」后缀及编制编辑器排版挤压。
-- **v0.9.0**：合并自 `v0.6.0-hotfix4` 起的全部迭代，涵盖城市密集度分级 LOD 避让优化、移除战史编年史模块、本地静态服务路径边界加固，并将内置运行时升级至 Node `v24.22.1`。
+- **v0.9.0**：合并自 `v0.6.0-hotfix4` 起的全部迭代，涵盖城市密集度分级 LOD 避让优化、移除战史编年史模块、本地静态服务路径边界加固。
 - **v0.6.0 系列**：新增独立局部战场快照与窗口、真实部队拆分、空沙盘启动与 FMG `v1.154` 头部布局兼容。
 - **v0.5.0 – v0.5.1**：引入 BATTLE-1 团级战役展开（ORBAT、部署求解、战役候选 JSON 导入、PNG 简报）、8 档兵力军标、自定义图片兵牌与 32 倍短战线绘制。
 
-各版本的详细改动背景、测试证据与环境边界记录在 [walkthrough.md](./walkthrough.md)。
+本沙盘模块随 **司命 · 文游 Pro（Wenyou Pro）**（维护者：**安钰**）集成发布；桌面宿主工程基于上游开源项目 **[`Jaxton07/percho`](https://github.com/Jaxton07/percho)**（MIT License，详见仓库根 [LICENSE](../../LICENSE)）深度定制演进，特此致谢。更多工程边界与验收规范请参见 [ARCHITECTURE.md](./ARCHITECTURE.md) 与 [ACCEPTANCE.md](../../ACCEPTANCE.md)。

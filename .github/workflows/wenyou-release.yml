@@ -232,6 +232,7 @@ jobs:
         timeout-minutes: 10
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          WIN_BUILD_RESULT: ${{ needs.build-windows.result }}
         shell: bash
         run: |
           set -euo pipefail
@@ -242,29 +243,17 @@ jobs:
             TAG="wenyou-v${VERSION}"
           fi
 
-          mkdir -p release-upload
+          STAGE_ARGS=(--mac-dir release-staging/mac --out-dir release-upload)
+          if [ "${WIN_BUILD_RESULT}" = "success" ]; then
+            STAGE_ARGS+=(--win-dir release-staging/win --require-windows)
+          fi
+          node scripts/wenyou-release/stage-release-assets.mjs "${STAGE_ARGS[@]}"
+
           shopt -s nullglob
-
-          for f in release-staging/mac/*.dmg release-staging/mac/*.zip; do
-            cp "$f" release-upload/
-          done
-          if [ -f release-staging/mac/SHA256SUMS.txt ]; then
-            cp release-staging/mac/SHA256SUMS.txt release-upload/SHA256SUMS-macOS.txt
-          fi
-          if [ -f release-staging/mac/使用说明.txt ]; then
-            cp release-staging/mac/使用说明.txt release-upload/使用说明-macOS.txt
-          fi
-
-          if [ -d release-staging/win ]; then
-            for f in release-staging/win/*.exe release-staging/win/*.zip; do
-              cp "$f" release-upload/
-            done
-            if [ -f release-staging/win/SHA256SUMS.txt ]; then
-              cp release-staging/win/SHA256SUMS.txt release-upload/SHA256SUMS-Windows-x64.txt
-            fi
-            if [ -f release-staging/win/使用说明.txt ]; then
-              cp release-staging/win/使用说明.txt release-upload/使用说明-Windows-x64.txt
-            fi
+          UPLOAD_FILES=(release-upload/*)
+          if [ "${#UPLOAD_FILES[@]}" -eq 0 ]; then
+            echo "::error::Release staging hard gate failed: release-upload/ contains 0 files." >&2
+            exit 1
           fi
 
           printf '%s\n' \
@@ -278,9 +267,9 @@ jobs:
             > release-notes.md
 
           if gh release view "${TAG}" >/dev/null 2>&1; then
-            gh release upload "${TAG}" release-upload/* --clobber
+            gh release upload "${TAG}" "${UPLOAD_FILES[@]}" --clobber
           else
-            gh release create "${TAG}" release-upload/* \
+            gh release create "${TAG}" "${UPLOAD_FILES[@]}" \
               --title "Wenyou Pro v${VERSION}" \
               --notes-file release-notes.md
           fi

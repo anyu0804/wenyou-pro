@@ -1494,7 +1494,7 @@ function clearContainer(container: Container) {
   for (let i = container.children.length - 1; i >= 0; i--) {
     const child = container.children[i];
     container.removeChild(child);
-    child.destroy({ children: true });
+    child.destroy({ children: true, context: true });
   }
 }
 

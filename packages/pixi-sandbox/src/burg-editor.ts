@@ -52,19 +52,27 @@ let initialized = false;
 let canvasEl: HTMLCanvasElement | null = null;
 let rootEl: HTMLElement | null = null;
 let modalEl: HTMLDivElement | null = null;
+let noticeEl: HTMLDivElement | null = null;
+let noticeTimer: ReturnType<typeof setTimeout> | null = null;
 let indicator: Graphics | null = null;
 let indicatorVisible = false;
 let indicatorX = 0;
 let indicatorY = 0;
 let indicatorColor = '#22d3ee';
 let press: BurgPress | EmptyPress | null = null;
+let locateCellFn: (x: number, y: number) => number = cellAt;
 
 /** P0 在 `initBrushPanel` 之后调用本入口；地图尚未加载时仍先绑定事件，命中时再取 store。 */
-export function initBurgEditor(canvas: HTMLCanvasElement, mountEl: HTMLElement): void {
+export function initBurgEditor(
+  canvas: HTMLCanvasElement,
+  mountEl: HTMLElement,
+  locateCell: (x: number, y: number) => number = cellAt
+): void {
   if (initialized) return;
   initialized = true;
   canvasEl = canvas;
   rootEl = mountEl;
+  locateCellFn = locateCell;
 
   indicator = new Graphics();
   terrainContainer.addChild(indicator);
@@ -78,11 +86,13 @@ export function initBurgEditor(canvas: HTMLCanvasElement, mountEl: HTMLElement):
     cancelPress();
     closeModal();
     hideIndicator();
+    hideConflictNotice();
   });
   appStore.on('map:loaded', () => {
     cancelPress();
     closeModal();
     hideIndicator();
+    hideConflictNotice();
   });
   window.addEventListener('pointercancel', onWindowPointerCancel);
   appStore.on('brush:changed', syncCursor);
@@ -123,6 +133,67 @@ function burgAt(map: MapData, mapX: number, mapY: number): BurgItem | null {
 
 function isLand(map: MapData, cell: number): boolean {
   return cell >= 0 && map.cells.h[cell] >= LAND_LEVEL;
+}
+
+/** 查找占据指定 Voronoi 地块的活跃城邑（排除已删除城邑与可选的自身 ID）。 */
+export function findBurgOccupyingCell(
+  map: MapData,
+  cell: number,
+  excludeBurgId?: number
+): BurgItem | null {
+  if (!Number.isInteger(cell) || cell < 0 || cell >= map.cells.count) return null;
+  for (const burg of map.burgs) {
+    if (burg.removed) continue;
+    if (excludeBurgId !== undefined && burg.i === excludeBurgId) continue;
+    if (burg.cell === cell) return burg;
+  }
+  return null;
+}
+
+/** 前置校验：目标地块须为陆地且未被其他城邑占用（符合 FMG 单格单城规范）。 */
+export function canPlaceBurgAtCell(
+  map: MapData,
+  cell: number,
+  excludeBurgId?: number
+): { ok: true } | { ok: false; reason: 'not-land' | 'occupied'; occupant?: BurgItem } {
+  if (!isLand(map, cell)) {
+    return { ok: false, reason: 'not-land' };
+  }
+  const occupant = findBurgOccupyingCell(map, cell, excludeBurgId);
+  if (occupant) {
+    return { ok: false, reason: 'occupied', occupant };
+  }
+  return { ok: true };
+}
+
+function showConflictNotice(message: string): void {
+  if (!rootEl) return;
+  if (noticeTimer !== null) {
+    clearTimeout(noticeTimer);
+    noticeTimer = null;
+  }
+  if (!noticeEl) {
+    noticeEl = rootEl.ownerDocument.createElement('div');
+    noticeEl.id = 'wenyou-burg-editor-notice';
+    noticeEl.setAttribute('role', 'alert');
+    rootEl.appendChild(noticeEl);
+  }
+  noticeEl.textContent = message;
+  noticeEl.hidden = false;
+  noticeTimer = setTimeout(() => {
+    hideConflictNotice();
+  }, 3500);
+}
+
+function hideConflictNotice(): void {
+  if (noticeTimer !== null) {
+    clearTimeout(noticeTimer);
+    noticeTimer = null;
+  }
+  if (noticeEl) {
+    noticeEl.hidden = true;
+    noticeEl.textContent = '';
+  }
 }
 
 // --- 指针交互 ---------------------------------------------------------------
@@ -190,7 +261,9 @@ function onWindowPointerMove(event: PointerEvent): void {
 
   const map = appStore.mapData!;
   const [mapX, mapY] = toMap(event.clientX, event.clientY);
-  showIndicator(mapX, mapY, isLand(map, cellAt(mapX, mapY)) ? '#22d3ee' : '#ef4444');
+  const targetCell = locateCellFn(mapX, mapY);
+  const check = canPlaceBurgAtCell(map, targetCell, press.burg.i);
+  showIndicator(mapX, mapY, check.ok ? '#22d3ee' : '#ef4444');
 }
 
 function onWindowPointerUp(event: PointerEvent): void {
@@ -211,8 +284,15 @@ function onWindowPointerUp(event: PointerEvent): void {
     const moved = Math.hypot(event.clientX - current.downClientX, event.clientY - current.downClientY);
     if (moved < DRAG_THRESHOLD_PX) {
       const map = appStore.mapData!;
-      const cell = cellAt(current.mapX, current.mapY);
-      if (isLand(map, cell)) openCreateModal(current.mapX, current.mapY, cell);
+      const cell = locateCellFn(current.mapX, current.mapY);
+      const check = canPlaceBurgAtCell(map, cell);
+      if (check.ok) {
+        hideConflictNotice();
+        openCreateModal(current.mapX, current.mapY, cell);
+      } else if (check.reason === 'occupied' && check.occupant) {
+        showIndicator(current.mapX, current.mapY, '#ef4444');
+        showConflictNotice(`地块 #${cell} 已有城市「${check.occupant.name}」，每格仅允许一座城市`);
+      }
     }
   }
 
@@ -224,14 +304,22 @@ function onWindowPointerUp(event: PointerEvent): void {
 function commitDrag(current: BurgPress, event: PointerEvent): void {
   const map = appStore.mapData!;
   const [mapX, mapY] = toMap(event.clientX, event.clientY);
-  const cell = cellAt(mapX, mapY);
+  const cell = locateCellFn(mapX, mapY);
 
-  if (!isLand(map, cell)) {
+  const check = canPlaceBurgAtCell(map, cell, current.burg.i);
+  if (!check.ok) {
     current.burg.x = current.originX;
     current.burg.y = current.originY;
+    current.burg.cell = current.originCell;
+    current.burg.state = current.originState;
+    current.burg.province = current.originProvince;
     showIndicator(current.originX, current.originY, '#22d3ee');
+    if (check.reason === 'occupied' && check.occupant) {
+      showConflictNotice(`地块 #${cell} 已有城市「${check.occupant.name}」，每格仅允许一座城市，已保持原位`);
+    }
     return;
   }
+  hideConflictNotice();
 
   const newState = map.cells.state[cell];
   const newProvince = map.cells.province[cell];
@@ -532,6 +620,16 @@ interface BurgFormValues {
 
 function saveBurg(session: ModalSession, values: BurgFormValues): void {
   const { map, burg, burgId, mapX, mapY, cell } = session;
+  if (!burg) {
+    const check = canPlaceBurgAtCell(map, cell);
+    if (!check.ok) {
+      closeModal();
+      if (check.reason === 'occupied' && check.occupant) {
+        showConflictNotice(`地块 #${cell} 已有城市「${check.occupant.name}」，每格仅允许一座城市`);
+      }
+      return;
+    }
+  }
   const state = findState(map, values.stateId);
   const province = findProvince(map, values.provinceId);
 
@@ -723,6 +821,15 @@ function injectStyles(doc: Document): void {
   #wenyou-burg-editor-overlay .be-btn-primary:hover { background: #1d4ed8; }
   #wenyou-burg-editor-overlay .be-btn-danger { background: rgba(127, 29, 29, 0.4); border-color: rgba(248, 113, 113, 0.5); color: #fecaca; }
   #wenyou-burg-editor-overlay .be-btn-danger:hover { background: rgba(153, 27, 27, 0.6); }
+  #wenyou-burg-editor-notice {
+    position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%); z-index: 1010;
+    padding: 8px 14px; border-radius: 8px;
+    background: rgba(127, 29, 29, 0.94); color: #fee2e2;
+    border: 1px solid rgba(248, 113, 113, 0.6);
+    font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+    font-size: 12px; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+    pointer-events: none;
+  }
   `;
   doc.head.appendChild(style);
 }

@@ -1496,11 +1496,12 @@ function ensureSceneStyles(): void {
         localImageTexture = null;
       }
 
-      // 从 host 移除并销毁相机容器（不销毁纹理，不调用 texture.destroy）
+      // 从 host 移除并销毁相机容器（释放全部 GraphicsContext，但不销毁主地图共享纹理）
+      baseImageLayer.mask = null;
       if (viewport.parent) {
         viewport.parent.removeChild(viewport);
       }
-      viewport.destroy({ children: true, texture: false, textureSource: false });
+      viewport.destroy({ children: true, texture: false, textureSource: false, context: true });
     },
 
     saveView(): { scale: number; x: number; y: number } | undefined {

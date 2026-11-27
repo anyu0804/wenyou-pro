@@ -31,9 +31,9 @@ npm run typecheck     # 全工作区 TypeScript 类型检查
 npm run test          # 发布门禁与全工作区单元测试
 ```
 
-When modifying `packages/pixi-sandbox/`, also run `npm --prefix packages/pixi-sandbox run test` and `npm --prefix packages/pixi-sandbox run build:desktop`.
+When modifying `packages/pixi-sandbox/`, also run `npm --prefix packages/pixi-sandbox run test:ci` and `npm --prefix packages/pixi-sandbox run build:desktop`.
 
-4. Open a PR against `main` in [`anyu0804/wenyou-pro`](https://github.com/anyu0804/wenyou-pro/pulls). `Wenyou Pro CI` (`.github/workflows/ci.yml`) runs the automated gate suite — path sanitization (`check:paths`), cloud anti-lockout verification (`repo:guard`), `pixi-sandbox` unit tests and desktop build, workspace TypeScript `typecheck`, release & `wenyou-release` script tests (`test:release` + `scripts/wenyou-release/*.test.mjs`), and workspace unit tests (`npm run test --workspaces --if-present`) — and must be green before merge (`npm run lint` remains a local code-style check command).
+4. Open a PR against `main` in [`anyu0804/wenyou-pro`](https://github.com/anyu0804/wenyou-pro/pulls). `Wenyou Pro CI` (`.github/workflows/ci.yml`) runs the automated gate suite — path sanitization (`check:paths`), cloud anti-lockout verification (`repo:guard`), `pixi-sandbox` pure-Node unit tests (`test:ci`) and desktop build, workspace TypeScript `typecheck`, release & `wenyou-release` script tests (`test:release` + `scripts/wenyou-release/*.test.mjs`), and workspace unit tests (`npm run test --workspaces --if-present`) — and must be green before merge (`npm run lint` remains a local code-style check command).
 5. PRs are merged with squash merge — please write a clear Conventional Commit PR title, since it becomes the squashed commit message.
 
 ## Commit messages
@@ -49,7 +49,7 @@ These are hard-won invariants — please follow them strictly:
 - **Formatting** is enforced by Biome: tabs, double quotes, line width 110. Run `npm run lint` instead of hand-formatting.
 - **Renderer never imports Pi packages.** It talks to the main process exclusively through `window.pi` (preload contextBridge). Single-source IPC channel definitions live in [packages/shared/src/ipc-channels.ts](packages/shared/src/ipc-channels.ts) and [packages/shared/src/ipc.ts](packages/shared/src/ipc.ts).
 - **`packages/backend/src/pi-backend.ts` is the only file** allowed to import the Pi SDK (`@earendil-works/*`). SDK versions are pinned — do not upgrade casually.
-- **Wenyou Vault & perspective security**: Never bypass `makeWenyouExtension` `tool_call` non-GM isolation and `.wenyou/`/`private/` bash protection, `maxViewer` clamping, `:::secret[...]` stripping, or `wenyou-asset://vault` workspace allowlists.
+- **Wenyou Vault & protocol security**: Never bypass `wenyou-asset://vault` GET/HEAD-only workspace allowlists and `private/`/`.wenyou/` read blocks, `packages/backend/src/wenyou/vault-paths.ts` `realpath` boundary checks, `wenyou-sandbox://app` CORS/CSP and workspace-hash IndexedDB isolation, or NTQQ VFS read-only boundaries.
 - **i18n & brand cleanliness**: User-facing strings go through `useT()` and must be added to both `zh` and `en` dictionaries in `packages/desktop/src/renderer/src/i18n/`. Preserve the upstream MIT attribution to `Jaxton07/percho` while keeping user-facing brand strings clean (`brand-cleanliness.test.ts`).
 - **Zustand selectors must return stable references** (module-level constants for empty values). Inline `?? []` creates a new array every render and causes infinite loops.
 - **Never commit API keys, NTQQ `key_map.json`, or campaign secrets.** `models.json` uses environment variable references (`$VAR`); keys live only in your local environment.
@@ -57,7 +57,7 @@ These are hard-won invariants — please follow them strictly:
 ## Architecture pointers
 
 - **Multi-session support**: `SessionRegistry` (`packages/backend/src/session/registry.ts`) holds multiple `AgentSession` instances.
-- **Wenyou domain engine**: `packages/backend/src/wenyou/` (`service.ts`, `extension.ts`, `secret-blocks.ts`, `policy-lint.ts`, `docx-builder.ts`, `map-state.ts`, `ntqq-sync.ts`, `qq-ingest.ts`).
+- **Wenyou domain engine**: `packages/backend/src/wenyou/` (`index.ts`, `service.ts`, `extension.ts`, `vault-paths.ts`, `docx-builder.ts`, `map-state.ts`, `ntqq-sync.ts`, `qq-ingest.ts`).
 - **Permission prompts** are injected via `session.bindExtensions(...)` — adjust the `confirm` handler in `makeUiContext` rather than rewriting the whole UI context.
 - **Preload bundle** must stay CJS (`format: "cjs"`, `index.cjs`) so sandboxed renderers can load it.
 

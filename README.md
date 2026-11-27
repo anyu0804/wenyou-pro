@@ -40,15 +40,15 @@ Long-running grand-strategy text roleplay and alternate-history campaigns typica
 
 ## Download & Installation
 
-Prebuilt cross-platform packages and checksums are published on [GitHub Releases](https://github.com/anyu0804/wenyou-pro/releases) (maintained by **安钰**, each release ships with `SHA256SUMS` verification manifests).
+Prebuilt **Windows (x64)** and **macOS (Apple Silicon / Intel)** packages and checksums are published automatically on [GitHub Releases](https://github.com/anyu0804/wenyou-pro/releases) (maintained by **安钰**, each release ships with `SHA256SUMS` verification manifests). **Linux (x64 `.AppImage`)** is supported via on-demand source packaging and verification using the repository's release toolchain.
 
-| Platform | Artifact Naming | Notes |
-| --- | --- | --- |
-| Windows (x64 Installer) | `Wenyou-Pro-Setup-<version>-x64.exe` | NSIS wizard installer with desktop shortcut and bundled embedded Python + NTQQ read-only VFS |
-| Windows (x64 Portable) | `Wenyou-Pro-Portable-<version>-x64.zip` | Extract and run, no installation required |
-| macOS (Apple Silicon M1–M4) | `Wenyou-Pro-<version>-mac-arm64.dmg` | `.zip` archive also provided; offline chat import recommended |
-| macOS (Intel) | `Wenyou-Pro-<version>-mac-x64.dmg` | `.zip` archive also provided; offline chat import recommended |
-| Linux (x64) | `Wenyou-Pro-<version>-linux-x86_64.AppImage` | `chmod +x` before launch; Ubuntu 22.04+/24.04+ requires `libfuse2` |
+| Platform | Artifact Naming | Distribution | Notes |
+| --- | --- | --- | --- |
+| Windows (x64 Installer) | `Wenyou-Pro-Setup-<version>-x64.exe` | GitHub Releases (prebuilt) | NSIS wizard installer with desktop shortcut and bundled embedded Python + NTQQ read-only VFS |
+| Windows (x64 Portable) | `Wenyou-Pro-Portable-<version>-x64.zip` | GitHub Releases (prebuilt) | Extract and run, no installation required |
+| macOS (Apple Silicon M1–M4) | `Wenyou-Pro-<version>-mac-arm64.dmg` | GitHub Releases (prebuilt) | `.zip` archive also provided; offline chat import recommended |
+| macOS (Intel) | `Wenyou-Pro-<version>-mac-x64.dmg` | GitHub Releases (prebuilt) | `.zip` archive also provided; offline chat import recommended |
+| Linux (x64) | `Wenyou-Pro-<version>-linux-x86_64.AppImage` | On-demand source build | Not auto-published to Releases; build & verify locally via `node scripts/wenyou-release/build-installer.mjs --platform linux` and `verify-package.mjs --platform linux` (Ubuntu 22.04+/24.04+ requires `libfuse2`) |
 
 > **First-Launch Gatekeeper / SmartScreen Notes (Offline-First)**
 >
@@ -57,8 +57,8 @@ Prebuilt cross-platform packages and checksums are published on [GitHub Releases
 >   xattr -cr "/Applications/Wenyou Pro.app"
 >   ```
 > - **Windows**: Click **More info → Run anyway** if Windows SmartScreen prompts on first launch.
-> - **Linux**: Run `chmod +x Wenyou-Pro-<version>-linux-x86_64.AppImage` before executing.
-> - Standalone builds stay offline-first by default; download upgrades from [Releases](https://github.com/anyu0804/wenyou-pro/releases) and verify `SHA256SUMS`.
+> - **Linux (self-built AppImage)**: Run `chmod +x Wenyou-Pro-<version>-linux-x86_64.AppImage` before executing.
+> - Standalone builds stay offline-first by default; download Windows/macOS upgrades from [Releases](https://github.com/anyu0804/wenyou-pro/releases) and verify `SHA256SUMS`.
 
 ---
 

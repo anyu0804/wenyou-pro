@@ -40,15 +40,15 @@
 
 ## 下载与安装
 
-预编译跨平台安装包与校验文件发布于 [GitHub Releases](https://github.com/anyu0804/wenyou-pro/releases)（维护者：**安钰**，每次发布均附带 `SHA256SUMS` 校验清单）。
+GitHub [Releases](https://github.com/anyu0804/wenyou-pro/releases) 自动预编译并发布 **Windows (x64)** 与 **macOS (Apple Silicon / Intel)** 安装包及校验清单（维护者：**安钰**，每次发布均附带 `SHA256SUMS` 校验清单）；**Linux (x64 `.AppImage`)** 支持通过仓库内置打包配置按需从源码构建与验包。
 
-| 平台 | 分发产物命名 | 说明 |
-| --- | --- | --- |
-| Windows (x64 安装版) | `Wenyou-Pro-Setup-<version>-x64.exe` | NSIS 向导安装器，自动创建桌面「司命 · 文游 Pro」快捷方式，内置嵌入式 Python 与 NTQQ 只读 VFS |
-| Windows (x64 绿色便携版) | `Wenyou-Pro-Portable-<version>-x64.zip` | 解压即用，免安装 |
-| macOS (Apple Silicon M1–M4) | `Wenyou-Pro-<version>-mac-arm64.dmg` | 同时提供 `.zip` 归档；推荐离线导入群聊 |
-| macOS (Intel) | `Wenyou-Pro-<version>-mac-x64.dmg` | 同时提供 `.zip` 归档；推荐离线导入群聊 |
-| Linux (x64) | `Wenyou-Pro-<version>-linux-x86_64.AppImage` | 赋予可执行位后运行；Ubuntu 22.04+/24.04+ 需先安装 `libfuse2` |
+| 平台 | 分发产物命名 | 发布方式 | 说明 |
+| --- | --- | --- | --- |
+| Windows (x64 安装版) | `Wenyou-Pro-Setup-<version>-x64.exe` | GitHub Releases 自动预编译 | NSIS 向导安装器，自动创建桌面「司命 · 文游 Pro」快捷方式，内置嵌入式 Python 与 NTQQ 只读 VFS |
+| Windows (x64 绿色便携版) | `Wenyou-Pro-Portable-<version>-x64.zip` | GitHub Releases 自动预编译 | 解压即用，免安装 |
+| macOS (Apple Silicon M1–M4) | `Wenyou-Pro-<version>-mac-arm64.dmg` | GitHub Releases 自动预编译 | 同时提供 `.zip` 归档；推荐离线导入群聊 |
+| macOS (Intel) | `Wenyou-Pro-<version>-mac-x64.dmg` | GitHub Releases 自动预编译 | 同时提供 `.zip` 归档；推荐离线导入群聊 |
+| Linux (x64) | `Wenyou-Pro-<version>-linux-x86_64.AppImage` | 仓库按需源码构建验证 | GitHub Releases 默认不附带；可在 Linux 宿主机执行 `node scripts/wenyou-release/build-installer.mjs --platform linux` 与 `verify-package.mjs --platform linux` 构建并验包（Ubuntu 22.04+/24.04+ 需 `libfuse2`） |
 
 > **首次启动放行指引（离线优先）**
 >
@@ -57,8 +57,8 @@
 >   xattr -cr "/Applications/Wenyou Pro.app"
 >   ```
 > - **Windows**：若出现 SmartScreen 提示，点击**「更多信息」→「仍要运行」**即可。
-> - **Linux**：首次运行前执行 `chmod +x Wenyou-Pro-<version>-linux-x86_64.AppImage`。
-> - 独立分发包默认离线优先，升级可直接前往 [Releases](https://github.com/anyu0804/wenyou-pro/releases) 下载新版并核对 `SHA256SUMS`。
+> - **Linux（按需自建 AppImage）**：首次运行前执行 `chmod +x Wenyou-Pro-<version>-linux-x86_64.AppImage`。
+> - 独立分发包默认离线优先，Windows / macOS 升级可直接前往 [Releases](https://github.com/anyu0804/wenyou-pro/releases) 下载新版并核对 `SHA256SUMS`。
 
 ---
 

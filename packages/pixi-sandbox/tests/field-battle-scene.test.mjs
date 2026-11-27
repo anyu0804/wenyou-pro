@@ -246,7 +246,8 @@ test('城市尺寸：初始 fit、32 倍恢复、缩放和 resize 均保持屏�
     app, host, battle, root: null, onChange() {}, onRequestClose() {},
   });
   const check = viewport => {
-    const cities = viewport.children[6].children;
+    // viewport 图层序：0:baseImageLayer, 1:cells, 2:coastBands, 3:lakes, 4:rivers, 5:contours, 6:coastlines, 7:burgsContainer, 8:contextGfx, 9:badgesContainer
+    const cities = viewport.children[7].children;
     assert.equal(cities.length, battle.terrain.burgs.length);
     for (let i = 0; i < cities.length; i++) {
       const city = cities[i];
@@ -360,8 +361,8 @@ test('勘误 2：未知位置兵牌不绘制，仅绘制已知位置单位', () 
 
   // viewport 是 mockHost 的第一个子元素
   const viewport = mockHost.children[0];
-  // badgesContainer 是 viewport 的最后一个子容器 (index 8)
-  const badgesContainer = viewport.children[8];
+  // badgesContainer 是 viewport 的最后一个子容器 (index 9)
+  const badgesContainer = viewport.children[9];
   // 仅 field-unit-1 被添加进 badgesContainer，field-unit-2 不绘制
   assert.equal(badgesContainer.children.length, 1);
   assert.equal(badgesContainer.children[0].label, 'field-unit-1');
@@ -535,7 +536,7 @@ test('回归：HUD 对特殊部队名做文本转义无 HTML 注入；兵牌拖�
     });
 
     const viewport = mockHost.children[0];
-    const badgesContainer = viewport.children[8];
+    const badgesContainer = viewport.children[9];
     const badge = badgesContainer.children[0];
     assert.ok(badge);
 
@@ -563,7 +564,7 @@ test('回归：HUD 对特殊部队名做文本转义无 HTML 注入；兵牌拖�
     assert.ok(cityScaleInput && cityLodInput && cityZoomInput);
     cityScaleInput.value = '1.8';
     cityScaleInput.dispatchEvent('input');
-    const cities = viewport.children[6].children;
+    const cities = viewport.children[7].children;
     assert.ok(cities.length > 0);
     assert.ok(Math.abs(cities[0].children[1].scale.x - 1.8) < 1e-6);
     cityLodInput.checked = false;
@@ -577,4 +578,59 @@ test('回归：HUD 对特殊部队名做文本转义无 HTML 注入；兵牌拖�
     if (prevWindow) globalThis.window = prevWindow;
     else delete globalThis.window;
   }
+});
+
+test('Bug #28 回归：关闭独立野战窗口销毁 viewport 时透传 context: true 释放全部 GraphicsContext 且不销毁纹理', () => {
+  const battle = getSampleBattle();
+  const mockApp = {
+    screen: { width: 1200, height: 800 },
+    ticker: null,
+    renderer: { on() {}, off() {} },
+  };
+  const mockHost = {
+    children: [],
+    addChild(...items) { this.children.push(...items); },
+    removeChild(item) { this.children = this.children.filter((c) => c !== item); },
+  };
+
+  const handle = createFieldBattleScene({
+    app: mockApp,
+    host: mockHost,
+    battle,
+    root: null,
+    onChange: () => {},
+    onRequestClose: () => {},
+  });
+
+  const viewport = mockHost.children[0];
+  assert.ok(viewport);
+
+  const collectContexts = (node, out = []) => {
+    if (node?.context) out.push(node.context);
+    for (const child of node?.children ?? []) collectContexts(child, out);
+    return out;
+  };
+  const contextsBefore = collectContexts(viewport);
+  assert.ok(contextsBefore.length >= 6, '野战场景应包含地形/水系/城市/遮罩等 GraphicsContext');
+  assert.equal(contextsBefore.every((ctx) => ctx.destroyed === false), true);
+
+  let receivedDestroyOpts = null;
+  const origDestroy = viewport.destroy.bind(viewport);
+  viewport.destroy = (opts) => {
+    receivedDestroyOpts = opts;
+    return origDestroy(opts);
+  };
+
+  handle.destroy();
+  assert.deepEqual(receivedDestroyOpts, {
+    children: true,
+    texture: false,
+    textureSource: false,
+    context: true,
+  });
+  assert.equal(
+    contextsBefore.every((ctx) => ctx.destroyed === true),
+    true,
+    '关闭野战窗口后场景内所有 GraphicsContext 必须全部销毁',
+  );
 });

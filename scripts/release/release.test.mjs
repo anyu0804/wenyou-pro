@@ -9,7 +9,7 @@ import { promisify } from "node:util";
 import { createPackage } from "@electron/asar";
 import nodePolicy from "../../packages/shared/src/runtime-node-policy.json" with { type: "json" };
 import { verifyBundle } from "./bundle.mjs";
-import { artifactNames, builderTargetArguments, releasePlan, root } from "./plan.mjs";
+import { appExecutable, artifactNames, builderTargetArguments, currentRelease, releasePlan, root } from "./plan.mjs";
 import { run } from "./run.mjs";
 import { prepareRuntimeManifest } from "./runtime-manifest.mjs";
 import { verifyApp } from "./verify-app.mjs";
@@ -90,6 +90,63 @@ test("Beta requires an explicit prerelease; version metadata cannot masquerade a
 		assert.throws(() => releasePlan(version, release.sourceCommit));
 	assert.throws(() => releasePlan("1.0.0", release.sourceCommit, "beta"));
 	assert.throws(() => releasePlan("1.0.0", "bad"));
+});
+
+test("stable and beta plan artifact names and Linux executable align with electron-builder configs", async () => {
+	const stable = releasePlan("0.2.6", release.sourceCommit);
+	const stableYml = await readFile(join(root, "packages/desktop/electron-builder.yml"), "utf8");
+	const betaCfg = createRequire(import.meta.url)("../../packages/desktop/electron-builder.beta.cjs");
+
+	// Stable electron-builder.yml uses wenyou-pro-* artifacts and linux executableName: wenyou-pro
+	assert.match(stableYml, /artifactName:\s*wenyou-pro-mac-\$\{arch\}\.\$\{ext\}/);
+	assert.match(stableYml, /artifactName:\s*wenyou-pro-windows-\$\{arch\}\.\$\{ext\}/);
+	assert.match(stableYml, /artifactName:\s*wenyou-pro-linux-\$\{arch\}\.\$\{ext\}/);
+	assert.match(stableYml, /executableName:\s*wenyou-pro/);
+
+	assert.deepEqual(artifactNames(stable, "darwin", ["arm64", "x64"]), [
+		"wenyou-pro-mac-arm64.dmg",
+		"wenyou-pro-mac-arm64.zip",
+		"wenyou-pro-mac-x64.dmg",
+		"wenyou-pro-mac-x64.zip",
+	]);
+	assert.deepEqual(artifactNames(stable, "win32", ["x64"]), [
+		"wenyou-pro-windows-x64.exe",
+		"wenyou-pro-windows-x64.zip",
+	]);
+	assert.deepEqual(artifactNames(stable, "linux", ["x64"]), ["wenyou-pro-linux-x86_64.AppImage"]);
+	assert.equal(appExecutable("/app", "linux", "Wenyou Pro", "stable").endsWith("wenyou-pro"), true);
+
+	// Beta electron-builder.beta.cjs uses percho-beta-${version}-* and executableName: percho-beta
+	assert.equal(betaCfg.linux.executableName, "percho-beta");
+	assert.equal(betaCfg.mac.artifactName, "percho-beta-${version}-mac-${arch}.${ext}");
+	assert.deepEqual(artifactNames(release, "darwin", ["x64"]), [
+		"percho-beta-0.6.6-beta.1-mac-x64.dmg",
+		"percho-beta-0.6.6-beta.1-mac-x64.zip",
+	]);
+	assert.equal(appExecutable("/app", "linux", "Wenyou Pro Beta", "beta").endsWith("percho-beta"), true);
+
+	// currentRelease accepts both legacy vX.Y.Z and wenyou-vX.Y.Z tags
+	const prevTag = process.env.PERCHO_BUILD_RELEASE_TAG;
+	const prevCommit = process.env.PERCHO_BUILD_SOURCE_COMMIT;
+	try {
+		delete process.env.PERCHO_BUILD_SOURCE_COMMIT;
+		process.env.PERCHO_BUILD_RELEASE_TAG = "wenyou-v0.2.6";
+		const fromWenyouTag = await currentRelease();
+		assert.equal(fromWenyouTag.version, "0.2.6");
+		assert.equal(fromWenyouTag.channel, "stable");
+
+		process.env.PERCHO_BUILD_RELEASE_TAG = "v0.2.6";
+		const fromLegacyTag = await currentRelease({ version: "0.2.6" });
+		assert.equal(fromLegacyTag.version, "0.2.6");
+
+		process.env.PERCHO_BUILD_RELEASE_TAG = "bad-tag";
+		await assert.rejects(() => currentRelease(), /Release tags must start with v or wenyou-v/);
+	} finally {
+		if (prevTag === undefined) delete process.env.PERCHO_BUILD_RELEASE_TAG;
+		else process.env.PERCHO_BUILD_RELEASE_TAG = prevTag;
+		if (prevCommit === undefined) delete process.env.PERCHO_BUILD_SOURCE_COMMIT;
+		else process.env.PERCHO_BUILD_SOURCE_COMMIT = prevCommit;
+	}
 });
 
 test("CI release metadata uses an explicit Beta version and records checkout source", async (t) => {

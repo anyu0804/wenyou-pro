@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { test, after, beforeEach } from 'node:test';
+import { test, after, beforeEach, mock } from 'node:test';
 import { createServer } from 'vite';
 
 // 准备 Node.js 极简 DOM / 动画兼容环境
@@ -391,6 +391,68 @@ test('回归：高倍缩放 (scale=16/32) 下虚线箭头有实际绘制指令�
       highlightHeight > baseHeight * 1.3,
       `scale=${scale} 高亮高度 (${highlightHeight}) 应显著高于原图元 (${baseHeight})`,
     );
+  }
+});
+
+test('Bug #28 回归：重绘战术标绘与清空测距时销毁 Pixi v8 GraphicsContext 零泄漏', async () => {
+  const { CanvasTextMetrics } = await import('pixi.js');
+  const measureMock = mock.method(CanvasTextMetrics, 'measureText', (text, style) => ({
+    width: Array.from(String(text)).length * (style?.fontSize ?? 12),
+    height: (style?.fontSize ?? 12) * 1.2,
+  }));
+  try {
+    tacticalContainer.worldTransform.a = 1;
+    appStore.toMapCoords = (x, y) => [x, y];
+    appStore.tacticalItems = [{
+      id: 'ctx-leak-check',
+      type: 'arrow',
+      arrowStyle: 'solid',
+      points: [[10, 10], [80, 10]],
+      width: 4,
+      color: '#ef4444',
+      label: '主攻',
+    }];
+    appStore.selectedTacticalId = null;
+    appStore.emit('tactical-change');
+
+    const itemsLayer = tacticalContainer.children[0];
+    const measureLayer = tacticalContainer.children[2];
+    const collectContexts = (node, out = []) => {
+      if (node.context) out.push(node.context);
+      for (const child of node.children ?? []) collectContexts(child, out);
+      return out;
+    };
+
+    const firstContexts = collectContexts(itemsLayer);
+    assert.ok(firstContexts.length >= 2, '战术箭头与标注底板均应持有 GraphicsContext');
+    assert.equal(firstContexts.every((ctx) => ctx.destroyed === false), true);
+
+    // 触发重绘：旧图层全部子 GraphicsContext 必须随 destroy({ children: true, context: true }) 释放
+    appStore.emit('tactical-change');
+    assert.equal(
+      firstContexts.every((ctx) => ctx.destroyed === true),
+      true,
+      '重绘战术标绘后旧 GraphicsContext 必须全部销毁',
+    );
+
+    // 触发一次测距绘制，随后切出模式清空测距层：测距 GraphicsContext 必须同步释放
+    appStore.interactionMode = 'tactical-measure';
+    canvas.dispatch('pointerdown', makePointerEvent('pointerdown', 10, 10));
+    canvas.dispatch('pointermove', makePointerEvent('pointermove', 60, 10));
+    canvas.dispatch('pointerup', makePointerEvent('pointerup', 60, 10));
+    const measureContexts = collectContexts(measureLayer);
+    assert.ok(measureContexts.length >= 2, '测距轨与里程底板均应持有 GraphicsContext');
+    assert.equal(measureContexts.every((ctx) => ctx.destroyed === false), true);
+
+    appStore.interactionMode = 'pan';
+    appStore.emit('tactical-mode-change', 'pan');
+    assert.equal(
+      measureContexts.every((ctx) => ctx.destroyed === true),
+      true,
+      '清空测距层后旧 GraphicsContext 必须全部销毁',
+    );
+  } finally {
+    measureMock.mock.restore();
   }
 });
 
