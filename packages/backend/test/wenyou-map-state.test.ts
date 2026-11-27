@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { WenyouCanvasEvent } from "@percho/shared";
@@ -14,6 +14,7 @@ import {
 	listMapSnapshots,
 	readMapSnapshotRaw,
 	saveMapSnapshot,
+	splitFmgMapLines,
 } from "../src/wenyou/map-state";
 import { WenyouService } from "../src/wenyou/service";
 
@@ -662,5 +663,95 @@ describe("map-state 纯算法与多格式解析/跨回合差分/安全边界", (
 		await expect(saveMapSnapshot(root, "img-delta.json", legacyDelta)).rejects.toThrow("必须是合法的 wenyou-project JSON");
 		await writeFile(join(root, "05-沙盘与图集", "img-delta.json"), legacyDelta, "utf8");
 		await expect(inspectMapSnapshot(root, "05-沙盘与图集/img-delta.json")).rejects.toThrow("文件不是有效的地图快照");
+	});
+
+	it("splitFmgMapLines 正确配对任意层级嵌套国徽 <svg> 与自闭合 <svg/>，不错行解析 FMG .map", async () => {
+		const root = await mkdtemp(join(tmpdir(), "wenyou-map-nested-svg-"));
+		tempDirs.push(root);
+		await mkdir(join(root, "05-沙盘与图集"), { recursive: true });
+
+		const fmgLines = new Array<string>(32).fill("");
+		fmgLines[0] = "1.108.0|FMG|2026|1234|1000|800|nested-coa";
+		fmgLines[5] = [
+			'<svg id="map" viewBox="0 0 1000 800">',
+			'  <g id="emblems">',
+			'    <svg id="coa1" viewBox="0 0 200 200">',
+			'      <svg id="inner-crest"/>',
+			'      <path d="M0 0 L10 10"/>',
+			"    </svg>",
+			'    <svg id="coa2" data-note="a > b">',
+			'      <rect width="10" height="10"/>',
+			"    </svg>",
+			"  </g>",
+			"</svg>",
+		].join("\n");
+		fmgLines[14] = JSON.stringify([
+			{ i: 0, name: "Neutrals" },
+			{ i: 1, name: "燕国", neighbors: [2], capital: 1 },
+			{ i: 2, name: "赵国", neighbors: [1], capital: 2 },
+		]);
+		fmgLines[15] = JSON.stringify([
+			{},
+			{ i: 1, name: "蓟城", x: 600, y: 180, cell: 1, state: 1, capital: 1, port: 0, population: 19 },
+			{ i: 2, name: "邯郸", x: 520, y: 360, cell: 2, state: 2, capital: 1, port: 0, population: 21 },
+		]);
+		fmgLines[18] = "10,30,35,40";
+		fmgLines[25] = "0,1,2,2";
+		const joined = fmgLines.join("\n");
+
+		const split = splitFmgMapLines(joined);
+		expect(split[14]).toBe(fmgLines[14]);
+		expect(split[15]).toBe(fmgLines[15]);
+		expect(split[18]).toBe("10,30,35,40");
+		expect(split[25]).toBe("0,1,2,2");
+
+		await writeFile(join(root, "05-沙盘与图集", "nested-coa.map"), joined, "utf8");
+		const insp = await inspectMapSnapshot(root, "05-沙盘与图集/nested-coa.map");
+		expect(insp.totalLandCells).toBe(3);
+		expect(insp.states.find((s) => s.name === "燕国")?.cellCount).toBe(1);
+		expect(insp.states.find((s) => s.name === "赵国")?.cellCount).toBe(2);
+	});
+
+	it("saveMapSnapshot 拒绝符号链接越界写穿、串行并发写入并在 rename 失败时清理 .tmp 残留", async () => {
+		const parent = await mkdtemp(join(tmpdir(), "wenyou-map-sec-"));
+		tempDirs.push(parent);
+		const root = join(parent, "vault");
+		const outside = join(parent, "outside");
+		await mkdir(root, { recursive: true });
+		await mkdir(outside, { recursive: true });
+
+		const validJson = makeProjectV4Json({
+			statesByCell: [1, 2],
+			burgs: [{ i: 1, name: "清源城", x: 500, y: 200, cell: 0, state: 1, capital: 1, port: 0, population: 10 }],
+			garrisons: [],
+		});
+
+		// 1. 符号链接目录逃逸拦截（Windows 无管理员权限建 symlink 时改用 junction 测目录逃逸）
+		const mapDir = join(root, "05-沙盘与图集");
+		await symlink(outside, mapDir, process.platform === "win32" ? "junction" : "dir");
+		await expect(saveMapSnapshot(root, "escape.json", validJson)).rejects.toThrow(/越界/);
+		expect(existsSync(join(outside, "escape.json"))).toBe(false);
+		await rm(mapDir, { recursive: true, force: true });
+
+		// 2. rename 失败（目标位置被目录占用）时清理 .tmp-* 临时文件
+		await mkdir(join(mapDir, "occupied.json"), { recursive: true });
+		await expect(saveMapSnapshot(root, "occupied.json", validJson)).rejects.toThrow();
+		const leftover = (await readdir(mapDir)).filter((name) => name.includes(".tmp-"));
+		expect(leftover).toEqual([]);
+
+		// 3. 并发写入同一快照经互斥锁串行完成且内容完整有效 JSON
+		const service = new WenyouService();
+		const v2 = makeProjectV4Json({
+			statesByCell: [2, 2],
+			burgs: [{ i: 1, name: "清源城", x: 500, y: 200, cell: 0, state: 2, capital: 1, port: 0, population: 10 }],
+			garrisons: [],
+		});
+		const results = await Promise.all([
+			service.saveMapSnapshot(root, "concurrent.json", validJson),
+			service.saveMapSnapshot(root, "concurrent.json", v2),
+		]);
+		expect(results).toHaveLength(2);
+		const finalRaw = await readFile(join(mapDir, "concurrent.json"), "utf8");
+		expect(() => JSON.parse(finalRaw)).not.toThrow();
 	});
 });

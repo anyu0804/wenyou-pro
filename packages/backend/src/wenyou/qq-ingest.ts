@@ -11,7 +11,9 @@ import type {
 } from "@percho/shared";
 
 const QQ_DATE_TIME_RE =
-	/^(.+?)\s+(\d{4})[-/](\d{1,2})[-/](\d{1,2})\s+([01]?\d|2[0-3]):([0-5]\d)(?::([0-5]\d))?$/;
+	/^(.+?)\s+(\d{4})[-/](\d{1,2})[-/](\d{1,2})\s+([01]?\d|2[0-3]):([0-5]?\d)(?::([0-5]?\d))?$/;
+const QQ_DATE_FIRST_RE =
+	/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})\s+([01]?\d|2[0-3]):([0-5]?\d)(?::([0-5]?\d))?\s+(.+)$/;
 const QQ_TIME_WITH_SEC_RE = /^(.+?)\s+([01]?\d|2[0-3]):([0-5]\d):([0-5]\d)$/;
 const QQ_TIME_NO_SEC_RE = /^(.+?)\s+([01]?\d|2[0-3]):([0-5]\d)$/;
 const FULL_DATE_TS_RE = /^\d{4}-\d{2}-\d{2}/;
@@ -21,9 +23,10 @@ const TIME_ONLY_TS_RE = /^\d{2}:\d{2}(?::\d{2})?$/;
 function isPlausibleShortTimeSender(rawSender: string): boolean {
 	const trimmed = rawSender.trim();
 	if (!trimmed || trimmed.length > 40) return false;
-	// 排除包含正文句末/分句标点或以冒号/等号收尾的普通句子，避免误拆正文中的 "12:30" 或比分
+	// 排除包含正文句末/分句标点或以冒号/等号收尾的普通句子，避免误拆正文中的 "12:30"、"08:30:00" 或比分
 	if (/[。！？，；、：]/.test(trimmed)) return false;
 	if (/[.,!?;:=]$/.test(trimmed)) return false;
+	if (/[:;]\s/.test(trimmed)) return false;
 	return true;
 }
 
@@ -38,15 +41,61 @@ function pad2(val: string): string {
 	return val.padStart(2, "0");
 }
 
-function normalizeEvidenceTimestamp(raw: string): string {
+function formatEpochMsCst(ms: number): string {
+	if (!Number.isFinite(ms)) return "";
+	const d = new Date(Math.trunc(ms) + 8 * 3600 * 1000);
+	if (Number.isNaN(d.getTime())) return "";
+	const y = String(d.getUTCFullYear()).padStart(4, "0");
+	const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+	const day = String(d.getUTCDate()).padStart(2, "0");
+	const hh = String(d.getUTCHours()).padStart(2, "0");
+	const mm = String(d.getUTCMinutes()).padStart(2, "0");
+	const ss = String(d.getUTCSeconds()).padStart(2, "0");
+	return `${y}-${m}-${day} ${hh}:${mm}:${ss}`;
+}
+
+function formatUnixTimestampCst(unixValue: number): string {
+	if (!Number.isFinite(unixValue) || unixValue <= 0) return "";
+	// 10 位秒级 (< 1e11) 与 13 位毫秒级 (>= 1e11) 统一转 CST (UTC+8)
+	const ms = unixValue >= 1e11 ? Math.trunc(unixValue) : Math.trunc(unixValue * 1000);
+	return formatEpochMsCst(ms);
+}
+
+function formatIsoWithOffsetToCst(baseIsoDate: string, baseTime: string, tz: string | undefined): string {
+	if (tz && !/^\+08:?00$/i.test(tz)) {
+		const normTz = /^z$/i.test(tz)
+			? "Z"
+			: tz.includes(":")
+				? tz
+				: `${tz.slice(0, 3)}:${tz.slice(3)}`;
+		const parsedMs = Date.parse(`${baseIsoDate}T${baseTime}${normTz}`);
+		if (Number.isFinite(parsedMs)) {
+			const formatted = formatEpochMsCst(parsedMs);
+			if (formatted) return formatted;
+		}
+	}
+	return `${baseIsoDate} ${baseTime}`;
+}
+
+function normalizeEvidenceTimestamp(raw: string | number | null | undefined): string {
+	if (typeof raw === "number") {
+		return formatUnixTimestampCst(raw);
+	}
+	if (typeof raw !== "string") return "";
 	const trimmed = raw.trim();
 	if (!trimmed) return "";
 
+	if (/^\d{10}(?:\d{3})?$/.test(trimmed)) {
+		return formatUnixTimestampCst(Number(trimmed));
+	}
+
 	const isoOrDateTime = trimmed.match(
-		/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})[T\s]+([01]?\d|2[0-3]):([0-5]\d)(?::([0-5]\d))?(?:\.\d+)?(?:Z)?$/i,
+		/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})[T\s]+([01]?\d|2[0-3]):([0-5]?\d)(?::([0-5]?\d))?(?:\.\d+)?(Z|[+-](?:[01]\d|2[0-3]):?[0-5]\d)?$/i,
 	);
 	if (isoOrDateTime && isoOrDateTime[1] && isoOrDateTime[2] && isoOrDateTime[3] && isoOrDateTime[4] && isoOrDateTime[5]) {
-		return `${isoOrDateTime[1]}-${pad2(isoOrDateTime[2])}-${pad2(isoOrDateTime[3])} ${pad2(isoOrDateTime[4])}:${isoOrDateTime[5]}:${pad2(isoOrDateTime[6] ?? "00")}`;
+		const baseIsoDate = `${isoOrDateTime[1]}-${pad2(isoOrDateTime[2])}-${pad2(isoOrDateTime[3])}`;
+		const baseTime = `${pad2(isoOrDateTime[4])}:${pad2(isoOrDateTime[5])}:${pad2(isoOrDateTime[6] ?? "00")}`;
+		return formatIsoWithOffsetToCst(baseIsoDate, baseTime, isoOrDateTime[7]);
 	}
 
 	const dateOnly = trimmed.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/);
@@ -54,14 +103,14 @@ function normalizeEvidenceTimestamp(raw: string): string {
 		return `${dateOnly[1]}-${pad2(dateOnly[2])}-${pad2(dateOnly[3])}`;
 	}
 
-	const timeWithSec = trimmed.match(/^([01]?\d|2[0-3]):([0-5]\d):([0-5]\d)$/);
+	const timeWithSec = trimmed.match(/^([01]?\d|2[0-3]):([0-5]?\d):([0-5]?\d)$/);
 	if (timeWithSec && timeWithSec[1] && timeWithSec[2] && timeWithSec[3]) {
-		return `${pad2(timeWithSec[1])}:${timeWithSec[2]}:${timeWithSec[3]}`;
+		return `${pad2(timeWithSec[1])}:${pad2(timeWithSec[2])}:${pad2(timeWithSec[3])}`;
 	}
 
-	const timeNoSec = trimmed.match(/^([01]?\d|2[0-3]):([0-5]\d)$/);
+	const timeNoSec = trimmed.match(/^([01]?\d|2[0-3]):([0-5]?\d)$/);
 	if (timeNoSec && timeNoSec[1] && timeNoSec[2]) {
-		return `${pad2(timeNoSec[1])}:${timeNoSec[2]}`;
+		return `${pad2(timeNoSec[1])}:${pad2(timeNoSec[2])}`;
 	}
 
 	return trimmed;
@@ -69,11 +118,11 @@ function normalizeEvidenceTimestamp(raw: string): string {
 
 function cleanSender(rawSender: string): { sender: string; senderId?: string } {
 	const trimmed = rawSender.trim();
-	const idMatch = trimmed.match(/[（(](qq-demo-\d+|\d{5,12}|[^()（）\s]+@[^()（）\s]+)[)）]$/);
-	const senderId = idMatch?.[1];
-	const cleaned = trimmed
-		.replace(/\s*[（(](?:qq-demo-\d+|\d{5,12}|[^()（）\s]+@[^()（）\s]+)[)）]$/, "")
-		.trim();
+	const idMatch = trimmed.match(
+		/(?:[（(](qq-demo-\d+|\d{5,15}|[^()（）\s]+@[^()（）\s]+)[)）]|<(\d{5,15}|[^<>\s]+@[^<>\s]+)>)$/,
+	);
+	const senderId = idMatch?.[1] ?? idMatch?.[2];
+	const cleaned = idMatch ? trimmed.slice(0, trimmed.length - idMatch[0].length).trim() : trimmed;
 	return { sender: cleaned.length > 0 ? cleaned : trimmed, ...(senderId ? { senderId } : {}) };
 }
 
@@ -103,7 +152,11 @@ export function inferGroupMeta(fileName: string): {
 } {
 	const stem = basename(fileName, extname(fileName));
 	const idMatch = stem.match(/(group-[a-z0-9-]+|\d{6,12})/i);
-	const groupId = idMatch?.[1]?.toLowerCase() ?? stem.toLowerCase().replace(/[^a-z0-9\u4e00-\u9fa5-]+/g, "-");
+	const fallbackSlug = stem
+		.toLowerCase()
+		.replace(/[^a-z0-9\u4e00-\u9fa5-]+/g, "-")
+		.replace(/^-+|-+$/g, "");
+	const groupId = idMatch?.[1]?.toLowerCase() ?? (fallbackSlug || stem.toLowerCase());
 	const lower = stem.toLowerCase();
 	let role: GroupRole = "other";
 	if (lower.includes("主群") || lower.includes("main")) {
@@ -164,6 +217,30 @@ function parsePlainTextMessages(
 
 	for (const line of lines) {
 		const trimmed = line.trim();
+		const dtFirstMatch = trimmed.match(QQ_DATE_FIRST_RE);
+		if (
+			dtFirstMatch &&
+			dtFirstMatch[1] &&
+			dtFirstMatch[2] &&
+			dtFirstMatch[3] &&
+			dtFirstMatch[4] &&
+			dtFirstMatch[5] &&
+			dtFirstMatch[7]
+		) {
+			const cleaned = cleanSender(dtFirstMatch[7]);
+			if (cleaned.senderId || isPlausibleShortTimeSender(cleaned.sender)) {
+				flush();
+				const datePart = `${dtFirstMatch[1]}-${pad2(dtFirstMatch[2])}-${pad2(dtFirstMatch[3])}`;
+				lastSeenDate = datePart;
+				current = {
+					sender: cleaned.sender,
+					senderId: cleaned.senderId,
+					timestamp: `${datePart} ${pad2(dtFirstMatch[4])}:${pad2(dtFirstMatch[5])}:${pad2(dtFirstMatch[6] ?? "00")}`,
+					body: [],
+				};
+				continue;
+			}
+		}
 		const dtMatch = trimmed.match(QQ_DATE_TIME_RE);
 		if (dtMatch && dtMatch[1] && dtMatch[2] && dtMatch[3] && dtMatch[4] && dtMatch[5] && dtMatch[6]) {
 			flush();
@@ -173,36 +250,40 @@ function parsePlainTextMessages(
 			current = {
 				sender: cleaned.sender,
 				senderId: cleaned.senderId,
-				timestamp: `${datePart} ${pad2(dtMatch[5])}:${dtMatch[6]}:${pad2(dtMatch[7] ?? "00")}`,
+				timestamp: `${datePart} ${pad2(dtMatch[5])}:${pad2(dtMatch[6])}:${pad2(dtMatch[7] ?? "00")}`,
 				body: [],
 			};
 			continue;
 		}
 		const secMatch = trimmed.match(QQ_TIME_WITH_SEC_RE);
 		if (secMatch && secMatch[1] && secMatch[2] && secMatch[3] && secMatch[4]) {
-			flush();
 			const cleaned = cleanSender(secMatch[1]);
-			const timePart = `${pad2(secMatch[2])}:${secMatch[3]}:${secMatch[4]}`;
-			current = {
-				sender: cleaned.sender,
-				senderId: cleaned.senderId,
-				timestamp: lastSeenDate ? `${lastSeenDate} ${timePart}` : timePart,
-				body: [],
-			};
-			continue;
-		}
-		if (lastSeenDate) {
-			const shortMatch = trimmed.match(QQ_TIME_NO_SEC_RE);
-			if (shortMatch && shortMatch[1] && shortMatch[2] && shortMatch[3] && isPlausibleShortTimeSender(shortMatch[1])) {
+			if (isPlausibleShortTimeSender(cleaned.sender)) {
 				flush();
-				const cleaned = cleanSender(shortMatch[1]);
+				const timePart = `${pad2(secMatch[2])}:${pad2(secMatch[3])}:${pad2(secMatch[4])}`;
 				current = {
 					sender: cleaned.sender,
 					senderId: cleaned.senderId,
-					timestamp: `${lastSeenDate} ${pad2(shortMatch[2])}:${shortMatch[3]}:00`,
+					timestamp: lastSeenDate ? `${lastSeenDate} ${timePart}` : timePart,
 					body: [],
 				};
 				continue;
+			}
+		}
+		if (lastSeenDate) {
+			const shortMatch = trimmed.match(QQ_TIME_NO_SEC_RE);
+			if (shortMatch && shortMatch[1] && shortMatch[2] && shortMatch[3]) {
+				const cleaned = cleanSender(shortMatch[1]);
+				if (isPlausibleShortTimeSender(cleaned.sender)) {
+					flush();
+					current = {
+						sender: cleaned.sender,
+						senderId: cleaned.senderId,
+						timestamp: `${lastSeenDate} ${pad2(shortMatch[2])}:${pad2(shortMatch[3])}:00`,
+						body: [],
+					};
+					continue;
+				}
 			}
 		}
 		if (current) current.body.push(line);
@@ -219,13 +300,24 @@ interface RawJsonMessage {
 	senderName?: unknown;
 	nickname?: unknown;
 	senderId?: unknown;
+	uid?: unknown;
 	uin?: unknown;
 	timestamp?: unknown;
 	time?: unknown;
+	msgTime?: unknown;
 	text?: unknown;
 	content?: unknown;
 	groupId?: unknown;
 	groupName?: unknown;
+}
+
+function toNonEmptyIdString(value: unknown): string {
+	if (typeof value === "string") return value.trim();
+	if (typeof value === "number" && Number.isFinite(value)) {
+		return Number.isInteger(value) ? BigInt(value).toString(10) : String(value);
+	}
+	if (typeof value === "bigint") return value.toString(10);
+	return "";
 }
 
 function normalizeRawJsonItems(
@@ -234,33 +326,53 @@ function normalizeRawJsonItems(
 ): ParsedEvidenceCandidate[] {
 	const out: ParsedEvidenceCandidate[] = [];
 	for (const raw of items) {
-		const rawText = typeof raw.text === "string" ? raw.text : typeof raw.content === "string" ? raw.content : "";
+		if (!raw || typeof raw !== "object") continue;
+		const rawText =
+			typeof raw.text === "string"
+				? raw.text
+				: typeof raw.content === "string"
+					? raw.content
+					: raw.content &&
+							typeof raw.content === "object" &&
+							typeof (raw.content as { text?: unknown }).text === "string"
+						? (raw.content as { text: string }).text
+						: "";
 		const text = rawText.trim();
 		if (!text) continue;
-		const groupId = typeof raw.groupId === "string" && raw.groupId.trim() ? raw.groupId.trim() : fallbackMeta.groupId;
+		const groupId = toNonEmptyIdString(raw.groupId) || fallbackMeta.groupId;
 		const groupName =
 			typeof raw.groupName === "string" && raw.groupName.trim() ? raw.groupName.trim() : fallbackMeta.groupName;
+		const senderObj = raw.sender && typeof raw.sender === "object" ? (raw.sender as Record<string, unknown>) : null;
 		const senderRaw =
 			(typeof raw.sender === "string" && raw.sender) ||
 			(typeof raw.senderName === "string" && raw.senderName) ||
 			(typeof raw.nickname === "string" && raw.nickname) ||
+			(senderObj && typeof senderObj.card === "string" && senderObj.card.trim()) ||
+			(senderObj && typeof senderObj.name === "string" && senderObj.name.trim()) ||
+			(senderObj && typeof senderObj.nickname === "string" && senderObj.nickname.trim()) ||
+			(senderObj && typeof senderObj.nick === "string" && senderObj.nick.trim()) ||
 			"未知发言人";
 		const cleaned = cleanSender(senderRaw);
 		const senderId =
-			(typeof raw.senderId === "string" && raw.senderId.trim()) ||
-			(typeof raw.uin === "string" && raw.uin.trim()) ||
+			toNonEmptyIdString(raw.senderId) ||
+			toNonEmptyIdString(raw.uid) ||
+			toNonEmptyIdString(raw.uin) ||
+			(senderObj ? toNonEmptyIdString(senderObj.uin) || toNonEmptyIdString(senderObj.uid) : "") ||
 			cleaned.senderId;
 		const rawTimestamp =
 			(typeof raw.timestamp === "string" && raw.timestamp.trim()) ||
+			(typeof raw.timestamp === "number" && Number.isFinite(raw.timestamp) ? raw.timestamp : undefined) ||
 			(typeof raw.time === "string" && raw.time.trim()) ||
+			(typeof raw.time === "number" && Number.isFinite(raw.time) ? raw.time : undefined) ||
+			(typeof raw.msgTime === "string" && raw.msgTime.trim()) ||
+			(typeof raw.msgTime === "number" && Number.isFinite(raw.msgTime) ? raw.msgTime : undefined) ||
 			"";
 		const timestamp = normalizeEvidenceTimestamp(rawTimestamp);
 		const fp = computeEvidenceFingerprint({ groupId, sender: cleaned.sender, timestamp, text });
 		const explicitId =
-			(typeof raw.sourceId === "string" && raw.sourceId.trim()) ||
-			(typeof raw.id === "string" && raw.id.trim()) ||
-			(typeof raw.messageId === "string" && raw.messageId.trim()) ||
-			"";
+			toNonEmptyIdString(raw.sourceId) ||
+			toNonEmptyIdString(raw.id) ||
+			toNonEmptyIdString(raw.messageId);
 		out.push({
 			hasExplicitSourceId: explicitId.length > 0,
 			record: {
@@ -435,11 +547,14 @@ export const MAX_SOURCE_CONTEXT_WINDOW = 10_000;
 export const DEFAULT_EVIDENCE_SEARCH_LIMIT = 50;
 export const MAX_EVIDENCE_SEARCH_LIMIT = 500;
 
-function extractNtqqRowid(sourceId: string): number | null {
+function extractNtqqRowid(sourceId: string): bigint | null {
 	const match = sourceId.match(/^qq-\d+-(\d+)(?:-\d+)?$/);
 	if (!match?.[1]) return null;
-	const num = Number.parseInt(match[1], 10);
-	return Number.isFinite(num) ? num : null;
+	try {
+		return BigInt(match[1]);
+	} catch {
+		return null;
+	}
 }
 
 /**
@@ -473,6 +588,145 @@ function compareEvidenceTimestamps(a: string, b: string): number {
 	return keyA < keyB ? -1 : 1;
 }
 
+function compareRecordOrder(
+	tsA: string,
+	rowA: bigint | null,
+	tsB: string,
+	rowB: bigint | null,
+	sameGroup: boolean,
+): number {
+	const tsCmp = compareEvidenceTimestamps(tsA, tsB);
+	if (tsCmp !== 0) return tsCmp;
+	if (sameGroup && rowA !== null && rowB !== null && rowA !== rowB) {
+		return rowA < rowB ? -1 : 1;
+	}
+	return 0;
+}
+
+interface ChronoOrderState {
+	hasGlobal: boolean;
+	lastGlobalTs: string;
+	lastGroupTs: Map<string, string>;
+	lastGroupRowid: Map<string, bigint>;
+	existingInverted: boolean;
+}
+
+function buildChronoOrderState(existing: readonly EvidenceMessageRecord[]): ChronoOrderState {
+	const state: ChronoOrderState = {
+		hasGlobal: false,
+		lastGlobalTs: "",
+		lastGroupTs: new Map(),
+		lastGroupRowid: new Map(),
+		existingInverted: false,
+	};
+	for (const rec of existing) {
+		const rowid = extractNtqqRowid(rec.sourceId);
+		if (state.hasGlobal && compareEvidenceTimestamps(rec.timestamp, state.lastGlobalTs) < 0) {
+			state.existingInverted = true;
+		}
+		if (!state.hasGlobal || compareEvidenceTimestamps(rec.timestamp, state.lastGlobalTs) > 0) {
+			state.hasGlobal = true;
+			state.lastGlobalTs = rec.timestamp;
+		}
+		const prevGroupTs = state.lastGroupTs.get(rec.groupId);
+		if (prevGroupTs !== undefined) {
+			const prevRow = state.lastGroupRowid.get(rec.groupId) ?? null;
+			const cmp = compareRecordOrder(rec.timestamp, rowid, prevGroupTs, prevRow, true);
+			if (cmp < 0) {
+				state.existingInverted = true;
+			} else if (cmp > 0) {
+				state.lastGroupTs.set(rec.groupId, rec.timestamp);
+				if (rowid !== null) state.lastGroupRowid.set(rec.groupId, rowid);
+				else state.lastGroupRowid.delete(rec.groupId);
+			}
+		} else {
+			state.lastGroupTs.set(rec.groupId, rec.timestamp);
+			if (rowid !== null) state.lastGroupRowid.set(rec.groupId, rowid);
+		}
+	}
+	return state;
+}
+
+function observeIncomingOrder(
+	state: ChronoOrderState,
+	groupId: string,
+	timestamp: string,
+	sourceId: string,
+): boolean {
+	let outOfOrder = false;
+	const rowid = extractNtqqRowid(sourceId);
+	if (state.hasGlobal && compareEvidenceTimestamps(timestamp, state.lastGlobalTs) < 0) {
+		outOfOrder = true;
+	}
+	const prevGroupTs = state.lastGroupTs.get(groupId);
+	if (prevGroupTs !== undefined) {
+		const prevRow = state.lastGroupRowid.get(groupId) ?? null;
+		const cmp = compareRecordOrder(timestamp, rowid, prevGroupTs, prevRow, true);
+		if (cmp < 0) {
+			outOfOrder = true;
+		} else if (cmp > 0) {
+			state.lastGroupTs.set(groupId, timestamp);
+			if (rowid !== null) state.lastGroupRowid.set(groupId, rowid);
+			else state.lastGroupRowid.delete(groupId);
+		}
+	} else {
+		state.lastGroupTs.set(groupId, timestamp);
+		if (rowid !== null) state.lastGroupRowid.set(groupId, rowid);
+	}
+	if (!state.hasGlobal || compareEvidenceTimestamps(timestamp, state.lastGlobalTs) > 0) {
+		state.hasGlobal = true;
+		state.lastGlobalTs = timestamp;
+	}
+	return outOfOrder;
+}
+
+/**
+ * 重排时间线后，若某群原有的 lastReportedSourceId 因历史无日期/乱序消息被排到更靠前位置，
+ * 将该群游标修正到「原已汇报集合在重排后队列中的最靠后位置」，防止已汇报消息被整体回跳重报。
+ */
+function repairCursorsAfterChronoSort(
+	beforeRecords: readonly EvidenceMessageRecord[],
+	afterRecords: readonly EvidenceMessageRecord[],
+	cursors: Record<string, GroupCursorRecord>,
+): Record<string, GroupCursorRecord> {
+	const beforeByGroup = new Map<string, string[]>();
+	for (const rec of beforeRecords) {
+		const arr = beforeByGroup.get(rec.groupId) ?? [];
+		arr.push(rec.sourceId);
+		beforeByGroup.set(rec.groupId, arr);
+	}
+	const afterByGroup = new Map<string, string[]>();
+	for (const rec of afterRecords) {
+		const arr = afterByGroup.get(rec.groupId) ?? [];
+		arr.push(rec.sourceId);
+		afterByGroup.set(rec.groupId, arr);
+	}
+
+	const repaired: Record<string, GroupCursorRecord> = { ...cursors };
+	for (const [gid, cur] of Object.entries(cursors)) {
+		if (!cur.lastReportedSourceId) continue;
+		const beforeIds = beforeByGroup.get(gid);
+		const afterIds = afterByGroup.get(gid);
+		if (!beforeIds || !afterIds || afterIds.length === 0) continue;
+		const prevIdx = beforeIds.indexOf(cur.lastReportedSourceId);
+		if (prevIdx < 0) continue;
+		const alreadyReported = new Set(beforeIds.slice(0, prevIdx + 1));
+		let maxAfterIdx = -1;
+		for (let i = 0; i < afterIds.length; i += 1) {
+			if (alreadyReported.has(afterIds[i]!)) {
+				maxAfterIdx = i;
+			}
+		}
+		if (maxAfterIdx >= 0 && afterIds[maxAfterIdx] !== cur.lastReportedSourceId) {
+			repaired[gid] = {
+				...cur,
+				lastReportedSourceId: afterIds[maxAfterIdx]!,
+			};
+		}
+	}
+	return repaired;
+}
+
 function sortEvidenceChronologically(records: EvidenceMessageRecord[]): EvidenceMessageRecord[] {
 	return records
 		.map((rec, orderIdx) => ({ rec, orderIdx }))
@@ -482,7 +736,7 @@ function sortEvidenceChronologically(records: EvidenceMessageRecord[]): Evidence
 			if (a.rec.groupId === b.rec.groupId) {
 				const rowA = extractNtqqRowid(a.rec.sourceId);
 				const rowB = extractNtqqRowid(b.rec.sourceId);
-				if (rowA !== null && rowB !== null && rowA !== rowB) return rowA - rowB;
+				if (rowA !== null && rowB !== null && rowA !== rowB) return rowA < rowB ? -1 : 1;
 			}
 			return a.orderIdx - b.orderIdx;
 		})
@@ -499,14 +753,17 @@ function normalizeDateBound(raw: string | undefined, bound: "since" | "until"): 
 		return bound === "since" ? `${base} 00:00:00` : `${base} 23:59:59`;
 	}
 
-	const dateTimeNoSec = trimmed.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})[T\s]+([01]?\d|2[0-3]):([0-5]\d)$/);
+	const dateTimeNoSec = trimmed.match(
+		/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})[T\s]+([01]?\d|2[0-3]):([0-5]?\d)(Z|[+-](?:[01]\d|2[0-3]):?[0-5]\d)?$/i,
+	);
 	if (dateTimeNoSec && dateTimeNoSec[1] && dateTimeNoSec[2] && dateTimeNoSec[3] && dateTimeNoSec[4] && dateTimeNoSec[5]) {
-		const base = `${dateTimeNoSec[1]}-${pad2(dateTimeNoSec[2])}-${pad2(dateTimeNoSec[3])} ${pad2(dateTimeNoSec[4])}:${dateTimeNoSec[5]}`;
-		return bound === "since" ? `${base}:00` : `${base}:59`;
+		const baseIsoDate = `${dateTimeNoSec[1]}-${pad2(dateTimeNoSec[2])}-${pad2(dateTimeNoSec[3])}`;
+		const baseTime = `${pad2(dateTimeNoSec[4])}:${pad2(dateTimeNoSec[5])}:${bound === "since" ? "00" : "59"}`;
+		return formatIsoWithOffsetToCst(baseIsoDate, baseTime, dateTimeNoSec[6]);
 	}
 
 	const dateTimeWithSec = trimmed.match(
-		/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})[T\s]+([01]?\d|2[0-3]):([0-5]\d):([0-5]\d)(?:\.\d+)?(?:Z)?$/i,
+		/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})[T\s]+([01]?\d|2[0-3]):([0-5]?\d):([0-5]?\d)(?:\.\d+)?(Z|[+-](?:[01]\d|2[0-3]):?[0-5]\d)?$/i,
 	);
 	if (
 		dateTimeWithSec &&
@@ -517,7 +774,9 @@ function normalizeDateBound(raw: string | undefined, bound: "since" | "until"): 
 		dateTimeWithSec[5] &&
 		dateTimeWithSec[6]
 	) {
-		return `${dateTimeWithSec[1]}-${pad2(dateTimeWithSec[2])}-${pad2(dateTimeWithSec[3])} ${pad2(dateTimeWithSec[4])}:${dateTimeWithSec[5]}:${dateTimeWithSec[6]}`;
+		const baseIsoDate = `${dateTimeWithSec[1]}-${pad2(dateTimeWithSec[2])}-${pad2(dateTimeWithSec[3])}`;
+		const baseTime = `${pad2(dateTimeWithSec[4])}:${pad2(dateTimeWithSec[5])}:${pad2(dateTimeWithSec[6])}`;
+		return formatIsoWithOffsetToCst(baseIsoDate, baseTime, dateTimeWithSec[7]);
 	}
 
 	const timeNoSec = trimmed.match(/^([01]?\d|2[0-3]):([0-5]\d)$/);
@@ -582,36 +841,17 @@ export async function ingestExternalMessages(
 	cursors: GroupCursorRecord[];
 }> {
 	const existing = await loadEvidenceRecords(cwd);
-	const cursors = await loadCursors(cwd);
+	let cursors = await loadCursors(cwd);
 	const seenFp = new Set(existing.map((r) => r.fingerprint));
 	const usedIds = new Set(existing.map((r) => r.sourceId));
-	const lastExistingTsByGroup = new Map<string, string>();
-	const lastExistingRowidByGroup = new Map<string, number>();
-	let lastGlobalFullTs = "";
-	for (const rec of existing) {
-		if (!FULL_DATE_TS_RE.test(rec.timestamp)) continue;
-		const key = sortableTimestampKey(rec.timestamp);
-		if (!lastGlobalFullTs || key > lastGlobalFullTs) lastGlobalFullTs = key;
-		const prevTs = lastExistingTsByGroup.get(rec.groupId);
-		const rowid = extractNtqqRowid(rec.sourceId);
-		if (!prevTs || key > prevTs) {
-			lastExistingTsByGroup.set(rec.groupId, key);
-			if (rowid !== null) lastExistingRowidByGroup.set(rec.groupId, rowid);
-			else lastExistingRowidByGroup.delete(rec.groupId);
-		} else if (key === prevTs && rowid !== null) {
-			const prevRow = lastExistingRowidByGroup.get(rec.groupId);
-			if (prevRow === undefined || rowid > prevRow) {
-				lastExistingRowidByGroup.set(rec.groupId, rowid);
-			}
-		}
-	}
+	const orderState = buildChronoOrderState(existing);
 	let merged: EvidenceMessageRecord[] = [...existing];
 	const sourceFilesByGroup = new Map<string, Set<string>>();
 	const perGroupCounts: Record<string, { newlyIngested: number; skippedDuplicates: number }> = {};
 
 	let newlyIngested = 0;
 	let skippedDuplicates = 0;
-	let needsChronoSort = false;
+	let needsChronoSort = orderState.existingInverted;
 
 	for (const raw of items) {
 		const text = raw.text.trim();
@@ -649,32 +889,8 @@ export async function ingestExternalMessages(
 			while (usedIds.has(`${sourceId}-${suffix}`)) suffix += 1;
 			sourceId = `${sourceId}-${suffix}`;
 		}
-		if (FULL_DATE_TS_RE.test(timestamp)) {
-			const tsKey = sortableTimestampKey(timestamp);
-			const prevGroupMaxTs = lastExistingTsByGroup.get(groupId);
-			const rowid = extractNtqqRowid(sourceId);
-			if (
-				(prevGroupMaxTs && tsKey < prevGroupMaxTs) ||
-				(lastGlobalFullTs && tsKey < lastGlobalFullTs)
-			) {
-				needsChronoSort = true;
-			} else if (prevGroupMaxTs && tsKey === prevGroupMaxTs && rowid !== null) {
-				const prevRow = lastExistingRowidByGroup.get(groupId);
-				if (prevRow !== undefined && rowid < prevRow) {
-					needsChronoSort = true;
-				}
-			}
-			if (!lastGlobalFullTs || tsKey > lastGlobalFullTs) lastGlobalFullTs = tsKey;
-			if (!prevGroupMaxTs || tsKey > prevGroupMaxTs) {
-				lastExistingTsByGroup.set(groupId, tsKey);
-				if (rowid !== null) lastExistingRowidByGroup.set(groupId, rowid);
-				else lastExistingRowidByGroup.delete(groupId);
-			} else if (tsKey === prevGroupMaxTs && rowid !== null) {
-				const prevRow = lastExistingRowidByGroup.get(groupId);
-				if (prevRow === undefined || rowid > prevRow) {
-					lastExistingRowidByGroup.set(groupId, rowid);
-				}
-			}
+		if (observeIncomingOrder(orderState, groupId, timestamp, sourceId)) {
+			needsChronoSort = true;
 		}
 		seenFp.add(fp);
 		usedIds.add(sourceId);
@@ -693,8 +909,9 @@ export async function ingestExternalMessages(
 		counter.newlyIngested += 1;
 	}
 
-	if (needsChronoSort) {
+	if (newlyIngested > 0 && needsChronoSort) {
 		merged = sortEvidenceChronologically(merged);
+		cursors = repairCursorsAfterChronoSort(existing, merged, cursors);
 	}
 
 	if (newlyIngested > 0 || !existsSync(evidenceJsonlPath(cwd))) {
@@ -728,32 +945,25 @@ export async function ingestExternalMessages(
  */
 export async function pullQqGroupsIncremental(cwd: string, groupIdFilter?: string): Promise<WenyouPullQqResult> {
 	const existing = await loadEvidenceRecords(cwd);
-	const cursors = await loadCursors(cwd);
+	let cursors = await loadCursors(cwd);
 	const seenFp = new Set(existing.map((r) => r.fingerprint));
 	const usedIds = new Set(existing.map((r) => r.sourceId));
-	const lastExistingTsByGroup = new Map<string, string>();
-	let lastGlobalFullTs = "";
-	for (const rec of existing) {
-		if (!FULL_DATE_TS_RE.test(rec.timestamp)) continue;
-		const key = sortableTimestampKey(rec.timestamp);
-		if (!lastGlobalFullTs || key > lastGlobalFullTs) lastGlobalFullTs = key;
-		const prevTs = lastExistingTsByGroup.get(rec.groupId);
-		if (!prevTs || key > prevTs) lastExistingTsByGroup.set(rec.groupId, key);
-	}
+	const orderState = buildChronoOrderState(existing);
 	let merged: EvidenceMessageRecord[] = [...existing];
 	const sourceFilesByGroup = new Map<string, Set<string>>();
 
 	let newlyIngested = 0;
 	let skippedDuplicates = 0;
-	let needsChronoSort = false;
+	let needsChronoSort = orderState.existingInverted;
 
 	const collectDir = join(cwd, "00-群聊收集");
 	const files = await listCollectFiles(collectDir);
 
 	for (const file of files) {
 		const meta = inferGroupMeta(file.relPath);
-		if (groupIdFilter && meta.groupId !== groupIdFilter) continue;
 		const ext = extname(file.absPath).toLowerCase();
+		// .json / .jsonl 可能在文件内部声明 groupId 或 chatInfo.uin，不能在读取内容前仅凭文件名跳过
+		if (groupIdFilter && ext === ".txt" && meta.groupId !== groupIdFilter) continue;
 		const content = await readFile(file.absPath, "utf8");
 		let parsed: ParsedEvidenceCandidate[] = [];
 
@@ -764,15 +974,16 @@ export async function pullQqGroupsIncremental(cwd: string, groupIdFilter?: strin
 				const doc = JSON.parse(content) as
 					| RawJsonMessage[]
 					| {
-							groupId?: string;
-							groupName?: string;
-							chatInfo?: { name?: string; uin?: string };
+							groupId?: unknown;
+							groupName?: unknown;
+							chatInfo?: { name?: unknown; uin?: unknown };
 							messages?: RawJsonMessage[];
 							records?: RawJsonMessage[];
 					  };
 				const effectiveMeta = { ...meta };
 				if (!Array.isArray(doc) && doc && typeof doc === "object") {
-					if (typeof doc.groupId === "string" && doc.groupId.trim()) effectiveMeta.groupId = doc.groupId.trim();
+					const topGroupId = toNonEmptyIdString(doc.groupId) || toNonEmptyIdString(doc.chatInfo?.uin);
+					if (topGroupId) effectiveMeta.groupId = topGroupId;
 					if (typeof doc.groupName === "string" && doc.groupName.trim()) {
 						effectiveMeta.groupName = doc.groupName.trim();
 					} else if (typeof doc.chatInfo?.name === "string" && doc.chatInfo.name.trim()) {
@@ -806,6 +1017,7 @@ export async function pullQqGroupsIncremental(cwd: string, groupIdFilter?: strin
 
 		for (const candidate of parsed) {
 			const item = candidate.record;
+			if (groupIdFilter && item.groupId !== groupIdFilter) continue;
 			const set = sourceFilesByGroup.get(item.groupId) ?? new Set<string>();
 			set.add(`00-群聊收集/${file.relPath}`);
 			sourceFilesByGroup.set(item.groupId, set);
@@ -825,14 +1037,8 @@ export async function pullQqGroupsIncremental(cwd: string, groupIdFilter?: strin
 				while (usedIds.has(`${sourceId}-${suffix}`)) suffix += 1;
 				sourceId = `${sourceId}-${suffix}`;
 			}
-			if (FULL_DATE_TS_RE.test(item.timestamp)) {
-				const tsKey = sortableTimestampKey(item.timestamp);
-				const prevGroupMaxTs = lastExistingTsByGroup.get(item.groupId);
-				if ((prevGroupMaxTs && tsKey < prevGroupMaxTs) || (lastGlobalFullTs && tsKey < lastGlobalFullTs)) {
-					needsChronoSort = true;
-				}
-				if (!lastGlobalFullTs || tsKey > lastGlobalFullTs) lastGlobalFullTs = tsKey;
-				if (!prevGroupMaxTs || tsKey > prevGroupMaxTs) lastExistingTsByGroup.set(item.groupId, tsKey);
+			if (observeIncomingOrder(orderState, item.groupId, item.timestamp, sourceId)) {
+				needsChronoSort = true;
 			}
 			seenFp.add(item.fingerprint);
 			usedIds.add(sourceId);
@@ -841,8 +1047,9 @@ export async function pullQqGroupsIncremental(cwd: string, groupIdFilter?: strin
 		}
 	}
 
-	if (needsChronoSort) {
+	if (newlyIngested > 0 && needsChronoSort) {
 		merged = sortEvidenceChronologically(merged);
+		cursors = repairCursorsAfterChronoSort(existing, merged, cursors);
 	}
 
 	if (newlyIngested > 0 || !existsSync(evidenceJsonlPath(cwd))) {

@@ -370,4 +370,98 @@ describe("makeWenyouExtension 8 工具注册与画布事件闭环", () => {
 		expect(memText).toContain("[未展开实册]");
 		expect(memText).toContain("[编年史/条约] 济水盟约");
 	});
+
+	it("Bug #5 & #22: 未读 > 80 条时未传 coveredSourceIds 仅推进已拉取展示窗口，不吞掉 81..N 未见消息，且损坏台账/简报不炸毁 read_memory", async () => {
+		const root = await mkdtemp(join(tmpdir(), "wenyou-ext-window-"));
+		tempDirs.push(root);
+		const service = new WenyouService();
+		await service.initCampaign(root, { worldTitle: "游标防吞回归", currentEra: "T1" });
+
+		const ext = makeWenyouExtension({ service, cwd: root });
+		const tools = new Map<string, ToolDefinition<any, any, any>>();
+		const fakePi = {
+			registerTool: (tool: ToolDefinition<any, any, any>) => {
+				tools.set(tool.name, tool);
+			},
+			on: () => () => {},
+		} as unknown as ExtensionAPI;
+
+		if (typeof ext === "function") await ext(fakePi);
+		else await ext.factory(fakePi);
+
+		const chatLines = Array.from({ length: 110 }, (_, idx) => {
+			const seq = idx + 1;
+			const hh = String(10 + Math.floor(idx / 60)).padStart(2, "0");
+			const mm = String(idx % 60).padStart(2, "0");
+			return `2026-11-26 ${hh}:${mm}:00 成员${seq}(1000${seq})\n消息内容第${seq}条`;
+		}).join("\n\n");
+		await writeFile(join(root, "00-群聊收集", "主群_group-big-1001.txt"), chatLines, "utf8");
+
+		const ctx = { cwd: root } as never;
+
+		// 第 1 次 pull 默认仅暴露前 80/110 条
+		const pull1 = await tools.get("wenyou_pull_qq")!.execute("p1", {}, undefined, undefined, ctx);
+		const pull1Text = (pull1.content[0] as { text: string }).text;
+		expect(pull1Text).toContain("展示 80/110 条");
+		expect(pull1Text).toContain("尚有 30 条未展示消息");
+
+		// 发布简报时不传 coveredSourceIds：游标只能推进到第 80 条，绝不能吞掉 81..110
+		const pub1 = await tools.get("wenyou_publish_briefing")!.execute(
+			"b1",
+			{
+				title: "第一批简报",
+				turnLabel: "T1",
+				headline: "覆盖前 80 条",
+				progressItems: [],
+				diplomacySummary: "平稳",
+				intelChecks: [],
+				strategicJudgment: "继续拉取剩余消息",
+			},
+			undefined,
+			undefined,
+			ctx,
+		);
+		expect((pub1.details as { remainingUnreportedCount: number }).remainingUnreportedCount).toBe(30);
+
+		// 第 2 次 pull 必须原样拿到剩余 30 条（81..110）
+		const pull2 = await tools.get("wenyou_pull_qq")!.execute("p2", {}, undefined, undefined, ctx);
+		const pull2Text = (pull2.content[0] as { text: string }).text;
+		expect(pull2Text).toContain("展示 30/30 条");
+		expect(pull2Text).toContain("消息内容第81条");
+		expect(pull2Text).toContain("消息内容第110条");
+
+		// 第 2 次发布简报后剩余未汇报归零
+		const pub2 = await tools.get("wenyou_publish_briefing")!.execute(
+			"b2",
+			{
+				title: "第二批简报",
+				turnLabel: "T1",
+				headline: "覆盖后 30 条",
+				progressItems: [],
+				diplomacySummary: "平稳",
+				intelChecks: [],
+				strategicJudgment: "全部消化",
+			},
+			undefined,
+			undefined,
+			ctx,
+		);
+		expect((pub2.details as { remainingUnreportedCount: number }).remainingUnreportedCount).toBe(0);
+
+		// Bug #22: 注入缺字段简报与台账，wenyou_read_memory 仍正常输出
+		await writeFile(
+			join(root, "02-局势简报与台账", "briefings", "briefing-999-partial.json"),
+			JSON.stringify({ id: "briefing-999", headline: "无时间残缺简报" }),
+			"utf8",
+		);
+		await writeFile(
+			join(root, "02-局势简报与台账", "rolling-ledger.json"),
+			JSON.stringify({ entries: [{ id: "bad-1", category: "fact", summary: "无 sourceRefs 台账" }] }),
+			"utf8",
+		);
+		const memRes = await tools.get("wenyou_read_memory")!.execute("m1", { maxBriefings: 5 }, undefined, undefined, ctx);
+		const memText = (memRes.content[0] as { text: string }).text;
+		expect(memText).toContain("无时间残缺简报");
+		expect(memText).toContain("无 sourceRefs 台账");
+	});
 });

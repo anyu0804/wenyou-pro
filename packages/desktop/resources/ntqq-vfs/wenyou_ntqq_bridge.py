@@ -177,7 +177,9 @@ def cmd_pull_messages(args: argparse.Namespace) -> int:
                 )
                 rows, _, truncated = wenyou_read.scan(conn, scan_args)
             else:
-                rows = wenyou_read.tail_query(conn, gid, limit)
+                probe_rows = wenyou_read.tail_query(conn, gid, limit + 1)
+                truncated = len(probe_rows) > limit
+                rows = probe_rows[-limit:] if truncated else probe_rows
 
             entries = wenyou_read.decode_entries(rows, uid_map, gname)
             exported_count = 0
@@ -188,16 +190,17 @@ def cmd_pull_messages(args: argparse.Namespace) -> int:
                 sender_raw = entry.get("sender")
                 sender_name = str(sender_raw).strip() if sender_raw else str(entry.get("uid") or "未知成员")
                 uid_str = str(entry.get("uid") or "").strip()
+                rowid_str = str(int(entry["rowid"]))
                 messages.append(
                     {
-                        "sourceId": f"qq-{gid}-{entry['rowid']}",
+                        "sourceId": f"qq-{gid}-{rowid_str}",
                         "groupId": str(gid),
                         "groupName": gname,
                         "sender": sender_name,
                         "senderId": uid_str if uid_str else None,
                         "timestamp": _fmt_full_ts(entry["ts"]),
                         "ts": int(entry["ts"]),
-                        "rowid": int(entry["rowid"]),
+                        "rowid": rowid_str,
                         "text": body,
                     }
                 )
@@ -210,7 +213,7 @@ def cmd_pull_messages(args: argparse.Namespace) -> int:
                     "fetchedRows": len(rows),
                     "exportedMessages": exported_count,
                     "lastTs": int(rows[-1][1]) if rows else since_ts,
-                    "lastRowid": int(rows[-1][0]) if rows else since_rowid,
+                    "lastRowid": str(int(rows[-1][0])) if rows else str(int(since_rowid)),
                     "truncated": bool(truncated),
                 }
             )

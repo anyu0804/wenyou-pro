@@ -1,4 +1,4 @@
-import { isAbsolute, relative, resolve } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 import type { InlineExtension } from "@earendil-works/pi-coding-agent";
 import type { PermissionMode } from "@percho/shared";
 import { createLogger } from "../log";
@@ -16,7 +16,7 @@ import {
 import { applyToolAnnotationsRule } from "./annotations";
 import { type PermissionAuditEntry, PermissionAuditLog, permissionAuditPath } from "./audit";
 import type { PermissionRequestMeta } from "./gate";
-import { isRmSegment, isTemporaryPath, rmSegmentExempt } from "./tmp-zone";
+import { isPathInsideRoot, isRmSegment, isTemporaryPath, rmSegmentExempt } from "./tmp-zone";
 
 const log = createLogger("permission-gate");
 
@@ -159,10 +159,7 @@ export function makePermissionGateExtension(
 						}
 					} else if (projectRoot && abs !== null) {
 						const roots = [projectRoot, ...(loadWorkspaces().projects[projectRoot]?.roots ?? [])];
-						const inside = roots.some((root) => {
-							const rel = relative(root, abs);
-							return !rel.startsWith("..") && !isAbsolute(rel);
-						});
+						const inside = roots.some((root) => isPathInsideRoot(root, abs));
 						patternText = abs;
 						if (!inside) {
 							outside = true;

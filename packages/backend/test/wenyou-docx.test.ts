@@ -118,4 +118,57 @@ describe("纯 Node 原生 .docx 生成器", () => {
 		expect(paragraphs.some((p) => p.includes("2. 临河渡北岸增筑烽燧三座。"))).toBe(true);
 		expect(paragraphs.some((p) => p.includes("一、官盐三万引按约发往凉州。"))).toBe(true);
 	});
+
+	it("兼容无空格顿号/括号条陈不粘连、保留行首小数、居中标题清零首行缩进并遵守 OOXML pPr 顺序且不吞算式星号", () => {
+		const buf = buildPolicyDocx({
+			title: "景平七年整军理财疏",
+			subtitle: "北周 · 景平七年春",
+			bodyMarkdown: [
+				"一、整军备战，严防临河渡。",
+				"二、理财开源，整顿常平仓。",
+				"（一）清点三县库粮。",
+				"（二）核减冗费开支。",
+				"1、核发步卒冬衣。",
+				"2、修缮北岸烽燧。",
+				"",
+				"粮饷核算：3.14 万石折银 2 * 3 * 4 = 24 万钱，须*重点*督办。",
+			].join("\n"),
+			createdAt: "2026-11-26T00:00:00.000Z",
+		});
+
+		const entries = unzipEntries(buf);
+		const doc = entries.get("word/document.xml")!;
+		const paragraphs = [...doc.matchAll(/<w:p>[\s\S]*?<\/w:p>/g)].map((m) => m[0]);
+
+		// 标题与副标题清零首行缩进且严格遵守 CT_PPr 顺序：keepNext -> spacing -> ind -> jc
+		const titleP = paragraphs[0]!;
+		const subtitleP = paragraphs[1]!;
+		for (const p of [titleP, subtitleP]) {
+			const pPr = p.match(/<w:pPr>([\s\S]*?)<\/w:pPr>/)?.[1] ?? "";
+			expect(pPr).toContain('<w:ind w:firstLine="0" w:firstLineChars="0"/>');
+			expect(pPr).toContain('<w:jc w:val="center"/>');
+			const keepIdx = pPr.indexOf("<w:keepNext/>");
+			const spacingIdx = pPr.indexOf("<w:spacing ");
+			const indIdx = pPr.indexOf("<w:ind ");
+			const jcIdx = pPr.indexOf("<w:jc ");
+			expect(keepIdx).toBeGreaterThanOrEqual(0);
+			expect(spacingIdx).toBeGreaterThan(keepIdx);
+			expect(indIdx).toBeGreaterThan(spacingIdx);
+			expect(jcIdx).toBeGreaterThan(indIdx);
+		}
+
+		// 无空格顿号/括号条陈独立分段，绝不粘连
+		expect(paragraphs.some((p) => p.includes("一、整军备战") && !p.includes("二、理财开源"))).toBe(true);
+		expect(paragraphs.some((p) => p.includes("二、理财开源") && !p.includes("（一）清点"))).toBe(true);
+		expect(paragraphs.some((p) => p.includes("（一）清点三县库粮。") && !p.includes("（二）核减"))).toBe(true);
+		expect(paragraphs.some((p) => p.includes("1、核发步卒冬衣。") && !p.includes("2、修缮"))).toBe(true);
+
+		// 算式星号 2 * 3 * 4 完整保留，而 *重点* 正常转为斜体
+		const mathP = paragraphs.find((p) => p.includes("3.14 万石"))!;
+		expect(mathP).toBeTruthy();
+		expect(mathP).toContain("2 * 3 * 4 = 24");
+		expect(mathP).toContain("<w:i/><w:iCs/>");
+		expect(mathP).toContain(">重点<");
+		expect(mathP).not.toContain("*重点*");
+	});
 });

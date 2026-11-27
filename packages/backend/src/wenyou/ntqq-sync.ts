@@ -32,7 +32,7 @@ const REQUIRED_BRIDGE_FILES = [
 
 interface CampaignNtqqSyncWatermark {
 	lastTs: number;
-	lastRowid: number;
+	lastRowid: string;
 	lastSyncedAt: string;
 }
 
@@ -46,8 +46,29 @@ interface BridgeExportedMessage {
 	senderId?: string | null;
 	timestamp: string;
 	ts: number;
-	rowid: number;
+	rowid: string | number;
 	text: string;
+}
+
+/** 将历史 number 或十进制字符串 rowid 无损规范化为十进制数字字符串，非法值回退 "0" */
+function normalizeDecimalRowid(raw: unknown): string {
+	if (typeof raw === "string") {
+		const trimmed = raw.trim();
+		if (/^\d+$/.test(trimmed)) {
+			return BigInt(trimmed).toString(10);
+		}
+		return "0";
+	}
+	if (typeof raw === "number") {
+		if (Number.isFinite(raw) && Number.isInteger(raw) && raw >= 0) {
+			return BigInt(raw).toString(10);
+		}
+		return "0";
+	}
+	if (typeof raw === "bigint" && raw >= 0n) {
+		return raw.toString(10);
+	}
+	return "0";
 }
 
 export interface NtqqSyncServiceOptions {
@@ -869,9 +890,10 @@ export class NtqqSyncService {
 			const out: CampaignNtqqSyncState = {};
 			for (const [gid, entry] of Object.entries(raw)) {
 				if (!GROUP_ID_RE.test(gid) || !entry || typeof entry !== "object") continue;
+				const parsedTs = Number(entry.lastTs);
 				out[gid] = {
-					lastTs: Number.isFinite(Number(entry.lastTs)) ? Number(entry.lastTs) : 0,
-					lastRowid: Number.isFinite(Number(entry.lastRowid)) ? Number(entry.lastRowid) : 0,
+					lastTs: Number.isFinite(parsedTs) && parsedTs >= 0 ? Math.trunc(parsedTs) : 0,
+					lastRowid: normalizeDecimalRowid(entry.lastRowid),
 					lastSyncedAt: typeof entry.lastSyncedAt === "string" ? entry.lastSyncedAt : "",
 				};
 			}
@@ -906,7 +928,7 @@ export class NtqqSyncService {
 			const syncState = await this.loadCampaignSyncState(cwd);
 			const specs = targetBindings.map((b) => {
 				const wm = options?.force ? undefined : syncState[b.groupId];
-				return `${b.groupId}:${wm?.lastTs ?? 0}:${wm?.lastRowid ?? 0}`;
+				return `${b.groupId}:${wm?.lastTs ?? 0}:${wm ? normalizeDecimalRowid(wm.lastRowid) : "0"}`;
 			});
 
 			await mkdir(this.tmpDir, { recursive: true });
@@ -956,7 +978,7 @@ export class NtqqSyncService {
 						fetchedRows: number;
 						exportedMessages: number;
 						lastTs: number;
-						lastRowid: number;
+						lastRowid: string | number;
 						truncated: boolean;
 					}>;
 					sync: {
@@ -994,12 +1016,22 @@ export class NtqqSyncService {
 				const nowIso = new Date().toISOString();
 				const nextSyncState: CampaignNtqqSyncState = { ...syncState };
 				const groupDetails: NtqqSyncGroupDetail[] = parsed.perGroup.map((g) => {
-					if (g.lastTs > 0) {
-						nextSyncState[g.groupId] = {
-							lastTs: g.lastTs,
-							lastRowid: g.lastRowid,
-							lastSyncedAt: nowIso,
-						};
+					const nextLastTs = Number.isFinite(Number(g.lastTs)) && Number(g.lastTs) > 0 ? Math.trunc(Number(g.lastTs)) : 0;
+					const nextLastRowid = normalizeDecimalRowid(g.lastRowid);
+					if (nextLastTs > 0) {
+						const prev = nextSyncState[g.groupId];
+						const prevRowid = prev ? normalizeDecimalRowid(prev.lastRowid) : "0";
+						const shouldAdvance =
+							!prev ||
+							nextLastTs > prev.lastTs ||
+							(nextLastTs === prev.lastTs && BigInt(nextLastRowid) >= BigInt(prevRowid));
+						if (shouldAdvance) {
+							nextSyncState[g.groupId] = {
+								lastTs: nextLastTs,
+								lastRowid: nextLastRowid,
+								lastSyncedAt: nowIso,
+							};
+						}
 					}
 					const counts = ingestRes.perGroupCounts[g.groupId] ?? { newlyIngested: 0, skippedDuplicates: 0 };
 					return {
@@ -1009,8 +1041,8 @@ export class NtqqSyncService {
 						exportedMessages: g.exportedMessages,
 						newlyIngested: counts.newlyIngested,
 						skippedDuplicates: counts.skippedDuplicates,
-						lastTs: g.lastTs,
-						lastRowid: g.lastRowid,
+						lastTs: nextLastTs,
+						lastRowid: nextLastRowid,
 						truncated: g.truncated,
 					};
 				});

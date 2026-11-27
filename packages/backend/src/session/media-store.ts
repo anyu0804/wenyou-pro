@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { copyFile, link, lstat, mkdir, open, realpath, rename, rm, unlink } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 import type { ImageInput, ReferenceImage } from "@percho/shared";
 import { JsonStore } from "../json-store";
 import { privateDirectory } from "../storage/private-directory";
@@ -260,7 +260,8 @@ export class SessionMediaStore {
 			await this.checkDirectory(directory);
 			await rm(directory, { recursive: true, force: true });
 			for (const key of this.verified.keys())
-				if (key === directory || key.startsWith(`${directory}/`)) this.verified.delete(key);
+				if (key === directory || key.startsWith(`${directory}${sep}`) || key.startsWith(`${directory}/`))
+					this.verified.delete(key);
 		});
 	}
 

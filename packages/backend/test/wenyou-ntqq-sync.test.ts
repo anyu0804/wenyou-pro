@@ -114,10 +114,10 @@ function sha256(filePath: string): string {
 function createPlainSqliteFixtures(
 	dir: string,
 	messages: Array<{
-		rowid: number;
+		rowid: number | string;
 		ts: number;
 		gid: number;
-		col40003?: number | null;
+		col40003?: number | string | null;
 		col40030?: number | null;
 		uid: string | number | null;
 		text: string;
@@ -165,10 +165,11 @@ c.execute('INSERT INTO nt_uid_mapping_table ("48902", "1002") VALUES (?, ?)', ("
 c.execute('INSERT INTO nt_uid_mapping_table ("48902", "1002") VALUES (?, ?)', ("u_self", "测试玩家"))
 for r in rows:
     c40030 = r["col40030"] if "col40030" in r else r["gid"]
-    c40003 = r["col40003"] if "col40003" in r else r["rowid"]
+    rid = int(r["rowid"])
+    c40003 = int(r["col40003"]) if "col40003" in r and r["col40003"] is not None else rid
     c.execute(
       'INSERT INTO group_msg_table ("40001","40002","40003","40027","40030","40033","40050","40058","40800") VALUES (?,?,?,?,?,?,?,?,?)',
-      (r["rowid"], 1, c40003, r["gid"], c40030, r["uid"], r["ts"], 0, bytes.fromhex(r["blobHex"]))
+      (rid, 1, c40003, r["gid"], c40030, r["uid"], r["ts"], 0, bytes.fromhex(r["blobHex"]))
     )
 c.commit()
 c.close()
@@ -752,5 +753,96 @@ finally:
 			await winService.saveConfig({ dbDir });
 			await expect(winService.listGroups()).rejects.toThrow(/请先一键提取本机密钥/);
 		}
+	});
+
+	it("19 位雪花 rowid 全链路无损字符串传输、BigInt 同秒精确排序，且首轮/补抓如实返回 truncated", async () => {
+		const work = makeTempDir("wenyou-ntqq-snowflake-");
+		const dataDir = join(work, "ntqq-data");
+		const dbDir = join(work, "fake-nt-db");
+		const campaignDir = join(work, "campaign");
+		mkdirSync(dbDir, { recursive: true });
+		mkdirSync(campaignDir, { recursive: true });
+
+		const keyMsg = randomBytes(32);
+		const saltMsg = randomBytes(16);
+		const keyGrp = randomBytes(32);
+		const saltGrp = randomBytes(16);
+
+		let step = 0;
+		const writeEnc = (
+			rows: Array<{ rowid: string; ts: number; gid: number; uid: string; text: string }>,
+		) => {
+			step += 1;
+			const stepDir = join(work, `sf-${step}`);
+			mkdirSync(stepDir, { recursive: true });
+			const { plainMsg, plainGroup } = createPlainSqliteFixtures(stepDir, rows);
+			writeFileSync(join(dbDir, "nt_msg.db"), encryptSqliteToNtqq(readFileSync(plainMsg), keyMsg, saltMsg));
+			writeFileSync(join(dbDir, "group_info.db"), encryptSqliteToNtqq(readFileSync(plainGroup), keyGrp, saltGrp));
+		};
+
+		// 3 条同秒 19 位雪花 rowid（IEEE-754 double 下会全部舍入成同一浮点数）
+		writeEnc([
+			{ rowid: "7786000000000000001", ts: 1764005000, gid: 900001, uid: "u_gm", text: "同秒雪花第一条" },
+			{ rowid: "7786000000000000002", ts: 1764005000, gid: 900001, uid: "u_player", text: "同秒雪花第二条" },
+			{ rowid: "7786000000000000003", ts: 1764005000, gid: 900001, uid: "u_self", text: "同秒雪花第三条" },
+		]);
+
+		const keyMapPath = join(dataDir, "key_map.json");
+		mkdirSync(dataDir, { recursive: true });
+		writeFileSync(
+			keyMapPath,
+			JSON.stringify({
+				key_map: {
+					[saltMsg.toString("hex")]: keyMsg.toString("hex"),
+					[saltGrp.toString("hex")]: keyGrp.toString("hex"),
+				},
+			}),
+		);
+
+		const service = new WenyouService(undefined, { dataDir, assetsDir: ASSETS_DIR });
+		await service.initCampaign(campaignDir, { worldTitle: "雪花精度测试", currentEra: "T1" });
+		await service.ntqq.saveConfig({ qqUin: "10001", dbDir, keyMapPath });
+		await service.ntqq.saveCampaignBindings(campaignDir, [
+			{ groupId: "900001", groupName: "河朔测试主群", role: "main" },
+		]);
+
+		// 1. 首轮 limit=2（库里有 3 条）：必须如实返回 truncated=true，且 lastRowid 保留精确 19 位十进制字符串
+		const first = await service.syncNtqqCampaign(campaignDir, { limit: 2 });
+		expect(first.newlyIngested).toBe(2);
+		expect(first.groups[0]?.truncated).toBe(true);
+		expect(first.groups[0]?.lastRowid).toBe("7786000000000000003");
+
+		const stateOnDisk = JSON.parse(
+			readFileSync(join(campaignDir, ".wenyou", "ntqq-sync-state.json"), "utf8"),
+		) as Record<string, { lastRowid: unknown }>;
+		expect(stateOnDisk["900001"]?.lastRowid).toBe("7786000000000000003");
+
+		// 2. 同秒新增第 4 条（7786...004）：借助精确 19 位字符串水位，增量同步准确抓取第 4 条，且不重复拉取第 3 条
+		writeEnc([
+			{ rowid: "7786000000000000001", ts: 1764005000, gid: 900001, uid: "u_gm", text: "同秒雪花第一条" },
+			{ rowid: "7786000000000000002", ts: 1764005000, gid: 900001, uid: "u_player", text: "同秒雪花第二条" },
+			{ rowid: "7786000000000000003", ts: 1764005000, gid: 900001, uid: "u_self", text: "同秒雪花第三条" },
+			{ rowid: "7786000000000000004", ts: 1764005000, gid: 900001, uid: "u_gm", text: "同秒雪花第四条" },
+		]);
+		const second = await service.syncNtqqCampaign(campaignDir, { limit: 10 });
+		expect(second.newlyIngested).toBe(1);
+		expect(second.groups[0]?.fetchedRows).toBe(1);
+		expect(second.groups[0]?.truncated).toBe(false);
+		expect(second.groups[0]?.lastRowid).toBe("7786000000000000004");
+
+		// 3. force=true 补抓 limit=2（库里有 4 条）-> truncated=true；limit=10 -> truncated=false 且把第 1 条按 BigInt 精准排到最前
+		const backfillPartial = await service.syncNtqqCampaign(campaignDir, { force: true, limit: 2 });
+		expect(backfillPartial.groups[0]?.truncated).toBe(true);
+
+		const backfillFull = await service.syncNtqqCampaign(campaignDir, { force: true, limit: 10 });
+		expect(backfillFull.groups[0]?.truncated).toBe(false);
+		expect(backfillFull.newlyIngested).toBe(1); // 仅补齐首轮未拉的 7786...001
+		const ctxWin = await service.lookupSource(campaignDir, "qq-900001-7786000000000000002", 10);
+		expect(ctxWin?.messages.map((m) => m.sourceId)).toEqual([
+			"qq-900001-7786000000000000001",
+			"qq-900001-7786000000000000002",
+			"qq-900001-7786000000000000003",
+			"qq-900001-7786000000000000004",
+		]);
 	});
 });

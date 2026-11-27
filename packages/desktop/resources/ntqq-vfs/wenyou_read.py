@@ -652,18 +652,22 @@ def line_for(entry, parsed):
         if not txt:
             return f"[{time_s}] [{gname}] {sender}: {prefix or '[文本]'}（空）"
         return f"[{time_s}] [{gname}] {sender}: {prefix}{txt}"
+    img_name = str(parsed["image"]).strip() if parsed.get("image") is not None else ""
+    sticker_name = str(parsed["sticker"]).strip() if parsed.get("sticker") is not None else ""
     if parsed["type"] == 2:
-        return f"[{time_s}] [{gname}] {sender}: [图片] {parsed['image']}"
+        body = f"[图片] {img_name}" if img_name else "[图片]"
+        return f"[{time_s}] [{gname}] {sender}: {body}"
     if parsed["type"] == 6:
-        return f"[{time_s}] [{gname}] {sender}: [表情] {parsed['sticker']}"
+        body = f"[表情] {sticker_name}" if sticker_name else "[表情]"
+        return f"[{time_s}] [{gname}] {sender}: {body}"
     # 其它类型：优先给可读文本，其次给类型标签
     txt = parsed["text"]
-    if parsed["image"]:
+    if img_name:
         txt = txt or ""
-        txt = f"{txt} [图片] {parsed['image']}".strip()
-    if parsed["sticker"]:
+        txt = f"{txt} [图片] {img_name}".strip()
+    if sticker_name:
         txt = txt or ""
-        txt = f"{txt} [表情] {parsed['sticker']}".strip()
+        txt = f"{txt} [表情] {sticker_name}".strip()
     if not txt:
         txt = label or f"[类型{parsed['type']}]"
     else:

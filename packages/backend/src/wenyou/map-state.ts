@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, readdir, readFile, realpath, rename, stat, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readdir, readFile, realpath, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, join, relative, resolve, sep } from "node:path";
 import type {
 	CardinalSector,
@@ -18,6 +18,7 @@ import type {
 } from "@percho/shared";
 import {
 	assertPathInsideWorkspace,
+	assertRealTargetInsideWorkspace,
 	isPrivateVaultPath,
 	normalizeVaultPath,
 	resolveRealPathInsideWorkspace,
@@ -522,11 +523,31 @@ function inferDimensions(
 	return { width: 1000, height: 1000 };
 }
 
-/** 折合 FMG .map 内多行 <svg>...</svg> 中的裸换行，使 lines[14/15/18/25/30] 行号严格对齐 */
-function splitFmgMapLines(content: string): string[] {
+/** 折合 FMG .map 内多行 <svg>...</svg>（含任意层级嵌套国徽 <svg> 与自闭合 <svg .../>）中的裸换行，使 lines[14/15/18/25/30] 行号严格对齐 */
+export function splitFmgMapLines(content: string): string[] {
 	const clean = content.replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n");
-	const collapsed = clean.replace(/<svg\b[\s\S]*?<\/svg>/gi, (block) => block.replace(/\n+/g, " "));
-	return collapsed.split("\n");
+	const tagRe = /<\/?svg(?=\s|\/?>)(?:"[^"]*"|'[^']*'|[^>"'])*>/gi;
+	let depth = 0;
+	let out = "";
+	let lastIdx = 0;
+	for (const match of clean.matchAll(tagRe)) {
+		const idx = match.index ?? 0;
+		const tag = match[0];
+		const chunk = clean.slice(lastIdx, idx);
+		out += depth > 0 ? chunk.replace(/\n+/g, " ") : chunk;
+		const isClosing = tag.startsWith("</");
+		const isSelfClosing = !isClosing && /\/\s*>$/.test(tag);
+		out += tag.replace(/\n+/g, " ");
+		if (isClosing) {
+			if (depth > 0) depth -= 1;
+		} else if (!isSelfClosing) {
+			depth += 1;
+		}
+		lastIdx = idx + tag.length;
+	}
+	const tail = clean.slice(lastIdx);
+	out += depth > 0 ? tail.replace(/\n+/g, " ") : tail;
+	return out.split("\n");
 }
 
 function extractSourceStateNeighbors(source: string | undefined): Map<number, number[]> {
@@ -1136,8 +1157,34 @@ export async function readMapSnapshotRaw(
 	return { relPath: normalized, fileName, content };
 }
 
+const mapWriteLocks = new Map<string, Promise<unknown>>();
+
+function normalizeMapLockKey(cwd: string): string {
+	const resolved = resolve(cwd);
+	return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+}
+
+async function withMapWriteLock<T>(cwd: string, task: () => Promise<T>): Promise<T> {
+	const key = normalizeMapLockKey(cwd);
+	const prev = mapWriteLocks.get(key) ?? Promise.resolve();
+	const next = prev.then(task, task);
+	const settled = next.then(
+		() => undefined,
+		() => undefined,
+	);
+	mapWriteLocks.set(key, settled);
+	try {
+		return await next;
+	} finally {
+		if (mapWriteLocks.get(key) === settled) {
+			mapWriteLocks.delete(key);
+		}
+	}
+}
+
 /**
  * 将沙盘导出的 wenyou-project JSON 校验后原子落盘至 05-沙盘与图集/。
+ * 强制执行工作区互斥锁、父目录与目标文件 realpath 符号链接越界校验，并在异常时清理临时文件。
  */
 export async function saveMapSnapshot(
 	cwd: string,
@@ -1172,13 +1219,41 @@ export async function saveMapSnapshot(
 	if (isPrivateVaultPath(relPath)) {
 		throw new Error("快照写入路径不得落入受限目录");
 	}
-	const absPath = assertPathInsideWorkspace(cwd, relPath);
-	await mkdir(dirname(absPath), { recursive: true });
-	const tmpPath = `${absPath}.tmp-${randomUUID().slice(0, 8)}`;
-	await writeFile(tmpPath, content, "utf8");
-	await rename(tmpPath, absPath);
-	const info = await stat(absPath);
-	return buildSnapshotSummary(relPath, parsed, info.size, info.mtimeMs);
+	return withMapWriteLock(cwd, async () => {
+		const checked = await assertRealTargetInsideWorkspace(cwd, relPath);
+		if (!checked.realRelPath.startsWith("05-沙盘与图集/") || isPrivateVaultPath(checked.realRelPath)) {
+			throw new Error("快照写入路径越界或落入受限目录，已拒绝写入");
+		}
+		const absPath = checked.absPath;
+		try {
+			const existingStat = await lstat(absPath);
+			if (existingStat.isSymbolicLink()) {
+				throw new Error("符号链接目标禁止覆盖写入，已拒绝保存快照");
+			}
+		} catch (err) {
+			if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") {
+				throw err;
+			}
+		}
+		await mkdir(dirname(absPath), { recursive: true });
+		const verifiedAfterMkdir = await assertRealTargetInsideWorkspace(cwd, relPath);
+		if (
+			!verifiedAfterMkdir.realRelPath.startsWith("05-沙盘与图集/") ||
+			isPrivateVaultPath(verifiedAfterMkdir.realRelPath)
+		) {
+			throw new Error("快照写入路径越界或落入受限目录，已拒绝写入");
+		}
+		const tmpPath = `${absPath}.tmp-${randomUUID().slice(0, 8)}`;
+		try {
+			await writeFile(tmpPath, content, "utf8");
+			await rename(tmpPath, absPath);
+		} catch (err) {
+			await unlink(tmpPath).catch(() => undefined);
+			throw err;
+		}
+		const info = await stat(absPath);
+		return buildSnapshotSummary(relPath, parsed, info.size, info.mtimeMs);
+	});
 }
 
 /**

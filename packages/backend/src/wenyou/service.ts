@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
+import { type Dirent, existsSync } from "node:fs";
 import { mkdir, readdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, join, relative, resolve } from "node:path";
 import {
@@ -56,6 +56,7 @@ import {
 
 const MAP_IMAGE_EXTS = new Set([".svg", ".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"]);
 const SERIAL_NO_RE = /^[A-Za-z0-9_-]{1,24}$/;
+export const DEFAULT_PULL_EXPOSURE_LIMIT = 80;
 
 function normalizeWorkspaceKey(cwd: string): string {
 	const resolved = resolve(cwd);
@@ -101,7 +102,12 @@ async function atomicWriteBuffer(filePath: string, content: Buffer): Promise<voi
 async function walkRelativeFiles(root: string, relPrefix = ""): Promise<string[]> {
 	const dir = relPrefix ? join(root, relPrefix) : root;
 	if (!existsSync(dir)) return [];
-	const entries = await readdir(dir, { withFileTypes: true });
+	let entries: Dirent[];
+	try {
+		entries = await readdir(dir, { withFileTypes: true });
+	} catch {
+		return [];
+	}
 	const out: string[] = [];
 	for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
 		if (entry.name === "node_modules" || entry.name === ".git") continue;
@@ -143,12 +149,35 @@ export interface ParsedCampaignManifest {
 export class WenyouService {
 	readonly ntqq: NtqqSyncService;
 	private readonly workspaceLocks = new Map<string, Promise<unknown>>();
+	private readonly exposedPullWindows = new Map<string, Set<string>>();
 
 	constructor(
 		private readonly emitCanvasEvent?: (event: WenyouCanvasEvent) => void,
 		ntqqOptions?: NtqqSyncServiceOptions,
 	) {
 		this.ntqq = new NtqqSyncService(ntqqOptions);
+	}
+
+	private pullWindowKey(cwd: string, sessionId?: string): string {
+		return `${normalizeWorkspaceKey(cwd)}::${sessionId ?? ""}`;
+	}
+
+	/** 记录最近一次拉取实际暴露给模型的未汇报消息 sourceId 窗口，防止 publishBriefing 隐式吞掉未见积压 */
+	recordExposedPullWindow(
+		cwd: string,
+		messages: readonly { sourceId: string }[],
+		sessionId?: string,
+	): void {
+		if (messages.length === 0) return;
+		const key = this.pullWindowKey(cwd, sessionId);
+		let set = this.exposedPullWindows.get(key);
+		if (!set) {
+			set = new Set<string>();
+			this.exposedPullWindows.set(key, set);
+		}
+		for (const msg of messages) {
+			if (msg.sourceId) set.add(msg.sourceId);
+		}
 	}
 
 	emitCanvas(event: WenyouCanvasEvent): void {
@@ -378,19 +407,66 @@ export class WenyouService {
 	async listBriefings(cwd: string): Promise<SituationBriefing[]> {
 		const dir = join(cwd, "02-局势简报与台账", "briefings");
 		if (!existsSync(dir)) return [];
-		const entries = await readdir(dir, { withFileTypes: true });
+		let entries: Dirent[];
+		try {
+			entries = await readdir(dir, { withFileTypes: true });
+		} catch {
+			return [];
+		}
 		const briefings: SituationBriefing[] = [];
 		for (const entry of entries) {
 			if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
 			try {
-				const parsed = JSON.parse(await readFile(join(dir, entry.name), "utf8")) as SituationBriefing;
-				if (!parsed || typeof parsed.id !== "string" || typeof parsed.headline !== "string") continue;
-				briefings.push(parsed);
+				const raw = JSON.parse(await readFile(join(dir, entry.name), "utf8")) as unknown;
+				if (!raw || typeof raw !== "object") continue;
+				const parsed = raw as Partial<SituationBriefing>;
+				if (typeof parsed.id !== "string" || typeof parsed.headline !== "string") continue;
+				const progressItems: BriefingProgressItem[] = Array.isArray(parsed.progressItems)
+					? parsed.progressItems
+							.filter((item): item is BriefingProgressItem => Boolean(item && typeof item === "object"))
+							.map((item) => ({
+								title: typeof item.title === "string" ? item.title : "",
+								detail: typeof item.detail === "string" ? item.detail : "",
+								status: item.status ?? "in_progress",
+								sourceRefs: Array.isArray(item.sourceRefs)
+									? item.sourceRefs.filter((r): r is string => typeof r === "string")
+									: [],
+							}))
+					: [];
+				const intelChecks: BriefingIntelCheck[] = Array.isArray(parsed.intelChecks)
+					? parsed.intelChecks
+							.filter((item): item is BriefingIntelCheck => Boolean(item && typeof item === "object"))
+							.map((item) => ({
+								claim: typeof item.claim === "string" ? item.claim : "",
+								reliability: item.reliability ?? "unconfirmed_draft",
+								verdict: typeof item.verdict === "string" ? item.verdict : "",
+								sourceRefs: Array.isArray(item.sourceRefs)
+									? item.sourceRefs.filter((r): r is string => typeof r === "string")
+									: [],
+							}))
+					: [];
+				briefings.push({
+					id: parsed.id,
+					title: typeof parsed.title === "string" ? parsed.title : parsed.id,
+					turnLabel: typeof parsed.turnLabel === "string" ? parsed.turnLabel : "",
+					createdAt: typeof parsed.createdAt === "string" ? parsed.createdAt : "",
+					headline: parsed.headline,
+					progressItems,
+					diplomacySummary: typeof parsed.diplomacySummary === "string" ? parsed.diplomacySummary : "",
+					intelChecks,
+					strategicJudgment: typeof parsed.strategicJudgment === "string" ? parsed.strategicJudgment : "",
+					coveredSourceIds: Array.isArray(parsed.coveredSourceIds)
+						? parsed.coveredSourceIds.filter((r): r is string => typeof r === "string")
+						: [],
+					markdownPath: typeof parsed.markdownPath === "string" ? parsed.markdownPath : "",
+					jsonPath:
+						typeof parsed.jsonPath === "string" ? parsed.jsonPath : `02-局势简报与台账/briefings/${entry.name}`,
+				});
 			} catch {
-				// ignore malformed briefing json
+				// ignore malformed or unreadable briefing json
 			}
 		}
-		return briefings.sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id));
+		return briefings.sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || "") || b.id.localeCompare(a.id));
 	}
 
 	async loadRollingLedger(cwd: string): Promise<RollingLedgerEntry[]> {
@@ -398,13 +474,33 @@ export class WenyouService {
 		if (!existsSync(file)) return [];
 		try {
 			const raw = JSON.parse(await readFile(file, "utf8")) as
-				| { entries?: RollingLedgerEntry[] }
-				| RollingLedgerEntry[];
+				| { entries?: unknown[] }
+				| unknown[];
 			const list = Array.isArray(raw) ? raw : Array.isArray(raw?.entries) ? raw.entries : [];
-			return list.map((entry) => ({
-				...entry,
-				tag: entry.category === "unconfirmed_draft" ? "[未定案草案]" : entry.tag || `[${entry.category}]`,
-			}));
+			const out: RollingLedgerEntry[] = [];
+			for (const rawEntry of list) {
+				if (!rawEntry || typeof rawEntry !== "object") continue;
+				const entry = rawEntry as Partial<RollingLedgerEntry>;
+				const category = typeof entry.category === "string" && entry.category ? entry.category : "fact";
+				const tag =
+					category === "unconfirmed_draft"
+						? "[未定案草案]"
+						: typeof entry.tag === "string" && entry.tag
+							? entry.tag
+							: `[${category}]`;
+				out.push({
+					id: typeof entry.id === "string" && entry.id ? entry.id : `ledger-${out.length + 1}`,
+					category: category as RollingLedgerCategory,
+					tag,
+					...(typeof entry.faction === "string" && entry.faction ? { faction: entry.faction } : {}),
+					summary: typeof entry.summary === "string" ? entry.summary : "",
+					updatedAt: typeof entry.updatedAt === "string" ? entry.updatedAt : "",
+					sourceRefs: Array.isArray(entry.sourceRefs)
+						? entry.sourceRefs.filter((r): r is string => typeof r === "string")
+						: [],
+				});
+			}
+			return out;
 		} catch {
 			return [];
 		}
@@ -479,6 +575,7 @@ export class WenyouService {
 		briefing: SituationBriefing;
 		advancedGroups: string[];
 		addedLedgerCount: number;
+		remainingUnreportedCount: number;
 	}> {
 		return this.withWorkspaceLock(input.cwd, async () => {
 			const briefingsDir = join(input.cwd, "02-局势简报与台账", "briefings");
@@ -492,13 +589,29 @@ export class WenyouService {
 			const allEvidence = await loadEvidenceRecords(input.cwd);
 			const cursors = refreshCursorStats(allEvidence, await loadCursors(input.cwd));
 
-			// 自动收集所有涉及的 sourceIds，如果未显式给全则覆盖当前各群全部未报记录
+			const windowKey = this.pullWindowKey(input.cwd, input.sessionId);
+			const exposedWindow = this.exposedPullWindows.get(windowKey);
+			const explicitCovered = Boolean(input.coveredSourceIds && input.coveredSourceIds.length > 0);
+
+			// 收集显式引用；未显式给 coveredSourceIds 时，隐式推进严格受限于最近已暴露的拉取窗口或 80 条上限，绝不吞掉未见积压
 			const referenced = new Set<string>(input.coveredSourceIds ?? []);
 			for (const item of input.progressItems) for (const r of item.sourceRefs) referenced.add(r);
 			for (const chk of input.intelChecks) for (const r of chk.sourceRefs) referenced.add(r);
 			const unreported = computeUnreportedMessages(allEvidence, cursors);
+			const implicitCoveredIds = new Set<string>();
+			if (!explicitCovered) {
+				if (exposedWindow && exposedWindow.size > 0) {
+					for (const sourceId of exposedWindow) implicitCoveredIds.add(sourceId);
+				} else if (unreported.length <= DEFAULT_PULL_EXPOSURE_LIMIT) {
+					for (const msg of unreported) implicitCoveredIds.add(msg.sourceId);
+				} else if (referenced.size === 0) {
+					for (const msg of unreported.slice(0, DEFAULT_PULL_EXPOSURE_LIMIT)) {
+						implicitCoveredIds.add(msg.sourceId);
+					}
+				}
+			}
 			if (referenced.size === 0) {
-				for (const msg of unreported) referenced.add(msg.sourceId);
+				for (const sourceId of implicitCoveredIds) referenced.add(sourceId);
 			}
 
 			const slug = slugSafe(input.title);
@@ -524,8 +637,7 @@ export class WenyouService {
 			await atomicWriteUtf8(join(input.cwd, mdRel), this.renderBriefingMarkdown(briefing));
 
 			// 推进各群已汇报游标：严格单调前进（绝不因引用旧证据倒退）；
-			// 未显式指定 coveredSourceIds 时，对存在未报消息的群推进至当前末尾。
-			const explicitCovered = Boolean(input.coveredSourceIds && input.coveredSourceIds.length > 0);
+			// 未显式指定 coveredSourceIds 时，仅推进至已暴露窗口（或小队列上限）与引用水位之较大者，不吞掉 81..N 未见消息。
 			const advancedGroups: string[] = [];
 			const byGroup = new Map<string, string[]>();
 			for (const rec of allEvidence) {
@@ -541,8 +653,12 @@ export class WenyouService {
 					if (referenced.has(ids[i]!)) highestRefIdx = i;
 				}
 				let targetIdx = highestRefIdx;
-				if (!explicitCovered && ids.length > 0 && prevIdx < ids.length - 1) {
-					targetIdx = Math.max(targetIdx, ids.length - 1);
+				if (!explicitCovered && implicitCoveredIds.size > 0) {
+					let highestImplicitIdx = -1;
+					for (let i = 0; i < ids.length; i += 1) {
+						if (implicitCoveredIds.has(ids[i]!)) highestImplicitIdx = i;
+					}
+					targetIdx = Math.max(targetIdx, highestImplicitIdx);
 				}
 				const nextIdx = Math.max(prevIdx, targetIdx);
 				if (nextIdx >= 0 && nextIdx > prevIdx) {
@@ -550,11 +666,20 @@ export class WenyouService {
 					cursor.lastReportedAt = now;
 					cursor.unreportedCount = Math.max(0, ids.length - 1 - nextIdx);
 					advancedGroups.push(gid);
+					if (explicitCovered && exposedWindow) {
+						for (let i = 0; i <= nextIdx; i += 1) {
+							exposedWindow.delete(ids[i]!);
+						}
+					}
 				} else if (prevIdx >= 0) {
 					cursor.unreportedCount = Math.max(0, ids.length - 1 - prevIdx);
 				}
 			}
+			if (!explicitCovered) {
+				this.exposedPullWindows.delete(windowKey);
+			}
 			await saveCursors(input.cwd, cursors);
+			const remainingUnreportedCount = Object.values(cursors).reduce((sum, c) => sum + c.unreportedCount, 0);
 
 			// 追加 L1 滚动台账，强制标记 [未定案草案]
 			let addedLedgerCount = 0;
@@ -586,7 +711,7 @@ export class WenyouService {
 				...(input.sessionId ? { sessionId: input.sessionId } : {}),
 			});
 
-			return { briefing, advancedGroups, addedLedgerCount };
+			return { briefing, advancedGroups, addedLedgerCount, remainingUnreportedCount };
 		});
 	}
 
@@ -619,46 +744,55 @@ export class WenyouService {
 	async listPolicies(cwd: string): Promise<PolicyArtifact[]> {
 		const dir = join(cwd, "03-国策与文书");
 		if (!existsSync(dir)) return [];
-		const entries = await readdir(dir, { withFileTypes: true });
+		let entries: Dirent[];
+		try {
+			entries = await readdir(dir, { withFileTypes: true });
+		} catch {
+			return [];
+		}
 		const policies: PolicyArtifact[] = [];
 		for (const entry of entries) {
 			if (!entry.isFile() || !entry.name.endsWith(".md")) continue;
-			const mdPath = join(dir, entry.name);
-			const relMd = `03-国策与文书/${entry.name}`;
-			const stem = basename(entry.name, ".md");
-			const docxCandidate = join(dir, `${stem}.docx`);
-			const relDocx = existsSync(docxCandidate) ? `03-国策与文书/${stem}.docx` : undefined;
-			const raw = await readFile(mdPath, "utf8");
-			const fileStat = await stat(mdPath);
-			const { data, body } = parseMarkdownWithFrontmatter(raw);
-			const serialMatch = stem.match(/^(\d{2,4})[-_]/);
-			const serialNo =
-				typeof data.serialNo === "string"
-					? data.serialNo
-					: serialMatch?.[1] ?? String(policies.length + 1).padStart(3, "0");
-			const headingMatch = body.match(/^#\s+(.+)$/m);
-			const title =
-				typeof data.title === "string"
-					? data.title
-					: headingMatch?.[1]?.trim() || stem.replace(/^\d{2,4}[-_]/, "");
-			const excerpt = body
-				.replace(/^#.*$/gm, "")
-				.replace(/\s+/g, " ")
-				.trim()
-				.slice(0, 140);
-			policies.push({
-				id: typeof data.id === "string" ? data.id : stem,
-				serialNo,
-				title,
-				...(typeof data.actor === "string" ? { actor: data.actor } : {}),
-				...(typeof data.turnLabel === "string" ? { turnLabel: data.turnLabel } : {}),
-				createdAt:
-					typeof data.createdAt === "string" ? data.createdAt : new Date(fileStat.mtimeMs).toISOString(),
-				markdownPath: relMd,
-				...(relDocx ? { docxPath: relDocx } : {}),
-				excerpt,
-				content: body.trim(),
-			});
+			try {
+				const mdPath = join(dir, entry.name);
+				const relMd = `03-国策与文书/${entry.name}`;
+				const stem = basename(entry.name, ".md");
+				const docxCandidate = join(dir, `${stem}.docx`);
+				const relDocx = existsSync(docxCandidate) ? `03-国策与文书/${stem}.docx` : undefined;
+				const raw = await readFile(mdPath, "utf8");
+				const fileStat = await stat(mdPath);
+				const { data, body } = parseMarkdownWithFrontmatter(raw);
+				const serialMatch = stem.match(/^(\d{2,4})[-_]/);
+				const serialNo =
+					typeof data.serialNo === "string"
+						? data.serialNo
+						: serialMatch?.[1] ?? String(policies.length + 1).padStart(3, "0");
+				const headingMatch = body.match(/^#\s+(.+)$/m);
+				const title =
+					typeof data.title === "string"
+						? data.title
+						: headingMatch?.[1]?.trim() || stem.replace(/^\d{2,4}[-_]/, "");
+				const excerpt = body
+					.replace(/^#.*$/gm, "")
+					.replace(/\s+/g, " ")
+					.trim()
+					.slice(0, 140);
+				policies.push({
+					id: typeof data.id === "string" ? data.id : stem,
+					serialNo,
+					title,
+					...(typeof data.actor === "string" ? { actor: data.actor } : {}),
+					...(typeof data.turnLabel === "string" ? { turnLabel: data.turnLabel } : {}),
+					createdAt:
+						typeof data.createdAt === "string" ? data.createdAt : new Date(fileStat.mtimeMs).toISOString(),
+					markdownPath: relMd,
+					...(relDocx ? { docxPath: relDocx } : {}),
+					excerpt,
+					content: body.trim(),
+				});
+			} catch {
+				// ignore unreadable or locked policy file
+			}
 		}
 		return policies.sort((a, b) => b.serialNo.localeCompare(a.serialNo) || b.createdAt.localeCompare(a.createdAt));
 	}
@@ -722,7 +856,7 @@ export class WenyouService {
 				`createdAt: ${JSON.stringify(createdAt)}`,
 				"---",
 			];
-			const cleanBody = input.content.replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n").trim();
+			const cleanBody = parseMarkdownWithFrontmatter(input.content).body.trim();
 			const subtitleParts = [trimmedActor, trimmedTurnLabel].filter(Boolean);
 
 			let docxBuf: Buffer;
@@ -798,20 +932,24 @@ export class WenyouService {
 				const ext = extname(rel).toLowerCase();
 				if (!MAP_IMAGE_EXTS.has(ext) || seen.has(rel)) continue;
 				seen.add(rel);
-				const abs = join(cwd, rel);
-				const info = await stat(abs);
-				const name = basename(rel, ext);
-				const yearMatch = name.match(/(?:^|[-_\s])([^\-_]*?(?:年|春|夏|秋|冬|纪|回合|T\d+)[^\-_]*)/);
-				items.push({
-					id: rel,
-					name,
-					relPath: rel,
-					assetUrl: buildWenyouAssetUrl(cwd, rel, Math.trunc(info.mtimeMs)),
-					ext,
-					...(yearMatch?.[1] ? { yearLabel: yearMatch[1].trim() } : {}),
-					sizeBytes: info.size,
-					modifiedAt: info.mtimeMs,
-				});
+				try {
+					const abs = join(cwd, rel);
+					const info = await stat(abs);
+					const name = basename(rel, ext);
+					const yearMatch = name.match(/(?:^|[-_\s])([^\-_]*?(?:年|春|夏|秋|冬|纪|回合|T\d+)[^\-_]*)/);
+					items.push({
+						id: rel,
+						name,
+						relPath: rel,
+						assetUrl: buildWenyouAssetUrl(cwd, rel, Math.trunc(info.mtimeMs)),
+						ext,
+						...(yearMatch?.[1] ? { yearLabel: yearMatch[1].trim() } : {}),
+						sizeBytes: info.size,
+						modifiedAt: info.mtimeMs,
+					});
+				} catch {
+					// ignore unreadable or locked map image
+				}
 			}
 		}
 		return items.sort((a, b) => a.relPath.localeCompare(b.relPath));
@@ -847,14 +985,16 @@ export class WenyouService {
 		content: string,
 		sessionId?: string,
 	): Promise<MapSnapshotSummary> {
-		const saved = await saveMapSnapshot(cwd, fileName, content);
-		this.emitCanvas({
-			kind: "workspace_changed",
-			cwd,
-			reason: "map_snapshot_saved",
-			...(sessionId ? { sessionId } : {}),
+		return this.withWorkspaceLock(cwd, async () => {
+			const saved = await saveMapSnapshot(cwd, fileName, content);
+			this.emitCanvas({
+				kind: "workspace_changed",
+				cwd,
+				reason: "map_snapshot_saved",
+				...(sessionId ? { sessionId } : {}),
+			});
+			return saved;
 		});
-		return saved;
 	}
 
 	async listCanonDocs(cwd: string): Promise<WenyouCanonDocSummary[]> {
@@ -867,16 +1007,20 @@ export class WenyouService {
 			const files = await walkRelativeFiles(cwd, dir);
 			for (const rel of files) {
 				if (!rel.endsWith(".md")) continue;
-				const raw = await readFile(join(cwd, rel), "utf8");
-				const { data, body } = parseMarkdownWithFrontmatter(raw);
-				const heading = body.match(/^#\s+(.+)$/m)?.[1]?.trim();
-				docs.push({
-					relPath: rel,
-					title: typeof data.title === "string" ? data.title : heading || basename(rel, ".md"),
-					kind,
-					...(typeof data.turn === "number" ? { turn: data.turn } : {}),
-					...(typeof data.era === "string" ? { era: data.era } : {}),
-				});
+				try {
+					const raw = await readFile(join(cwd, rel), "utf8");
+					const { data, body } = parseMarkdownWithFrontmatter(raw);
+					const heading = body.match(/^#\s+(.+)$/m)?.[1]?.trim();
+					docs.push({
+						relPath: rel,
+						title: typeof data.title === "string" ? data.title : heading || basename(rel, ".md"),
+						kind,
+						...(typeof data.turn === "number" ? { turn: data.turn } : {}),
+						...(typeof data.era === "string" ? { era: data.era } : {}),
+					});
+				} catch {
+					// ignore unreadable or locked canon doc
+				}
 			}
 		}
 		return docs;

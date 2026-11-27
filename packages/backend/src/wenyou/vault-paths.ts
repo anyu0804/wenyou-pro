@@ -153,11 +153,17 @@ function parseScalar(raw: string): unknown {
 	if (trimmed === "false") return false;
 	if (trimmed === "null" || trimmed === "~") return null;
 	if (/^-?\d+(\.\d+)?$/.test(trimmed)) return Number(trimmed);
-	if (
-		(trimmed.startsWith('"') && trimmed.endsWith('"') && trimmed.length >= 2) ||
-		(trimmed.startsWith("'") && trimmed.endsWith("'") && trimmed.length >= 2)
-	) {
-		return trimmed.slice(1, -1);
+	if (trimmed.startsWith('"') && trimmed.endsWith('"') && trimmed.length >= 2) {
+		try {
+			const parsed = JSON.parse(trimmed);
+			if (typeof parsed === "string") return parsed;
+		} catch {
+			// 兼容历史手写含未转义引号或非 JSON 转义的双引号标量
+		}
+		return trimmed.slice(1, -1).replace(/\\(["\\])/g, "$1");
+	}
+	if (trimmed.startsWith("'") && trimmed.endsWith("'") && trimmed.length >= 2) {
+		return trimmed.slice(1, -1).replace(/''/g, "'");
 	}
 	if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
 		const inner = trimmed.slice(1, -1).trim();
