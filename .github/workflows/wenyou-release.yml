@@ -261,8 +261,8 @@ jobs:
             "" \
             "制作与整理：安钰（基于 Percho MIT 开源底座定制）" \
             "" \
-            "- **macOS**：Apple Silicon (M1–M4) 选择 \`arm64.dmg\`，Intel Mac 选择 \`x64.dmg\`；首次打开请按 \`使用说明-macOS.txt\` 放行 Gatekeeper 或执行 \`xattr -cr \"/Applications/Wenyou Pro.app\"\`。" \
-            "- **Windows x64**（如随本次构建发布）：选择 \`Setup-x64.exe\` 或绿色便携版 \`Portable-x64.zip\`。" \
+            "- **macOS**：Apple Silicon (M1–M4) 选择 \`arm64.dmg\`，Intel Mac 选择 \`x64.dmg\`；首次打开请按 \`README-macOS.txt\` 放行 Gatekeeper 或执行 \`xattr -cr \"/Applications/Wenyou Pro.app\"\`。" \
+            "- **Windows x64**（如随本次构建发布）：选择 \`Setup-x64.exe\` 或绿色便携版 \`Portable-x64.zip\`（说明见 \`README-Windows-x64.txt\`）。" \
             "- 所有安装包均附带对应平台 \`SHA256SUMS\` 校验清单。" \
             > release-notes.md
 

@@ -171,7 +171,7 @@ export async function stageReleaseAssets({
 			macReadme = await copyStagedFile(
 				file,
 				resolvedOutDir,
-				"使用说明-macOS.txt",
+				"README-macOS.txt",
 				seenDestinations,
 			);
 		}
@@ -211,7 +211,7 @@ export async function stageReleaseAssets({
 				winReadme = await copyStagedFile(
 					file,
 					resolvedOutDir,
-					"使用说明-Windows-x64.txt",
+					"README-Windows-x64.txt",
 					seenDestinations,
 				);
 			}
@@ -229,13 +229,13 @@ export async function stageReleaseAssets({
 	if (macDmg.length === 0) missing.push("macOS .dmg installer");
 	if (macZip.length === 0) missing.push("macOS .zip archive");
 	if (!macSha256) missing.push("SHA256SUMS-macOS.txt");
-	if (!macReadme) missing.push("使用说明-macOS.txt");
+	if (!macReadme) missing.push("README-macOS.txt");
 
 	if (requireWindows || shouldCollectWindows) {
 		if (!winSummary || winSummary.exe.length === 0) missing.push("Windows x64 .exe installer");
 		if (!winSummary || winSummary.zip.length === 0) missing.push("Windows x64 .zip archive");
 		if (!winSummary?.sha256) missing.push("SHA256SUMS-Windows-x64.txt");
-		if (!winSummary?.readme) missing.push("使用说明-Windows-x64.txt");
+		if (!winSummary?.readme) missing.push("README-Windows-x64.txt");
 	}
 
 	const stagedFiles = (await readdir(resolvedOutDir)).sort();

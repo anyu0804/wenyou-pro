@@ -81,9 +81,9 @@ gh workflow run wenyou-release.yml \
 | --- | --- |
 | macOS (Apple Silicon) | `Wenyou-Pro-<ver>-mac-arm64.dmg`、`Wenyou-Pro-<ver>-mac-arm64.zip` |
 | macOS (Intel) | `Wenyou-Pro-<ver>-mac-x64.dmg`、`Wenyou-Pro-<ver>-mac-x64.zip` |
-| macOS 校验与说明 | `SHA256SUMS-macOS.txt`、`使用说明-macOS.txt` |
+| macOS 校验与说明 | `SHA256SUMS-macOS.txt`、`README-macOS.txt` |
 | Windows (x64) | `Wenyou-Pro-Setup-<ver>-x64.exe`、`Wenyou-Pro-Portable-<ver>-x64.zip` |
-| Windows 校验与说明 | `SHA256SUMS-Windows-x64.txt`、`使用说明-Windows-x64.txt` |
+| Windows 校验与说明 | `SHA256SUMS-Windows-x64.txt`、`README-Windows-x64.txt` |
 
 ### Linux (x64 `.AppImage`) 按需源码构建与验包
 

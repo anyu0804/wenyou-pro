@@ -63,11 +63,11 @@ describe("stage-release-assets: Bug #1 nested directory collection & anti-empty 
 			"Wenyou-Pro-0.2.6-mac-x64.zip",
 		]);
 		assert.equal(result.mac.sha256, "SHA256SUMS-macOS.txt");
-		assert.equal(result.mac.readme, "使用说明-macOS.txt");
+		assert.equal(result.mac.readme, "README-macOS.txt");
 		assert.deepEqual(result.win.exe, ["Wenyou-Pro-Setup-0.2.6-x64.exe"]);
 		assert.deepEqual(result.win.zip, ["Wenyou-Pro-Portable-0.2.6-x64.zip"]);
 		assert.equal(result.win.sha256, "SHA256SUMS-Windows-x64.txt");
-		assert.equal(result.win.readme, "使用说明-Windows-x64.txt");
+		assert.equal(result.win.readme, "README-Windows-x64.txt");
 
 		const uploaded = (await readdir(outDir)).sort();
 		assert.equal(uploaded.length, 10);
@@ -97,10 +97,10 @@ describe("stage-release-assets: Bug #1 nested directory collection & anti-empty 
 		assert.equal(result.ok, true);
 		assert.equal(result.win, null);
 		assert.deepEqual(result.stagedFiles, [
+			"README-macOS.txt",
 			"SHA256SUMS-macOS.txt",
 			"Wenyou-Pro-0.2.6-mac-arm64.dmg",
 			"Wenyou-Pro-0.2.6-mac-arm64.zip",
-			"使用说明-macOS.txt",
 		]);
 	});
 
@@ -113,7 +113,7 @@ describe("stage-release-assets: Bug #1 nested directory collection & anti-empty 
 		// 1. Empty mac staging must fail (prevents 0-attachment GitHub Release)
 		await assert.rejects(
 			() => stageReleaseAssets({ macDir: emptyMac, outDir, requireWindows: false }),
-			/macOS \.dmg.*macOS \.zip.*SHA256SUMS-macOS\.txt.*使用说明-macOS\.txt/,
+			/macOS \.dmg.*macOS \.zip.*SHA256SUMS-macOS\.txt.*README-macOS\.txt/,
 		);
 
 		// 2. Complete mac staging but 0-byte .dmg must fail
