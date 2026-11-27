@@ -62,6 +62,52 @@ export const DEFAULT_PERMISSION_CONFIG: PermissionConfig = {
 			"*auth.json*": "ask",
 			"*trust.json*": "ask",
 		},
+		powershell: {
+			"*": "allow",
+			"rm -rf *": "ask",
+			"rm -fr *": "ask",
+			"rm -r *": "ask",
+			"rm -r -f *": "ask",
+			"rm -f -r *": "ask",
+			"rm --recursive *": "ask",
+			"Remove-Item*-Recurse*": "ask",
+			"Remove-Item*-Force*": "ask",
+			"ri *-r*": "ask",
+			"ri *-Recurse*": "ask",
+			"ri *-Force*": "ask",
+			"del /s*": "ask",
+			"del *-Recurse*": "ask",
+			"del *-Force*": "ask",
+			"rd /s*": "ask",
+			"rmdir /s*": "ask",
+			"Format-Volume*": "ask",
+			"Clear-Disk*": "ask",
+			"git push --force*": "ask",
+			"git push -f*": "ask",
+			"git reset --hard*": "ask",
+			"git clean -f*": "ask",
+			"git clean --force*": "ask",
+			"git.exe push --force*": "ask",
+			"git.exe push -f*": "ask",
+			"git.exe reset --hard*": "ask",
+			"git.exe clean -f*": "ask",
+			"git.exe clean --force*": "ask",
+			"*Invoke-Expression*": "ask",
+			"*| iex*": "ask",
+			"*|iex*": "ask",
+			"iex *": "ask",
+			"*iwr * | iex*": "ask",
+			"*irm * | iex*": "ask",
+			"curl * | sh*": "ask",
+			"curl * | bash*": "ask",
+			"wget * | sh*": "ask",
+			"wget * | bash*": "ask",
+			// 自保护：任何触及权限/信任/凭证配置的命令（大小写不敏感匹配）必确认
+			"*permissions.json*": "ask",
+			"*workspaces.json*": "ask",
+			"*auth.json*": "ask",
+			"*trust.json*": "ask",
+		},
 		// 脚本编排本身放行；内部调用仍逐个经过工具权限与工作区边界检查。
 		codemode: "allow",
 		// 同自保护：edit/write 改权限/信任/凭证文件必确认（路径模式尾缀匹配）
@@ -138,7 +184,9 @@ export function loadPermissionConfig(agentDir: string): PermissionConfig {
 	const path = permissionConfigPath(agentDir);
 	if (!existsSync(path)) return mergeWithDefaults({});
 	try {
-		const raw = JSON.parse(readFileSync(path, "utf-8"));
+		const text = readFileSync(path, "utf-8");
+		const clean = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
+		const raw = JSON.parse(clean);
 		return mergeWithDefaults(parseConfig(raw));
 	} catch (err) {
 		log.warn("permissions.json 解析失败，使用默认配置", path, err);

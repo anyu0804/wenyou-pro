@@ -98,15 +98,16 @@ async function renameJsonRecord(source: string, target: string): Promise<void> {
 	}
 }
 
-const syncWaitState = new Int32Array(new SharedArrayBuffer(4));
+let syncWaitState: Int32Array | null = null;
 
 function sleepSync(delayMs: number): void {
 	try {
+		syncWaitState ??= new Int32Array(new SharedArrayBuffer(4));
 		Atomics.wait(syncWaitState, 0, 0, delayMs);
 	} catch {
 		const deadline = Date.now() + delayMs;
 		while (Date.now() < deadline) {
-			/* Atomics.wait 不可用时的兜底等待 */
+			/* Atomics.wait 或 SharedArrayBuffer 不可用时的兜底等待 */
 		}
 	}
 }

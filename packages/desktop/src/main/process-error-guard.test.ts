@@ -307,4 +307,21 @@ describe("installMainProcessErrorGuard", () => {
 		err.stack = "RangeError: out of range\n    at foo (bar.ts:1:1)\n    at baz (qux.ts:2:2)";
 		expect(buildErrorSignature(err)).toBe("RangeError|out of range|at foo (bar.ts:1:1)");
 	});
+
+	it("dialog 对象被冻结不可写时记录 warn 而不崩溃启动", () => {
+		const proc = new EventEmitter();
+		const log = createFakeLogger();
+		const frozenDialog = Object.freeze({ showErrorBox: vi.fn() });
+
+		const guard = installMainProcessErrorGuard({
+			process: proc,
+			dialog: frozenDialog,
+			log,
+			autoFlush: false,
+		});
+
+		expect(log.warn).toHaveBeenCalledOnce();
+		expect(proc.listenerCount("uncaughtException")).toBe(1);
+		expect(() => guard.dispose()).not.toThrow();
+	});
 });

@@ -183,9 +183,12 @@ export function attachRendererWatchdog(backendSource: RendererWatchdogBackend): 
 		}
 	}, HEARTBEAT_INTERVAL_MS);
 	heartbeat.unref();
-	// console 错误汇总周期 flush（决策 4）：慢烧场景补一条，有界不噪声
+	// console 错误汇总周期 flush（决策 4）：慢烧场景补一条，按签名来源分别走 warn / error
 	const consoleFlush = setInterval(() => {
-		for (const summary of consoleDedup.flush()) log.error(...consoleDedupLogLine(summary));
+		for (const summary of consoleDedup.flush()) {
+			if (summary.signature.startsWith("warning:")) log.warn(...consoleDedupLogLine(summary));
+			else log.error(...consoleDedupLogLine(summary));
+		}
 	}, HEARTBEAT_INTERVAL_MS);
 	consoleFlush.unref();
 

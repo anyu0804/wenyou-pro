@@ -62,11 +62,26 @@ export function hasUsableWindowsBash(
 	return false;
 }
 
+function replaceBashWithPowerShell(tools: readonly string[]): string[] {
+	const mapped: string[] = [];
+	const seen = new Set<string>();
+	for (const name of tools) {
+		const next = name === "bash" ? "powershell" : name;
+		if (!seen.has(next)) {
+			seen.add(next);
+			mapped.push(next);
+		}
+	}
+	return mapped;
+}
+
 /**
  * 为主会话解析 createAgentSession 的 tools 参数：
  * - 若宿主显式指定 tools，原样返回；
- * - 若用户已在 settings.json 配置 defaultTools，尊重用户配置（返回 undefined 交 SDK 处理）；
- * - Windows 下无可用 bash 时返回 ["-bash", "+powershell"]，使用系统原生 PowerShell。
+ * - Windows 下无可用 bash 时：
+ *   - 若用户通过 settings.json 显式配置了 defaultTools 且其中包含 "bash"（如 `["+grep"]` 被 SDK 展开后仍含 bash），
+ *     将 "bash" 替换为 "powershell"（去重保序）；若用户配置不含 "bash"，尊重用户选择返回 undefined；
+ *   - 若用户未配置 defaultTools，返回 ["-bash", "+powershell"] 使用系统原生 PowerShell。
  */
 export function resolveSessionTools(options: {
 	explicitTools?: string[];
@@ -76,12 +91,15 @@ export function resolveSessionTools(options: {
 	platform?: NodeJS.Platform;
 }): string[] | undefined {
 	if (options.explicitTools !== undefined) return options.explicitTools;
-	if (options.defaultTools !== undefined) return undefined;
 	const platform = options.platform ?? process.platform;
-	if (platform === "win32" && !hasUsableWindowsBash(options.shellPath, options.env, platform)) {
-		return ["-bash", "+powershell"];
+	if (platform !== "win32" || hasUsableWindowsBash(options.shellPath, options.env, platform)) {
+		return undefined;
 	}
-	return undefined;
+	if (options.defaultTools !== undefined) {
+		if (!options.defaultTools.includes("bash")) return undefined;
+		return replaceBashWithPowerShell(options.defaultTools);
+	}
+	return ["-bash", "+powershell"];
 }
 
 /**
@@ -99,14 +117,5 @@ export function resolveSubagentTools(
 	if (platform !== "win32" || hasUsableWindowsBash(options?.shellPath, options?.env, platform)) {
 		return [...tools];
 	}
-	const mapped: string[] = [];
-	const seen = new Set<string>();
-	for (const name of tools) {
-		const next = name === "bash" ? "powershell" : name;
-		if (!seen.has(next)) {
-			seen.add(next);
-			mapped.push(next);
-		}
-	}
-	return mapped;
+	return replaceBashWithPowerShell(tools);
 }

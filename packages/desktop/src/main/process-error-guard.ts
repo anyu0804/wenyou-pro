@@ -167,19 +167,28 @@ function formatErrorPayload(error: unknown, origin?: string): Record<string, unk
 function patchDialogShowErrorBox(
 	dialog: ErrorBoxDialogLike,
 	replacement: (title: string, content: string) => void,
+	log: ErrorGuardLogger,
 ): () => void {
 	const descriptor = Object.getOwnPropertyDescriptor(dialog, "showErrorBox");
 	const original = dialog.showErrorBox;
+	let patched = false;
 	try {
 		dialog.showErrorBox = replacement;
+		patched = true;
 	} catch {
-		Object.defineProperty(dialog, "showErrorBox", {
-			value: replacement,
-			configurable: true,
-			writable: true,
-		});
+		try {
+			Object.defineProperty(dialog, "showErrorBox", {
+				value: replacement,
+				configurable: true,
+				writable: true,
+			});
+			patched = true;
+		} catch (error) {
+			log.warn("failed to patch dialog.showErrorBox", error);
+		}
 	}
 	return () => {
+		if (!patched) return;
 		try {
 			if (descriptor) {
 				Object.defineProperty(dialog, "showErrorBox", descriptor);
@@ -323,12 +332,16 @@ export function installMainProcessErrorGuard(deps: MainProcessErrorGuardDeps): M
 	proc.on("unhandledRejection", onUnhandledRejection);
 
 	const restoreDialog = deps.dialog
-		? patchDialogShowErrorBox(deps.dialog, (title: string, content: string) => {
-				const signature = `${String(title).slice(0, MAX_FIELD_LEN)}|${String(content).slice(0, MAX_FIELD_LEN)}`;
-				observe("errorBox", signature, () => {
-					log.error("suppressed native error box", { title, content });
-				});
-			})
+		? patchDialogShowErrorBox(
+				deps.dialog,
+				(title: string, content: string) => {
+					const signature = `${String(title).slice(0, MAX_FIELD_LEN)}|${String(content).slice(0, MAX_FIELD_LEN)}`;
+					observe("errorBox", signature, () => {
+						log.error("suppressed native error box", { title, content });
+					});
+				},
+				log,
+			)
 		: undefined;
 
 	let timer: ReturnType<typeof setInterval> | undefined;

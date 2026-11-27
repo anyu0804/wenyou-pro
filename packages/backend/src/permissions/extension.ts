@@ -96,13 +96,15 @@ export function makePermissionGateExtension(
 				const fullAccess = options?.getMode?.() === "fullAccess";
 				// 相对路径 resolve 基准：projectRoot ?? ctx.cwd（皆缺时 tmp 豁免仅绝对路径可判，fail-safe）
 				const base: string | undefined = projectRoot ?? ctx.cwd;
-				// bash 单次求值同时拿到命中段（弹窗标题定位用）；段豁免钩子（②'）：rm 家族且
+				// bash / powershell 单次求值同时拿到命中段（弹窗标题定位用）；段豁免钩子（②'）：rm 家族且
 				// 全目标在临时区 → outside.temporary（默认 allow 跳过 rm 兜底；deny 永不被覆盖，在钩子内保证）
 				const rmExempt = (segment: string): PermissionAction | null =>
 					isRmSegment(segment) && rmSegmentExempt(segment, base) ? config.outside.temporary : null;
+				const shellTool =
+					event.toolName === "bash" || event.toolName === "powershell" ? event.toolName : null;
 				const bashResult =
-					event.toolName === "bash" && matchText
-						? evaluateBashCommand(config.rules, matchText, "ask", rmExempt)
+					shellTool && matchText
+						? evaluateBashCommand(config.rules, matchText, "ask", rmExempt, shellTool)
 						: null;
 				let action: PermissionAction = bashResult
 					? bashResult.action
@@ -202,13 +204,14 @@ export function makePermissionGateExtension(
 					return;
 				}
 
-				// 标题 = 记忆模式键。bash 用命中危险段（allowAlways 按标题记忆 = 会话白名单，
+				// 标题 = 记忆模式键。bash / powershell 用命中危险段（allowAlways 按标题记忆 = 会话白名单，
 				// 直接拿整串会导致 cd* 之类前缀入白名单，后续链式命令被误放行）
-				const title = bashResult
-					? suggestPattern("bash", { command: bashResult.segment })
-					: isPath && patternText
-						? suggestPattern(event.toolName, { path: patternText })
-						: suggestPattern(event.toolName, input);
+				const title =
+					bashResult && shellTool
+						? suggestPattern(shellTool, { command: bashResult.segment })
+						: isPath && patternText
+							? suggestPattern(event.toolName, { path: patternText })
+							: suggestPattern(event.toolName, input);
 				const detail = matchText ?? JSON.stringify(input).slice(0, 500);
 				const meta = {
 					kind: isPath ? ("path" as const) : ("command" as const),
