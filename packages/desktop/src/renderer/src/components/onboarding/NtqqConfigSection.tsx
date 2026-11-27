@@ -1,7 +1,21 @@
-import type { NtqqStatusSnapshot } from "@percho/shared";
+import type { NtqqProbeStatus, NtqqStatusSnapshot } from "@percho/shared";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getPi } from "../../api";
 import { useUiPreferencesStore } from "../../stores/ui-preferences";
+
+type DetectedNtqqAccount = {
+	qqUin: string;
+	dbDir: string;
+	msgDbExists: boolean;
+	groupDbExists: boolean;
+	keyReady: boolean;
+	mtimeMs: number;
+};
+
+type ExtendedNtqqProbeStatus = NtqqProbeStatus & {
+	keyMatchedForCurrentDb?: boolean;
+	detectedAccounts?: DetectedNtqqAccount[];
+};
 
 function formatMb(bytes: number): string {
 	if (bytes <= 0) return "";
@@ -44,6 +58,7 @@ export function NtqqConfigSection({
 	onDraftQqChangeRef.current = onDraftQqChange;
 	const onSnapshotChangeRef = useRef(onSnapshotChange);
 	onSnapshotChangeRef.current = onSnapshotChange;
+	const actionLockRef = useRef(false);
 
 	const applySnapshot = useCallback((next: NtqqStatusSnapshot) => {
 		setSnapshot(next);
@@ -70,28 +85,77 @@ export function NtqqConfigSection({
 	}, [loadStatus]);
 
 	const handleSaveQq = async () => {
+		if (saving || extracting || actionLockRef.current) return;
+		actionLockRef.current = true;
 		setSaving(true);
 		setFeedback(null);
 		try {
 			const trimmed = qqInput.trim();
 			const res = await getPi().wenyouNtqqSaveConfig({ qqUin: trimmed || null });
 			applySnapshot(res);
+			const nextStatus = res.status as ExtendedNtqqProbeStatus;
+			const nextKeyMismatch = Boolean(
+				nextStatus.keyMapExists &&
+					(nextStatus.msgDbExists || nextStatus.groupDbExists) &&
+					nextStatus.keyMatchedForCurrentDb === false,
+			);
 			setFeedback({
 				kind: "info",
 				text: trimmed
 					? res.status.msgDbExists
-						? `已保存 QQ ${trimmed}，并检测到本机 NTQQ 消息库`
+						? nextKeyMismatch
+							? nextStatus.canExtractKey
+								? `已保存 QQ ${trimmed}，已定位消息库；请点击下方「一键提取密钥」补充当前账号密钥`
+								: `已保存 QQ ${trimmed}，已定位消息库；请重新导入包含当前账号的 key_map.json`
+							: `已保存 QQ ${trimmed}，并检测到本机 NTQQ 消息库`
 						: `已保存 QQ ${trimmed}；未在默认位置找到 nt_msg.db，可点击下方「选择目录」指定`
 					: "已清空绑定的 QQ 号",
 			});
 		} catch (error) {
 			setFeedback({ kind: "error", text: stripInvokePrefix(error) });
 		} finally {
+			actionLockRef.current = false;
+			setSaving(false);
+		}
+	};
+
+	const handleSelectDetectedAccount = async (uin: string) => {
+		if (saving || extracting || actionLockRef.current) return;
+		actionLockRef.current = true;
+		setSaving(true);
+		setFeedback(null);
+		setQqInput(uin);
+		onDraftQqChangeRef.current?.(uin);
+		try {
+			const res = await getPi().wenyouNtqqSaveConfig({ qqUin: uin });
+			applySnapshot(res);
+			const nextStatus = res.status as ExtendedNtqqProbeStatus;
+			const nextKeyMismatch = Boolean(
+				nextStatus.keyMapExists &&
+					(nextStatus.msgDbExists || nextStatus.groupDbExists) &&
+					nextStatus.keyMatchedForCurrentDb === false,
+			);
+			setFeedback({
+				kind: "info",
+				text: res.status.msgDbExists
+					? nextKeyMismatch
+						? nextStatus.canExtractKey
+							? `已切换到 QQ ${uin}，已定位消息库；请点击下方「一键提取密钥」补充当前账号密钥`
+							: `已切换到 QQ ${uin}，已定位消息库；请重新导入包含当前账号的 key_map.json`
+						: `已切换到 QQ ${uin}，并检测到本机 NTQQ 消息库`
+					: `已切换到 QQ ${uin}；未在默认位置找到 nt_msg.db，可点击下方「选择目录」指定`,
+			});
+		} catch (error) {
+			setFeedback({ kind: "error", text: stripInvokePrefix(error) });
+		} finally {
+			actionLockRef.current = false;
 			setSaving(false);
 		}
 	};
 
 	const handlePickDbDir = async () => {
+		if (saving || extracting || actionLockRef.current) return;
+		actionLockRef.current = true;
 		setFeedback(null);
 		try {
 			const picked = await getPi().wenyouNtqqPickDbDir();
@@ -108,11 +172,14 @@ export function NtqqConfigSection({
 		} catch (error) {
 			setFeedback({ kind: "error", text: stripInvokePrefix(error) });
 		} finally {
+			actionLockRef.current = false;
 			setSaving(false);
 		}
 	};
 
 	const handleExtractKey = async () => {
+		if (extracting || saving || actionLockRef.current) return;
+		actionLockRef.current = true;
 		setExtracting(true);
 		setFeedback(null);
 		try {
@@ -123,11 +190,14 @@ export function NtqqConfigSection({
 		} catch (error) {
 			setFeedback({ kind: "error", text: stripInvokePrefix(error) });
 		} finally {
+			actionLockRef.current = false;
 			setExtracting(false);
 		}
 	};
 
 	const handlePickKeyMap = async () => {
+		if (saving || extracting || actionLockRef.current) return;
+		actionLockRef.current = true;
 		setFeedback(null);
 		try {
 			const picked = await getPi().wenyouNtqqPickKeyMap();
@@ -139,11 +209,20 @@ export function NtqqConfigSection({
 		} catch (error) {
 			setFeedback({ kind: "error", text: stripInvokePrefix(error) });
 		} finally {
+			actionLockRef.current = false;
 			setSaving(false);
 		}
 	};
 
-	const status = snapshot?.status;
+	const status = snapshot?.status as ExtendedNtqqProbeStatus | undefined;
+	const detectedAccounts = status?.detectedAccounts ?? [];
+	const showAccountSwitcher =
+		detectedAccounts.length > 1 || (detectedAccounts.length === 1 && !qqInput.trim());
+	const hasAnyDb = Boolean(status?.msgDbExists || status?.groupDbExists);
+	const keyMismatchForCurrent = Boolean(
+		status?.keyMapExists && hasAnyDb && status?.keyMatchedForCurrentDb === false,
+	);
+	const keyReadyForCurrent = Boolean(status?.keyMapExists && !keyMismatchForCurrent);
 
 	return (
 		<div className="space-y-4">
@@ -165,7 +244,8 @@ export function NtqqConfigSection({
 					)}
 				</div>
 				<p className="mt-1 text-ui-11 leading-relaxed text-ink-faint">
-					QQ 号与密钥仅保存在本机用户目录，绝不写入任何战役目录或导出包；读取 QQ 消息库全程只读，不修改原文件。
+					QQ 号与密钥仅保存在本机用户目录，绝不写入任何战役目录或导出包；读取 QQ
+					消息库全程只读，不修改原文件。
 				</p>
 				{status && !status.platformSupported && !status.ready && (
 					<p className="mt-2 rounded-lg bg-hover/60 px-3 py-2 text-ui-11 leading-relaxed text-ink-dim">
@@ -195,13 +275,46 @@ export function NtqqConfigSection({
 					/>
 					<button
 						type="button"
-						disabled={saving || loading}
+						disabled={saving || loading || extracting}
 						onClick={() => void handleSaveQq()}
 						className="shrink-0 rounded-lg bg-ink px-3.5 py-1.5 text-ui-12 font-medium text-on-ink transition-colors hover:bg-ink-2 disabled:opacity-40"
 					>
 						{saving ? "保存中…" : "保存并检测"}
 					</button>
 				</div>
+				{showAccountSwitcher && (
+					<div className="mt-2 flex flex-wrap items-center gap-1.5">
+						<span className="text-ui-11 text-ink-faint">本机已检测账号：</span>
+						{detectedAccounts.map((acc) => {
+							const isCurrent = qqInput.trim() === acc.qqUin;
+							return (
+								<button
+									key={acc.qqUin}
+									type="button"
+									disabled={saving || extracting}
+									onClick={() => void handleSelectDetectedAccount(acc.qqUin)}
+									title={acc.dbDir}
+									className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 font-mono text-ui-11 transition-colors disabled:opacity-40 ${
+										isCurrent
+											? "border-ink/40 bg-ink/8 font-medium text-ink"
+											: "border-border bg-surface text-ink-2 hover:bg-hover hover:text-ink"
+									}`}
+								>
+									<span>{acc.qqUin}</span>
+									<span
+										className={`font-sans text-ui-10 ${
+											acc.keyReady
+												? "text-emerald-600 dark:text-emerald-400"
+												: "text-amber-600 dark:text-amber-400"
+										}`}
+									>
+										{acc.keyReady ? "· 已配密钥" : "· 待提取"}
+									</span>
+								</button>
+							);
+						})}
+					</div>
+				)}
 			</div>
 
 			{/* 3 行只读状态探测（单层容器 + 细分割线，避免卡片套卡片） */}
@@ -233,7 +346,7 @@ export function NtqqConfigSection({
 					</div>
 					<button
 						type="button"
-						disabled={saving}
+						disabled={saving || extracting}
 						onClick={() => void handlePickDbDir()}
 						className="shrink-0 rounded-lg border border-border bg-surface px-2.5 py-1 text-ui-11 text-ink-2 transition-colors hover:bg-hover hover:text-ink disabled:opacity-40"
 					>
@@ -248,24 +361,36 @@ export function NtqqConfigSection({
 							<span className="font-medium text-ink">消息库解密密钥</span>
 							<span
 								className={`text-ui-11 ${
-									status?.keyMapExists ? "text-emerald-600 dark:text-emerald-400" : "text-ink-faint"
+									keyReadyForCurrent
+										? "text-emerald-600 dark:text-emerald-400"
+										: keyMismatchForCurrent
+											? "text-amber-600 dark:text-amber-400"
+											: "text-ink-faint"
 								}`}
 							>
 								{loading
 									? "探测中…"
-									: status?.keyMapExists
+									: keyReadyForCurrent
 										? "已就绪 (key_map.json)"
-										: !status || status.canExtractKey
-											? "尚未提取"
-											: "尚未导入"}
+										: keyMismatchForCurrent
+											? status?.canExtractKey
+												? "需提取当前账号密钥"
+												: "需导入当前账号密钥"
+											: !status || status.canExtractKey
+												? "尚未提取"
+												: "尚未导入"}
 							</span>
 						</div>
 						<p className="mt-0.5 text-ui-10 text-ink-faint">
-							{status?.keyMapExists
+							{keyReadyForCurrent
 								? "已定位本机 key_map.json，只读按页解密，不修改原库"
-								: !status || status.canExtractKey
-									? "提取前请保持电脑版 NTQQ 处于已登录状态"
-									: "一键提取仅支持 Windows；可手动导入已有 key_map.json，或使用 00-群聊收集/ 离线导入"}
+								: keyMismatchForCurrent
+									? status?.canExtractKey
+										? "已保留其他 QQ 账号密钥；请保持当前 QQ 在线并点击「一键提取密钥」合并补充"
+										: "已保留其他 QQ 账号密钥；请重新导入包含当前账号的 key_map.json"
+									: !status || status.canExtractKey
+										? "提取前请保持电脑版 NTQQ 处于已登录状态"
+										: "一键提取仅支持 Windows；可手动导入已有 key_map.json，或使用 00-群聊收集/ 离线导入"}
 						</p>
 					</div>
 					<div className="flex shrink-0 items-center gap-1.5">
@@ -275,7 +400,9 @@ export function NtqqConfigSection({
 								disabled={extracting || saving || !qqInput.trim()}
 								onClick={() => void handleExtractKey()}
 								className="rounded-lg border border-border bg-surface px-2.5 py-1 text-ui-11 text-ink transition-colors hover:bg-hover disabled:opacity-40"
-								title={!qqInput.trim() ? "请先在上方填写你的 QQ 号" : "从已登录的桌面端 NTQQ 提取只读解密密钥"}
+								title={
+									!qqInput.trim() ? "请先在上方填写你的 QQ 号" : "从已登录的桌面端 NTQQ 提取只读解密密钥"
+								}
 							>
 								{extracting ? "提取中…" : "一键提取密钥"}
 							</button>

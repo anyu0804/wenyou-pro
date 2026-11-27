@@ -1,5 +1,7 @@
+import { installRendererGlobalErrorForwarding } from "./lib/renderer-error-forwarding";
 import { initSplash } from "./splash";
 
+installRendererGlobalErrorForwarding();
 initSplash();
 // Startup migration never imports workbench stores or starts execution IPC.
 if (new URLSearchParams(location.search).has("storage-startup")) {

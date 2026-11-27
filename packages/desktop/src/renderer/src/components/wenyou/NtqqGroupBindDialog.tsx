@@ -1,11 +1,29 @@
-import type { CampaignNtqqGroupBinding, GroupRole, NtqqGroupSummary, NtqqStatusSnapshot } from "@percho/shared";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import type {
+	CampaignNtqqGroupBinding,
+	GroupRole,
+	NtqqGroupSummary,
+	NtqqProbeStatus,
+	NtqqStatusSnapshot,
+} from "@percho/shared";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { getPi } from "../../api";
 import { pushExtensionToast } from "../../stores/toasts";
 import { useUiPreferencesStore } from "../../stores/ui-preferences";
 import { useWenyouCanvasStore } from "../../stores/wenyou-canvas";
 import { unwrapCwdPath } from "./wenyou-helpers";
+
+type ExtendedNtqqProbeStatus = NtqqProbeStatus & {
+	keyMatchedForCurrentDb?: boolean;
+	detectedAccounts?: Array<{
+		qqUin: string;
+		dbDir: string;
+		msgDbExists: boolean;
+		groupDbExists: boolean;
+		keyReady: boolean;
+		mtimeMs: number;
+	}>;
+};
 
 const ROLE_OPTIONS: Array<{ value: GroupRole; label: string }> = [
 	{ value: "main", label: "主群" },
@@ -46,8 +64,10 @@ export function NtqqGroupBindDialog({ onClose }: { onClose: () => void }) {
 	const [forceBackfill, setForceBackfill] = useState(false);
 	const [loading, setLoading] = useState(true);
 	const [loadingGroups, setLoadingGroups] = useState(false);
+	const [extractingKey, setExtractingKey] = useState(false);
 	const [saving, setSaving] = useState(false);
 	const [error, setError] = useState<string | null>(null);
+	const extractingKeyRef = useRef(false);
 
 	const loadInitial = useCallback(async () => {
 		if (!rawCwd) return;
@@ -87,9 +107,7 @@ export function NtqqGroupBindDialog({ onClose }: { onClose: () => void }) {
 	const filteredGroups = useMemo(() => {
 		const q = search.trim().toLowerCase();
 		if (!q) return availableGroups;
-		return availableGroups.filter(
-			(g) => g.groupId.includes(q) || g.groupName.toLowerCase().includes(q),
-		);
+		return availableGroups.filter((g) => g.groupId.includes(q) || g.groupName.toLowerCase().includes(q));
 	}, [availableGroups, search]);
 
 	const toggleGroup = (group: NtqqGroupSummary) => {
@@ -109,9 +127,7 @@ export function NtqqGroupBindDialog({ onClose }: { onClose: () => void }) {
 	};
 
 	const updateRole = (groupId: string, role: GroupRole) => {
-		setBindings((prev) =>
-			prev.map((b) => (b.groupId === groupId ? { ...b, role } : b)),
-		);
+		setBindings((prev) => prev.map((b) => (b.groupId === groupId ? { ...b, role } : b)));
 	};
 
 	const handleAddManual = () => {
@@ -165,8 +181,51 @@ export function NtqqGroupBindDialog({ onClose }: { onClose: () => void }) {
 		}
 	};
 
-	const ready = snapshot?.status.ready === true;
-	const isOfflinePlatform = snapshot !== null && !snapshot.status.platformSupported;
+	const handleExtractCurrentKey = async () => {
+		const targetQq = snapshot?.config.qqUin?.trim();
+		if (!targetQq || extractingKey || extractingKeyRef.current) return;
+		extractingKeyRef.current = true;
+		setExtractingKey(true);
+		setError(null);
+		try {
+			const extractRes = await getPi().wenyouNtqqExtractKey({ qqUin: targetQq });
+			let nextSnapshot: NtqqStatusSnapshot = {
+				config: extractRes.config,
+				status: extractRes.status,
+			};
+			try {
+				nextSnapshot = await getPi().wenyouNtqqGetStatus();
+			} catch {
+				// 保留 extractRes 返回的快照
+			}
+			setSnapshot(nextSnapshot);
+			if (nextSnapshot.status.ready) {
+				pushExtensionToast("info", extractRes.message || `已提取 QQ ${targetQq} 解密密钥`, "Wenyou Pro");
+				setLoadingGroups(true);
+				try {
+					const listRes = await getPi().wenyouNtqqListGroups({ force: true });
+					setAvailableGroups(listRes.groups);
+				} catch (err) {
+					setError(stripInvokePrefix(err));
+				} finally {
+					setLoadingGroups(false);
+				}
+			} else {
+				setError(nextSnapshot.status.missingReasons[0] ?? extractRes.message);
+			}
+		} catch (err) {
+			setError(stripInvokePrefix(err));
+		} finally {
+			extractingKeyRef.current = false;
+			setExtractingKey(false);
+		}
+	};
+
+	const status = snapshot?.status as ExtendedNtqqProbeStatus | undefined;
+	const ready = status?.ready === true;
+	const isOfflinePlatform = snapshot !== null && !status?.platformSupported;
+	const keyMismatchForCurrent = Boolean(status?.keyMapExists && status?.keyMatchedForCurrentDb === false);
+	const canQuickExtract = Boolean(status?.canExtractKey && snapshot?.config.qqUin);
 
 	return createPortal(
 		<div
@@ -180,7 +239,9 @@ export function NtqqGroupBindDialog({ onClose }: { onClose: () => void }) {
 					<div>
 						<h3 className="text-ui-15 font-semibold text-ink">绑定本机 QQ 群（NTQQ 只读直采）</h3>
 						<p className="mt-0.5 text-ui-11 text-ink-dim">
-							绑定记录仅存于本战役 .wenyou/ntqq-groups.json
+							{snapshot?.config.qqUin
+								? `当前读取 QQ：${snapshot.config.qqUin} · 绑定记录仅存于本战役 .wenyou/ntqq-groups.json`
+								: "绑定记录仅存于本战役 .wenyou/ntqq-groups.json"}
 						</p>
 					</div>
 					<button
@@ -202,8 +263,7 @@ export function NtqqGroupBindDialog({ onClose }: { onClose: () => void }) {
 								<p className="text-ui-12 leading-relaxed text-ink-dim">
 									macOS / Linux 暂不支持一键提取本机 QQ 密钥。推荐将导出的{" "}
 									<code className="font-mono">.txt</code> / <code className="font-mono">.json</code>{" "}
-									聊天记录放入当前战役目录的 <code className="font-mono">00-群聊收集/</code>{" "}
-									自动解析入库。
+									聊天记录放入当前战役目录的 <code className="font-mono">00-群聊收集/</code> 自动解析入库。
 								</p>
 								<p className="text-ui-11 text-ink-faint">
 									若已有 <code className="font-mono">key_map.json</code>，也可手动配置密钥与本机{" "}
@@ -222,22 +282,41 @@ export function NtqqGroupBindDialog({ onClose }: { onClose: () => void }) {
 							</div>
 						) : (
 							<div className="space-y-3 rounded-xl border border-border bg-canvas/60 p-4">
-								<p className="text-ui-13 font-medium text-ink">本机 NTQQ 只读环境尚未就绪</p>
+								<p className="text-ui-13 font-medium text-ink">
+									{keyMismatchForCurrent ? "当前 QQ 账号尚未提取解密密钥" : "本机 NTQQ 只读环境尚未就绪"}
+								</p>
 								<ul className="list-disc space-y-1 pl-4 text-ui-12 text-ink-dim">
-									{(snapshot?.status.missingReasons ?? ["尚未完成 QQ 号与密钥配置"]).map((r) => (
+									{(status?.missingReasons ?? ["尚未完成 QQ 号与密钥配置"]).map((r) => (
 										<li key={r}>{r}</li>
 									))}
 								</ul>
-								<button
-									type="button"
-									onClick={() => {
-										onClose();
-										useUiPreferencesStore.getState().openOnboarding(2);
-									}}
-									className="rounded-lg bg-ink px-3.5 py-1.5 text-ui-12 font-medium text-on-ink hover:bg-ink-2"
-								>
-									去配置 QQ 号与密钥
-								</button>
+								<div className="flex flex-wrap items-center gap-2">
+									{canQuickExtract && (
+										<button
+											type="button"
+											disabled={extractingKey}
+											onClick={() => void handleExtractCurrentKey()}
+											className="rounded-lg bg-ink px-3.5 py-1.5 text-ui-12 font-medium text-on-ink transition-colors hover:bg-ink-2 disabled:opacity-40"
+										>
+											{extractingKey ? "提取中…" : "一键提取当前 QQ 密钥"}
+										</button>
+									)}
+									<button
+										type="button"
+										disabled={extractingKey}
+										onClick={() => {
+											onClose();
+											useUiPreferencesStore.getState().openOnboarding(2);
+										}}
+										className={
+											canQuickExtract
+												? "rounded-lg border border-border bg-surface px-3.5 py-1.5 text-ui-12 font-medium text-ink transition-colors hover:bg-hover disabled:opacity-40"
+												: "rounded-lg bg-ink px-3.5 py-1.5 text-ui-12 font-medium text-on-ink hover:bg-ink-2 disabled:opacity-40"
+										}
+									>
+										去配置 QQ 号与密钥
+									</button>
+								</div>
 							</div>
 						)
 					) : (
@@ -266,7 +345,10 @@ export function NtqqGroupBindDialog({ onClose }: { onClose: () => void }) {
 								{bindings.length > 0 ? (
 									<div className="divide-y divide-border rounded-xl border border-border bg-canvas/50">
 										{bindings.map((b) => (
-											<div key={b.groupId} className="flex items-center justify-between gap-2 px-3 py-2 text-ui-12">
+											<div
+												key={b.groupId}
+												className="flex items-center justify-between gap-2 px-3 py-2 text-ui-12"
+											>
 												<div className="min-w-0 flex-1">
 													<span className="truncate font-medium text-ink">{b.groupName || b.groupId}</span>
 													<span className="ml-2 font-mono text-ui-11 text-ink-faint">{b.groupId}</span>
