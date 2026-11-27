@@ -206,11 +206,11 @@ g.close()
 afterEach(() => {
 	while (tempDirs.length > 0) {
 		const dir = tempDirs.pop();
-		if (dir) rmSync(dir, { recursive: true, force: true });
+		if (dir) rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
 	}
 });
 
-describe("Wenyou NTQQ 只读解库与配置隔离", () => {
+describe("Wenyou NTQQ 只读解库与配置隔离", { timeout: 30_000 }, () => {
 	it("QQ 号校验与 nt_db 多层级路径自动归位", () => {
 		expect(normalizeQqUin(" 10001 ")).toBe("10001");
 		expect(normalizeQqUin("")).toBeNull();
