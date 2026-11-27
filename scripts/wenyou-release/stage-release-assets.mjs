@@ -231,7 +231,7 @@ export async function stageReleaseAssets({
 	if (!macSha256) missing.push("SHA256SUMS-macOS.txt");
 	if (!macReadme) missing.push("使用说明-macOS.txt");
 
-	if (requireWindows) {
+	if (requireWindows || shouldCollectWindows) {
 		if (!winSummary || winSummary.exe.length === 0) missing.push("Windows x64 .exe installer");
 		if (!winSummary || winSummary.zip.length === 0) missing.push("Windows x64 .zip archive");
 		if (!winSummary?.sha256) missing.push("SHA256SUMS-Windows-x64.txt");

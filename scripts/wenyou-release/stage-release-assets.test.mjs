@@ -150,6 +150,18 @@ describe("stage-release-assets: Bug #1 nested directory collection & anti-empty 
 			/Windows x64 \.zip archive/,
 		);
 
+		// 3b. Existing --win-dir without --require-windows must also fail closed on incomplete Windows artifacts
+		await assert.rejects(
+			() =>
+				stageReleaseAssets({
+					macDir: goodMac,
+					winDir: incompleteWin,
+					outDir,
+					requireWindows: false,
+				}),
+			/Windows x64 \.zip archive/,
+		);
+
 		// 4. CLI exits with code 1 on incomplete staging
 		await assert.rejects(
 			() =>

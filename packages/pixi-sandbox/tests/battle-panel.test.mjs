@@ -170,9 +170,24 @@ function setupMockDom() {
   globalThis.HTMLInputElement = MockElement;
   global.HTMLButtonElement = MockElement;
   globalThis.HTMLButtonElement = MockElement;
+  const winListeners = new Map();
   const win = {
-    addEventListener: () => {},
-    removeEventListener: () => {},
+    addEventListener: (type, fn) => {
+      if (!winListeners.has(type)) winListeners.set(type, []);
+      winListeners.get(type).push(fn);
+    },
+    removeEventListener: (type, fn) => {
+      const list = winListeners.get(type);
+      if (list) {
+        const idx = list.indexOf(fn);
+        if (idx >= 0) list.splice(idx, 1);
+      }
+    },
+    dispatchEvent: (event) => {
+      const list = winListeners.get(event.type) || [];
+      for (const fn of list) fn(event);
+      return true;
+    },
     setTimeout: (fn) => setTimeout(fn, 0),
     clearTimeout: (id) => clearTimeout(id),
   };
@@ -346,4 +361,48 @@ test('Bug #8 回归：战役面板打开后切外部工具再回战役面板绘�
   await new Promise(r => setTimeout(r, 10));
   assert.equal(battleLayer.visible, true);
   assert.equal(garrisonContainer.visible, false);
+  assert.equal(appStore.battle.battlefields[0].scale.state, 'uncalibrated');
+
+  // 5. 切外部工具隐藏图层后，直接按键盘 Ctrl+Z / Ctrl+Shift+Z 撤销/重做也必须恢复图层可见
+  appStore.interactionMode = 'pan';
+  appStore.emit('tactical-mode-change', 'pan');
+  assert.equal(battleLayer.visible, false);
+  assert.equal(garrisonContainer.visible, true);
+
+  window.dispatchEvent({
+    type: 'keydown',
+    ctrlKey: true,
+    metaKey: false,
+    shiftKey: false,
+    key: 'z',
+    target: { tagName: 'DIV' },
+    preventDefault: () => {},
+    stopImmediatePropagation: () => {},
+  });
+  await new Promise(r => setTimeout(r, 10));
+  assert.equal(battleLayer.visible, true);
+  assert.equal(garrisonContainer.visible, false);
+  assert.equal(appStore.interactionMode, 'battle-select');
+  assert.equal(appStore.battle.battlefields[0].scale.state, 'calibrated');
+
+  appStore.interactionMode = 'tactical-measure';
+  appStore.emit('tactical-mode-change', 'tactical-measure');
+  assert.equal(battleLayer.visible, false);
+  assert.equal(garrisonContainer.visible, true);
+
+  window.dispatchEvent({
+    type: 'keydown',
+    ctrlKey: true,
+    metaKey: false,
+    shiftKey: true,
+    key: 'Z',
+    target: { tagName: 'DIV' },
+    preventDefault: () => {},
+    stopImmediatePropagation: () => {},
+  });
+  await new Promise(r => setTimeout(r, 10));
+  assert.equal(battleLayer.visible, true);
+  assert.equal(garrisonContainer.visible, false);
+  assert.equal(appStore.interactionMode, 'battle-select');
+  assert.equal(appStore.battle.battlefields[0].scale.state, 'uncalibrated');
 });

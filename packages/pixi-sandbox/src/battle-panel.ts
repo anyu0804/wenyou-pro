@@ -1106,7 +1106,10 @@ export function initBattlePanel(root: HTMLElement, canvas: HTMLCanvasElement, wo
     if (panel.hidden || !(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 'z' ||
       ['INPUT', 'TEXTAREA', 'SELECT'].includes((event.target as HTMLElement).tagName)) return;
     event.preventDefault(); event.stopImmediatePropagation();
-    run(() => { if (event.shiftKey) redoBattleEdit(); else undoBattleEdit(); });
+    run(() => {
+      ensureBattleLayerActive('battle-select');
+      if (event.shiftKey) redoBattleEdit(); else undoBattleEdit();
+    });
   }, true);
   const handleExternalToolSwitch = (): void => {
     const mode = appStore.interactionMode;
