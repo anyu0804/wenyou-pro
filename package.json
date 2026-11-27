@@ -1,7 +1,7 @@
 {
 	"name": "percho",
 	"private": true,
-	"version": "0.2.7",
+	"version": "0.2.8",
 	"description": "司命 · 文游 Pro (Wenyou Pro) standalone desktop workbench (based on Percho MIT)",
 	"license": "MIT",
 	"author": "安钰 (Based on Percho by Jaxton07)",

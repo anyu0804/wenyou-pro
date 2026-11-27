@@ -1,6 +1,6 @@
 # 司命 · 文游 Pro（Wenyou Pro）全仓目录索引
 
-> 目标版本：**`v0.2.7`**｜公开仓库：`https://github.com/anyu0804/wenyou-pro`｜整理与维护：**安钰**（基于 [`Jaxton07/percho`](https://github.com/Jaxton07/percho) MIT 开源底座深度定制）
+> 目标版本：**`v0.2.8`**｜公开仓库：`https://github.com/anyu0804/wenyou-pro`｜整理与维护：**安钰**（基于 [`Jaxton07/percho`](https://github.com/Jaxton07/percho) MIT 开源底座深度定制）
 >
 > 本文件提供全仓库的权威目录映射、四大核心工程包源码索引、发布与云端防锁死工具链清单，以及文游世界存档（Vault）的标准目录结构。如需按研发专题与底座子系统深入定位，请配合阅读 [docs/INDEX.md](docs/INDEX.md) 与 [ACCEPTANCE.md](ACCEPTANCE.md)。
 
