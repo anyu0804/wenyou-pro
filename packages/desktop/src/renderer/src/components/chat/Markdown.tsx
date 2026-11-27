@@ -7,12 +7,13 @@ import MarkdownRender, {
 import "markstream-react/index.css";
 import { type ComponentProps, type MouseEvent, useEffect, useMemo, useRef, useState } from "react";
 import { getPi } from "../../api";
+import { useT } from "../../i18n";
 import { errText } from "../../lib/error-text";
 import { useThemeStore } from "../../stores/theme";
 import { pushToast } from "../../stores/toasts";
 import { FilePathMenu } from "../ui/FilePathMenu";
 import { anchorOfElement, type MenuAnchor } from "../ui/place-menu";
-import { classifyMarkdownLink } from "./markdown-link";
+import { classifyMarkdownLink, isAbsoluteMarkdownFileTarget } from "./markdown-link";
 import { markdownParseOptions } from "./markdown-parse-options";
 import { plainParagraphNodes } from "./plain-paragraph";
 
@@ -27,18 +28,98 @@ const SMOOTH_OPTIONS: SmoothMarkdownStreamOptions = {
 	minCharsPerSecond: 80,
 };
 
-const CODE_BLOCK_PROPS_BASE = {
-	// 标题栏在视觉上被 CSS 悬浮化（见 globals.css），这里只裁掉多余按钮：字号三键/全屏/预览/折叠，
-	// 保留复制。不能用 showHeader:false——它会连复制按钮一起去掉。
-	showFontSizeButtons: false,
-	showExpandButton: false,
-	showPreviewButton: false,
-	showCollapseButton: false,
-} as const;
-
 /** 减速动效偏好：关闭 pacing，直接输出 */
 const REDUCED_MOTION =
 	typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+async function writeTextToClipboard(text: string): Promise<boolean> {
+	if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+		try {
+			await navigator.clipboard.writeText(text);
+			return true;
+		} catch {
+			// 剪贴板 API 不可用或被拒时走 execCommand 回退
+		}
+	}
+	if (typeof document === "undefined") return false;
+	const textarea = document.createElement("textarea");
+	textarea.value = text;
+	textarea.setAttribute("readonly", "");
+	textarea.style.position = "fixed";
+	textarea.style.opacity = "0";
+	document.body.appendChild(textarea);
+	textarea.select();
+	try {
+		return document.execCommand("copy");
+	} catch {
+		return false;
+	} finally {
+		textarea.remove();
+	}
+}
+
+/**
+ * 轻量纯文本代码块卡片（不引入 Monaco / Shiki）：
+ * 圆角边框 + 浅底色 + 顶部语言栏与一键复制按钮（视觉容器嵌套 ≤ 2 层）。
+ */
+function PlainCodeBlock({
+	node,
+}: {
+	node?: { code?: string; raw?: string; language?: string };
+}) {
+	const t = useT();
+	const [copied, setCopied] = useState(false);
+	const timerRef = useRef<number | null>(null);
+	const rawLang = (node?.language ?? "").trim();
+	const lang = rawLang ? rawLang.split(/\s+/)[0]?.split(":")[0]?.toLowerCase() ?? "" : "";
+	const code = node?.code ?? node?.raw ?? "";
+
+	useEffect(() => {
+		return () => {
+			if (timerRef.current !== null) window.clearTimeout(timerRef.current);
+		};
+	}, []);
+
+	const handleCopy = () => {
+		void writeTextToClipboard(code).then((ok) => {
+			if (!ok) return;
+			setCopied(true);
+			if (timerRef.current !== null) window.clearTimeout(timerRef.current);
+			timerRef.current = window.setTimeout(() => {
+				timerRef.current = null;
+				setCopied(false);
+			}, 1800);
+		});
+	};
+
+	const copyLabel = copied ? t("message.copied") : t("message.copy");
+
+	return (
+		<div
+			data-code-block={lang || "plain"}
+			className="my-2.5 overflow-hidden rounded-xl border border-border bg-surface/75 shadow-soft"
+		>
+			<div className="flex items-center justify-between gap-2 border-b border-border/70 bg-hover/40 px-3 py-1.5 text-ui-11 text-ink-dim">
+				<span className="truncate font-mono text-ui-11 text-ink-dim">{lang || "text"}</span>
+				<button
+					type="button"
+					data-code-copy=""
+					onClick={handleCopy}
+					aria-label={copyLabel}
+					className="shrink-0 rounded-md border border-border bg-canvas/80 px-2 py-0.5 text-ui-11 text-ink-2 transition-colors hover:border-border-strong hover:bg-hover hover:text-ink"
+				>
+					{copyLabel}
+				</button>
+			</div>
+			<pre
+				className="m-0 overflow-x-auto px-3.5 py-2.5 font-mono leading-relaxed text-ink"
+				style={{ fontSize: "calc(12.5px * var(--fs-code-scale, 1))" }}
+			>
+				<code className={lang ? `language-${lang}` : undefined}>{code}</code>
+			</pre>
+		</div>
+	);
+}
 
 /**
  * 图表代码块纯文本回退：mermaid / d2 / infographic 运行时包已裁剪，经 empty-stub 别名后
@@ -92,6 +173,7 @@ function PlainMathBlock({
 }
 
 setCustomComponents({
+	code_block: PlainCodeBlock as MarkstreamCustomComponent,
 	mermaid: PlainDiagramCodeBlock as MarkstreamCustomComponent,
 	d2: PlainDiagramCodeBlock as MarkstreamCustomComponent,
 	infographic: PlainDiagramCodeBlock as MarkstreamCustomComponent,
@@ -108,7 +190,7 @@ function MarkdownContent({ smoothStreaming, ...props }: ComponentProps<typeof Ma
 
 /**
  * Markdown 渲染：markstream-react（增量解析，为流式 token 设计，避免 react-markdown 每帧全量 re-parse）。
- * 代码块走 markstream-react 轻量纯文本回退渲染，不引入 Monaco / Shiki / Mermaid / KaTeX。
+ * 代码块走轻量纯文本卡片组件（带语言栏与复制按钮），不引入 Monaco / Shiki / Mermaid / KaTeX。
  */
 export function Markdown({
 	text,
@@ -131,15 +213,16 @@ export function Markdown({
 		// 包括 Cmd/Ctrl 点击的默认行为都不应把应用页面导航走；主进程另有兜底拦截。
 		event.preventDefault();
 		if (link.kind === "unsupported") return;
-		if (link.kind === "file" && cwd && environmentEntityRef(cwd).environment.kind === "ssh") {
-			setMenu({ target: link.target, cwd, anchor: anchorOfElement(anchor) });
+		const activeCwd = cwd?.trim() ? cwd : null;
+		if (link.kind === "file" && activeCwd && environmentEntityRef(activeCwd).environment.kind === "ssh") {
+			setMenu({ target: link.target, cwd: activeCwd, anchor: anchorOfElement(anchor) });
 			return;
 		}
 		const operation =
 			link.kind === "external"
 				? getPi().openExternal({ url: link.url })
-				: cwd
-					? getPi().openPath({ target: link.target, cwd })
+				: activeCwd || isAbsoluteMarkdownFileTarget(link.target)
+					? getPi().openPath({ target: link.target, cwd: activeCwd })
 					: Promise.reject(new Error("No session working directory for relative link"));
 		void operation.catch((error: unknown) => {
 			pushToast("error", "toast.pathOpenFailed", errText(error));
@@ -166,7 +249,6 @@ export function Markdown({
 					smoothStreaming={smoothableRef.current}
 					smoothStreamingOptions={SMOOTH_OPTIONS}
 					isDark={isDark}
-					codeBlockProps={CODE_BLOCK_PROPS_BASE}
 					deferNodesUntilVisible={false}
 				/>
 			</div>

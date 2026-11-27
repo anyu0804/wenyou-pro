@@ -9,6 +9,7 @@ const piMock = vi.hoisted(() => ({
 	setCodemodeOnly: vi.fn(() => Promise.resolve()),
 	setCodemodeEnabled: vi.fn(() => Promise.resolve()),
 	setChannelWatchEnabled: vi.fn(() => Promise.resolve()),
+	saveApiKey: vi.fn(() => Promise.resolve()),
 	listProviders: vi.fn(() => Promise.resolve([])),
 	getModelPrefs: vi.fn(() => Promise.resolve({ hiddenModels: {}, subagentModels: {} })),
 	listSubagents: vi.fn(() => Promise.resolve([])),
@@ -114,5 +115,15 @@ describe("Code Mode 设置", () => {
 		expect(useSettingsStore.getState().codemodeOnly).toBe(true);
 		expect(useSettingsStore.getState().error).toBe("disk full");
 		expect(useSettingsStore.getState().codemodeSaving).toBe(false);
+	});
+});
+
+describe("saveKey 错误透传", () => {
+	it("saveApiKey 失败时记录 store error 并继续向上抛出供向导捕获", async () => {
+		piMock.saveApiKey.mockRejectedValueOnce(
+			new Error("Error invoking remote method 'saveApiKey': Error: 密钥文件只读"),
+		);
+		await expect(useSettingsStore.getState().saveKey("deepseek", "sk-bad")).rejects.toThrow("密钥文件只读");
+		expect(useSettingsStore.getState().error).toBe("密钥文件只读");
 	});
 });

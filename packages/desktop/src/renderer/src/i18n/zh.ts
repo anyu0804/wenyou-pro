@@ -303,6 +303,8 @@ export const zh = {
 	update: {
 		separateChannel: "测试版本请手动安装更新",
 		checkForUpdates: "检查更新",
+		checkReleases: "查看新版本",
+		openedReleases: "当前为离线优先发行版，已在浏览器打开 Releases 页面查看新版",
 		checking: "正在检查更新…",
 		available: "发现新版本 {version}，点击下载",
 		availableManual: "发现新版本 {version}，点击前往下载页",

@@ -4,10 +4,17 @@ import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Markdown } from "./Markdown";
 
+const piMock = vi.hoisted(() => ({
+	platform: "win32",
+	openPath: vi.fn(async () => undefined),
+	openExternal: vi.fn(async () => undefined),
+}));
+const toastMock = vi.hoisted(() => ({ pushToast: vi.fn() }));
 vi.hoisted(() => {
 	vi.stubGlobal("localStorage", { getItem: () => null, setItem: () => {} });
 });
-vi.mock("../../api", () => ({ getPi: () => ({ platform: "darwin" }) }));
+vi.mock("../../api", () => ({ getPi: () => piMock }));
+vi.mock("../../stores/toasts", () => ({ pushToast: toastMock.pushToast }));
 
 let root: ReturnType<typeof createRoot>;
 let container: HTMLDivElement;
@@ -154,5 +161,74 @@ describe("无 Monaco/Shiki 依赖下的表格与纯文本代码块回退", () =>
 		});
 		expect(container.textContent).toContain("E = mc^2");
 		expect(container.textContent).toContain("\\sum_{i=1}^{n} x_i");
+	});
+
+	it("普通代码块渲染带语言标识与复制按钮的卡片，点击后写入剪贴板并切换为已复制", async () => {
+		const writeText = vi.fn(async () => undefined);
+		Object.defineProperty(navigator, "clipboard", {
+			configurable: true,
+			value: { writeText },
+		});
+		await renderMessage("```typescript\nconst era = 561;\n```", false);
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(500);
+		});
+
+		const card = container.querySelector('[data-code-block="typescript"]');
+		expect(card).not.toBeNull();
+		expect(card?.className).toContain("rounded-xl");
+		expect(card?.className).toContain("border");
+		expect(card?.textContent).toContain("typescript");
+		expect(card?.textContent).toContain("const era = 561;");
+
+		const copyBtn = card?.querySelector<HTMLButtonElement>("button[data-code-copy]");
+		expect(copyBtn).not.toBeNull();
+		expect(copyBtn?.textContent).toBe("复制");
+
+		await act(async () => {
+			copyBtn?.click();
+			await Promise.resolve();
+		});
+		expect(writeText).toHaveBeenCalledWith("const era = 561;");
+		expect(copyBtn?.textContent).toBe("已复制");
+	});
+
+	it("无活跃 cwd 时点击 Windows 盘符路径与 file:// 绝对链接仍可打开，仅相对路径拒绝提示", async () => {
+		piMock.openPath.mockClear();
+		toastMock.pushToast.mockClear();
+		const md = [
+			"[盘符](D:/vault/doc.md)",
+			"[文件协议](file:///D:/vault/brief.md)",
+			"[相对路径](docs/rel.md)",
+		].join(" ");
+		await act(async () => {
+			root.render(<Markdown text={md} streaming={false} cwd={null} />);
+		});
+
+		const links = [...container.querySelectorAll<HTMLAnchorElement>("a[href]")];
+		expect(links.length).toBeGreaterThanOrEqual(3);
+
+		await act(async () => {
+			links[0]?.click();
+			await Promise.resolve();
+		});
+		expect(piMock.openPath).toHaveBeenCalledWith({ target: "D:/vault/doc.md", cwd: null });
+
+		await act(async () => {
+			links[1]?.click();
+			await Promise.resolve();
+		});
+		expect(piMock.openPath).toHaveBeenCalledWith({ target: "file:///D:/vault/brief.md", cwd: null });
+
+		await act(async () => {
+			links[2]?.click();
+			await Promise.resolve();
+		});
+		expect(piMock.openPath).toHaveBeenCalledTimes(2);
+		expect(toastMock.pushToast).toHaveBeenCalledWith(
+			"error",
+			"toast.pathOpenFailed",
+			expect.stringContaining("No session working directory"),
+		);
 	});
 });

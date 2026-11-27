@@ -319,6 +319,8 @@ export const en: Messages = {
 	update: {
 		separateChannel: "Install test build updates manually",
 		checkForUpdates: "Check for updates",
+		checkReleases: "Check releases",
+		openedReleases: "Automatic updates are disabled in this offline-first build; opened GitHub Releases",
 		checking: "Checking for updates…",
 		available: "Version {version} available, click to download",
 		availableManual: "Version {version} available, click to open the download page",

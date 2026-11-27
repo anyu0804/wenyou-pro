@@ -182,7 +182,7 @@ describe("brand cleanliness regression guard", () => {
 		expect(enContent).toContain("Jaxton07/percho (MIT License)");
 		expect(aboutContent).toContain("github.com/Jaxton07/percho (MIT License)");
 		expect(aboutContent).toContain('const upstreamUrl = "https://github.com/Jaxton07/percho";');
-		expect(appIpcContent).toContain('const REPO_URL = "https://github.com/Jaxton07/percho";');
+		expect(appIpcContent).toContain('const REPO_URL = "https://github.com/anyu0804/wenyou-pro";');
 	});
 
 	it("updates key brand titles, diagnostics, and AboutPanel inline scroll-brush SVG", () => {

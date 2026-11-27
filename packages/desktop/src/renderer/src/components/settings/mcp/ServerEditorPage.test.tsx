@@ -8,7 +8,7 @@ const fixture = vi.hoisted(() => ({ upsert: vi.fn().mockResolvedValue(undefined)
 vi.mock("../../../stores/mcp", () => ({ useMcpStore: () => fixture }));
 vi.mock("../../../i18n", () => ({ useT: () => (key: string) => key }));
 
-import { ServerEditorPage } from "./ServerEditorPage";
+import { isRelativeMcpCommand, ServerEditorPage } from "./ServerEditorPage";
 
 const server: McpServerView = {
 	name: "example",
@@ -281,6 +281,61 @@ it.each([
 		);
 	} finally {
 		await act(() => root.unmount());
+		vi.unstubAllGlobals();
+	}
+});
+
+it("MCP 命令路径校验兼容 Windows 盘符、UNC、家目录与 bare 命令，仅对相对路径标红提示", async () => {
+	for (const allowed of [
+		"/usr/local/bin/npx",
+		"C:\\tools\\mcp.exe",
+		"D:/tools/mcp-server.exe",
+		"\\\\fileserver\\share\\mcp.exe",
+		"~/bin/mcp",
+		"~\\bin\\mcp.exe",
+		"npx",
+		"node",
+		"uvx",
+	]) {
+		expect(isRelativeMcpCommand(allowed), `不应把合法命令 ${allowed} 标红`).toBe(false);
+	}
+	for (const relative of ["./foo", "../bar", ".\\mcp.exe", "..\\bin\\mcp", "scripts/mcp.js", "bin\\mcp.exe"]) {
+		expect(isRelativeMcpCommand(relative), `应拦截相对路径 ${relative}`).toBe(true);
+	}
+
+	vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+	const host = document.createElement("div");
+	document.body.append(host);
+	const root = createRoot(host);
+	const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+	try {
+		await act(async () => root.render(<ServerEditorPage projectTrusted onBack={() => {}} />));
+		const cmd = host.querySelector<HTMLInputElement>("#mcp-command");
+		expect(cmd).not.toBeNull();
+		if (!cmd) return;
+
+		await act(async () => {
+			setter?.call(cmd, "C:\\tools\\mcp.exe");
+			cmd.dispatchEvent(new Event("input", { bubbles: true }));
+		});
+		expect(cmd.className).not.toContain("border-err");
+		expect(host.textContent).not.toContain("settings.mcp.absolutePathHint");
+
+		await act(async () => {
+			setter?.call(cmd, "npx");
+			cmd.dispatchEvent(new Event("input", { bubbles: true }));
+		});
+		expect(cmd.className).not.toContain("border-err");
+
+		await act(async () => {
+			setter?.call(cmd, "./local-mcp");
+			cmd.dispatchEvent(new Event("input", { bubbles: true }));
+		});
+		expect(cmd.className).toContain("border-err");
+		expect(host.textContent).toContain("settings.mcp.absolutePathHint");
+	} finally {
+		await act(() => root.unmount());
+		host.remove();
 		vi.unstubAllGlobals();
 	}
 });
