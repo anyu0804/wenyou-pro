@@ -93,12 +93,12 @@ function SourceRefPills({
 const PREFIXED_SOURCE_ID_RE = /^(?:ntqq|qq|src|msg|ev)(?:[-_][a-zA-Z0-9._-]+|\d+[a-zA-Z0-9_-]*)$/i;
 
 /**
- * 离线导入 `00-群聊收集/` 生成的 `${groupId}-${hash}` 溯源 ID：
- * `groupId` 可为数字群号、`group-main`、英文 slug 或中文群名；末尾为 6-16 位十六进制指纹哈希
+ * 离线导入 `00-群聊收集/` 生成的 `${groupId}-${hash}`（及去重碰撞后缀 `-${n}`）溯源 ID：
+ * `groupId` 可为数字群号、`group-main`、英文 slug 或中文群名；末尾为 6-16 位十六进制指纹哈希及可选碰撞序号
  * （6-7 位时要求含至少 1 位数字，避免误把普通英文单词如 `[next-decade]` 认成哈希）。
  */
 const OFFLINE_HASH_SOURCE_ID_RE =
-	/^[a-zA-Z0-9\u4e00-\u9fa5][a-zA-Z0-9\u4e00-\u9fa5._-]*-(?:[0-9a-f]{8,16}|(?=[a-f]*\d)[0-9a-f]{6,7})$/;
+	/^[a-zA-Z0-9\u4e00-\u9fa5][a-zA-Z0-9\u4e00-\u9fa5._-]*-(?:[0-9a-f]{8,16}|(?=[a-f]*\d)[0-9a-f]{6,7})(?:-\d{1,3})?$/;
 
 export function isLikelySourceId(candidate: string, knownSourceIds?: ReadonlySet<string>): boolean {
 	if (!candidate) return false;
@@ -602,7 +602,7 @@ export function BriefingPanel() {
 											<p className="mt-1.5 select-text text-ui-13 leading-relaxed text-ink">
 												<TextWithSourceLinks
 													text={entry.summary}
-													knownSourceIds={new Set(entry.sourceRefs)}
+													knownSourceIds={new Set(entry.sourceRefs ?? [])}
 													onOpen={(id, q) => void openSourceContext(id, q)}
 												/>
 											</p>
