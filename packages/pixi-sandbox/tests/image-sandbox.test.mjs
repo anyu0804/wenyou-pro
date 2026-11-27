@@ -20,7 +20,7 @@ const {
 const { parseWorkingMap } = await server.ssrLoadModule('/src/map-loader.ts');
 const { serializeMap, originalMapRecords } = await server.ssrLoadModule('/src/map-serializer.ts');
 const { serializeProject, parseProject } = await server.ssrLoadModule('/src/project-serializer.ts');
-const { captureTheater } = await server.ssrLoadModule('/src/theater-cache.ts');
+const { captureTheater, readTheater, saveTheater } = await server.ssrLoadModule('/src/theater-cache.ts');
 const { migrateLegacyBattle } = await server.ssrLoadModule('/src/battle-storage.ts');
 const { computeCellSearchRadius, cellLocatorFor, syncBurgsForPaintedCells } = await server.ssrLoadModule('/src/map-renderer.ts');
 const { computeSafeTextureDimensions, buildWorkspaceVaultFallbackUrl } = await server.ssrLoadModule('/src/retouch-layer.ts');
@@ -481,4 +481,147 @@ test('超大图安全纹理等比降采样与失效 vault URL 按当前工作区
   assert.equal(buildWorkspaceVaultFallbackUrl('data:image/png;base64,AA', 'maps/gaul.png', 'new-dir'), null);
   assert.equal(buildWorkspaceVaultFallbackUrl('wenyou-asset://vault?cwd=old&path=a.png', '', 'new-dir'), null);
   assert.equal(buildWorkspaceVaultFallbackUrl('wenyou-asset://vault?cwd=old&path=a.png', 'a.png', null), null);
+});
+
+test('Bug #26 回归：FMG 与图片底图清空全图宽度 (km) 后经 IndexedDB 落盘切换/重载不再复活旧比例尺', async () => {
+  const prevIndexedDB = globalThis.indexedDB;
+  const stores = new Map();
+
+  function makeReq(executor) {
+    const req = { result: undefined, error: null, onsuccess: null, onerror: null, onupgradeneeded: null };
+    queueMicrotask(() => {
+      try {
+        executor(req);
+      } catch (err) {
+        req.error = err;
+        req.onerror?.({ target: req });
+      }
+    });
+    return req;
+  }
+
+  globalThis.indexedDB = {
+    open(dbName) {
+      return makeReq((req) => {
+        if (!stores.has(dbName)) stores.set(dbName, new Map());
+        const dbStores = stores.get(dbName);
+        const db = {
+          onclose: null,
+          createObjectStore(storeName) {
+            if (!dbStores.has(storeName)) dbStores.set(storeName, new Map());
+          },
+          transaction(storeName) {
+            if (!dbStores.has(storeName)) dbStores.set(storeName, new Map());
+            const kv = dbStores.get(storeName);
+            const tx = {
+              oncomplete: null,
+              onabort: null,
+              onerror: null,
+              error: null,
+              abort() {
+                tx.onabort?.();
+              },
+              objectStore() {
+                return {
+                  transaction: tx,
+                  get(key) {
+                    return makeReq((r) => {
+                      r.result = kv.has(key) ? structuredClone(kv.get(key)) : undefined;
+                      r.onsuccess?.();
+                    });
+                  },
+                  getKey(key) {
+                    return makeReq((r) => {
+                      r.result = kv.has(key) ? key : undefined;
+                      r.onsuccess?.();
+                    });
+                  },
+                  put(val, key) {
+                    kv.set(key, structuredClone(val));
+                  },
+                  delete(key) {
+                    kv.delete(key);
+                  },
+                  clear() {
+                    kv.clear();
+                  },
+                };
+              },
+            };
+            queueMicrotask(() => {
+              tx.oncomplete?.();
+            });
+            return tx;
+          },
+        };
+        req.result = db;
+        req.onupgradeneeded?.({ target: req });
+        req.onsuccess?.({ target: req });
+      });
+    },
+  };
+
+  try {
+    // 1. FMG 战区：首次落盘带比例尺（__base__ 中会写入旧 mapWidthKm / kmPerPixel）
+    const fmgMap = parseWorkingMap(fmgFixture);
+    fmgMap.source.mapWidthKm = 2864;
+    fmgMap.source.kmPerPixel = 2864 / fmgMap.width;
+
+    appStore.mapData = fmgMap;
+    appStore.mapId = fmgMap.source.mapId;
+    appStore.garrisons = [];
+    appStore.battle = { schemaVersion: 1, sources: [], battlefields: [], deployments: [] };
+    appStore.fieldBattles = [];
+    appStore.tacticalItems = [];
+
+    await saveTheater(captureTheater());
+    const loadedWithScale = await readTheater(fmgMap.source.mapId);
+    assert.equal(loadedWithScale?.mapData.source.mapWidthKm, 2864);
+    assert.equal(loadedWithScale?.mapData.source.kmPerPixel, 2864 / fmgMap.width);
+
+    // 清空 FMG 比例尺后再次落盘（此时 writeBases=false，仅写可编辑记录）
+    delete fmgMap.source.mapWidthKm;
+    delete fmgMap.source.kmPerPixel;
+    await saveTheater(captureTheater());
+
+    const loadedClearedFmg = await readTheater(fmgMap.source.mapId);
+    assert.equal(loadedClearedFmg?.mapData.source.mapWidthKm, undefined);
+    assert.equal(loadedClearedFmg?.mapData.source.kmPerPixel, undefined);
+    assert.equal('mapWidthKm' in (loadedClearedFmg?.mapData.source ?? {}), false);
+    assert.equal('kmPerPixel' in (loadedClearedFmg?.mapData.source ?? {}), false);
+
+    // 2. 再次设置新比例尺后可正常覆盖保存
+    fmgMap.source.mapWidthKm = 1800;
+    fmgMap.source.kmPerPixel = 1800 / fmgMap.width;
+    await saveTheater(captureTheater());
+    const loadedUpdatedFmg = await readTheater(fmgMap.source.mapId);
+    assert.equal(loadedUpdatedFmg?.mapData.source.mapWidthKm, 1800);
+
+    // 3. 图片底图同样保持清空不复活
+    const imgSpec = createImageBaseSpec({
+      name: 'scale-clear-img',
+      width: 800,
+      height: 500,
+      hexRadius: 32,
+      imageUrl: 'data:image/png;base64,AAAA',
+      mapWidthKm: 1600,
+    });
+    const imgMap = buildImageHexMapData(imgSpec);
+    appStore.mapData = imgMap;
+    appStore.mapId = imgMap.source.mapId;
+    await saveTheater(captureTheater());
+
+    delete imgMap.source.mapWidthKm;
+    delete imgMap.source.kmPerPixel;
+    await saveTheater(captureTheater());
+
+    const loadedClearedImg = await readTheater(imgMap.source.mapId);
+    assert.equal(loadedClearedImg?.mapData.source.mapWidthKm, undefined);
+    assert.equal(loadedClearedImg?.mapData.source.kmPerPixel, undefined);
+  } finally {
+    if (prevIndexedDB === undefined) delete globalThis.indexedDB;
+    else globalThis.indexedDB = prevIndexedDB;
+    appStore.mapData = null;
+    appStore.mapId = '';
+  }
 });

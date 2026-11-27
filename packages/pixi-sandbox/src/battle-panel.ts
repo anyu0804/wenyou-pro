@@ -649,12 +649,26 @@ export function initBattlePanel(root: HTMLElement, canvas: HTMLCanvasElement, wo
     if (!bf) throw new Error('请先选择或绘制战场');
     return bf;
   };
+  const ensureBattleLayerActive = (mode: 'battle-select' | 'battle-draw' = 'battle-select'): void => {
+    if (panel.hidden) return;
+    const needLayerSync = !layer.visible || garrisonContainer.visible;
+    const needModeSync = appStore.interactionMode !== mode;
+    layer.visible = true;
+    garrisonContainer.visible = false;
+    if (needModeSync) {
+      appStore.interactionMode = mode;
+      appStore.emit('tactical-mode-change', mode);
+      appStore.emit('brush:changed', mode);
+    }
+    if (needLayerSync) render();
+  };
   const commit = (label: string, build: (evidence: BattleEvidence[]) => BattleEdit[]): void => {
     const note = input('battle-note').value.trim();
     if (note === '') throw new Error('请填写本次设置的来源或假设说明');
     const source = { id: crypto.randomUUID(), kind: 'manual' as const, title: label, text: note, locator: '战役制图' };
     const evidence: BattleEvidence[] = [{ sourceId: source.id,
       basis: select('battle-basis').value as BattleEvidence['basis'], excerpt: note, note: label }];
+    ensureBattleLayerActive(drawPurpose !== null ? 'battle-draw' : 'battle-select');
     applyBattleEdits({ label, origin: 'manual', candidateItemIds: [],
       edits: [{ kind: 'upsert-source', source }, ...build(evidence)] });
     status.textContent = `已提交：${label}；可撤销`;
@@ -768,6 +782,7 @@ export function initBattlePanel(root: HTMLElement, canvas: HTMLCanvasElement, wo
     el('battle-orbat-mount').hidden = true;
     el('battle-tab-map').classList.add('active');
     el('battle-tab-orbat').classList.remove('active');
+    ensureBattleLayerActive('battle-select');
   });
   button('battle-tab-orbat', () => {
     el('battle-controls').hidden = true;
@@ -776,8 +791,8 @@ export function initBattlePanel(root: HTMLElement, canvas: HTMLCanvasElement, wo
     el('battle-tab-map').classList.remove('active');
     orbat.refresh();
   });
-  button('battle-undo', () => { undoBattleEdit(); });
-  button('battle-redo', () => { redoBattleEdit(); });
+  button('battle-undo', () => { ensureBattleLayerActive('battle-select'); undoBattleEdit(); });
+  button('battle-redo', () => { ensureBattleLayerActive('battle-select'); redoBattleEdit(); });
   button('battle-export', async () => {
     const bf = chosenBattlefield();
     const blob = await exportBattlePng(getBattleWorkspace(), bf.id);
@@ -787,14 +802,18 @@ export function initBattlePanel(root: HTMLElement, canvas: HTMLCanvasElement, wo
     anchor.click(); window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
     status.textContent = '战场 PNG 已导出，包含尺度状态和假设说明';
   });
-  battlefieldSelect.addEventListener('change', refresh);
+  battlefieldSelect.addEventListener('change', () => {
+    ensureBattleLayerActive('battle-select');
+    refresh();
+  });
   unitSelect.addEventListener('change', () => {
+    ensureBattleLayerActive('battle-select');
     const ids = [...unitSelect.selectedOptions].map(o => o.value);
     editor.selectUnits(ids);
     orbat.selectUnit(ids.length === 1 ? ids[0] : ids[ids.length - 1] ?? null);
   });
-  button('battle-rotate-left', () => editor.commitRotation(-15));
-  button('battle-rotate-right', () => editor.commitRotation(15));
+  button('battle-rotate-left', () => { ensureBattleLayerActive('battle-select'); editor.commitRotation(-15); });
+  button('battle-rotate-right', () => { ensureBattleLayerActive('battle-select'); editor.commitRotation(15); });
   button('battle-auto-echelon', () => {
     const selectedIds = editor.getSelection();
     if (selectedIds.length === 0) throw new Error('请先在列表中选择部队');
@@ -825,6 +844,7 @@ export function initBattlePanel(root: HTMLElement, canvas: HTMLCanvasElement, wo
     }
     if (matchedCount === 0) throw new Error('所选部队已不存在，请重新选择');
     const label = `按人数自动匹配 ${matchedCount} 个部队编制`;
+    ensureBattleLayerActive('battle-select');
     applyBattleEdits({ label, origin: 'manual', candidateItemIds: [], edits });
     status.textContent = `已自动匹配编制：${label}`;
     refresh();
@@ -834,11 +854,12 @@ export function initBattlePanel(root: HTMLElement, canvas: HTMLCanvasElement, wo
     openGarrisonCustomModal({
       target: createMapUnitEditTarget(),
       unitId: selectedIds[0],
-      onSaved: () => refresh(),
+      onSaved: () => { ensureBattleLayerActive('battle-select'); refresh(); },
     });
   });
   const startDraw = (purpose: DrawPurpose): void => {
-    drawPurpose = purpose; points = []; drag = null; sketch.clear(); appStore.interactionMode = 'battle-draw';
+    drawPurpose = purpose; points = []; drag = null; sketch.clear();
+    ensureBattleLayerActive('battle-draw');
     el('battle-draw-controls').hidden = false;
     el('battle-draw-help').textContent = '在地图依次点击顶点，然后点“完成绘制”；取消不会修改地图。';
     status.textContent = '正在绘制；中键/右键可漫游地图';
@@ -864,7 +885,7 @@ export function initBattlePanel(root: HTMLElement, canvas: HTMLCanvasElement, wo
     commit('删除地形', () => [{ kind: 'upsert-battlefield', battlefield: removeTerrainFeature(chosenBattlefield(), id) }]);
   });
   const cancelDraw = (): void => {
-    if (drawPurpose !== null) appStore.interactionMode = 'battle-select';
+    if (drawPurpose !== null) appStore.interactionMode = panel.hidden ? 'pan' : 'battle-select';
     points = []; drawPurpose = null; sketch.clear();
     el('battle-draw-controls').hidden = true;
   };
@@ -969,6 +990,7 @@ export function initBattlePanel(root: HTMLElement, canvas: HTMLCanvasElement, wo
       if (dep.battlefieldId.state === 'known' && dep.battlefieldId.value !== null) dep.battlefieldId.value = remapped(battlefieldIds, dep.battlefieldId.value);
       if (dep.reserveForUnitId.state === 'known' && dep.reserveForUnitId.value !== null) dep.reserveForUnitId.value = remapped(unitIds, dep.reserveForUnitId.value);
     }
+    ensureBattleLayerActive('battle-select');
     applyBattleEdits({ label: '添加合成河谷演示（非世界事实）', origin: 'manual', candidateItemIds: [], edits: [
       ...sample.battle.sources.map(source => ({ kind: 'upsert-source' as const, source })),
       ...sample.garrisons.map(unit => ({ kind: 'upsert-unit' as const, unit })),
@@ -1105,8 +1127,11 @@ export function initBattlePanel(root: HTMLElement, canvas: HTMLCanvasElement, wo
   appStore.on('viewport:zoom', scale => { viewScale = scale; if (!panel.hidden) render(); });
   appStore.on('map:loaded', () => {
     drag = null; cancelDraw(); editor.clearSelection(); resetBattleHistory();
-    orbat.destroy(); mountOrbat(); refresh();
+    orbat.destroy(); mountOrbat();
+    layer.visible = !panel.hidden;
+    garrisonContainer.visible = panel.hidden;
     appStore.interactionMode = panel.hidden ? 'pan' : 'battle-select';
+    refresh();
   });
   appStore.on('map:cleared', () => {
     drag = null; cancelDraw(); editor.clearSelection(); resetBattleHistory();

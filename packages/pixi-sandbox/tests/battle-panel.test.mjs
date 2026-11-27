@@ -185,7 +185,7 @@ setupMockDom();
 const server = await createServer({ server: { middlewareMode: true }, appType: 'custom' });
 after(() => server.close());
 
-const { appStore } = await server.ssrLoadModule('/src/store.ts');
+const { appStore, garrisonContainer } = await server.ssrLoadModule('/src/store.ts');
 const { initBattlePanel } = await server.ssrLoadModule('/src/battle-panel.ts');
 const { openGarrisonCustomModal, initGarrisonPanel } = await server.ssrLoadModule('/src/garrison-panel.ts');
 const { syntheticWorkspace } = await server.ssrLoadModule('/work-packages/BATTLE-1/P0/samples/river-valley.ts');
@@ -286,4 +286,64 @@ test('initGarrisonPanel: 挂载快速设计器按钮', () => {
   assert.ok(typeof handle.openModal === 'function');
   const btn = root.querySelector('#btn-open-garrison-custom');
   assert.ok(btn);
+});
+
+test('Bug #8 回归：战役面板打开后切外部工具再回战役面板绘制/切换/提交时恢复 battle-runtime 图层可见', async () => {
+  appStore.mapId = syntheticWorkspace.mapId;
+  appStore.garrisons = structuredClone(syntheticWorkspace.garrisons);
+  appStore.battle = structuredClone(syntheticWorkspace.battle);
+
+  const root = document.createElement('div');
+  const canvas = document.createElement('canvas');
+  const world = new Container();
+
+  initBattlePanel(root, canvas, world);
+  const battleLayer = world.children.find(c => c.label === 'battle-runtime');
+  assert.ok(battleLayer, 'world 下应挂载 battle-runtime 图层');
+
+  const panel = root.querySelector('#battle-panel');
+  const openBtn = root.querySelector('#battle-open');
+  openBtn.click();
+  assert.equal(panel.hidden, false);
+  assert.equal(battleLayer.visible, true);
+  assert.equal(garrisonContainer.visible, false);
+  assert.equal(appStore.interactionMode, 'battle-select');
+
+  // 1. 切换外部工具（如漫游 pan）隐藏战役图层，但面板保持打开
+  appStore.interactionMode = 'pan';
+  appStore.emit('tactical-mode-change', 'pan');
+  assert.equal(panel.hidden, false);
+  assert.equal(battleLayer.visible, false);
+  assert.equal(garrisonContainer.visible, true);
+
+  // 2. 回到战役面板点击「新建战场」触发 startDraw：必须恢复 battleLayer.visible 并切回 battle-draw
+  panel.querySelector('#battlefield-create').click();
+  await new Promise(r => setTimeout(r, 10));
+  assert.equal(battleLayer.visible, true);
+  assert.equal(garrisonContainer.visible, false);
+  assert.equal(appStore.interactionMode, 'battle-draw');
+  assert.ok(battleLayer.children.length > 0, '恢复可见后应同步渲染战役图层');
+
+  // 3. 再次切外部测距工具隐藏图层，再通过切换战场下拉框查看战役：应恢复可见
+  appStore.interactionMode = 'tactical-measure';
+  appStore.emit('tactical-mode-change', 'tactical-measure');
+  assert.equal(battleLayer.visible, false);
+  assert.equal(garrisonContainer.visible, true);
+
+  const bfSelect = panel.querySelector('#battlefield-select');
+  bfSelect.dispatchEvent({ type: 'change' });
+  assert.equal(battleLayer.visible, true);
+  assert.equal(garrisonContainer.visible, false);
+  assert.equal(appStore.interactionMode, 'battle-select');
+
+  // 4. 再次切外部工具，再通过「取消标定」触发 commit：应恢复可见
+  appStore.interactionMode = 'pan';
+  appStore.emit('brush:changed', 'pan');
+  assert.equal(battleLayer.visible, false);
+
+  panel.querySelector('#battle-note').value = '回归测试来源说明';
+  panel.querySelector('#battle-uncalibrate').click();
+  await new Promise(r => setTimeout(r, 10));
+  assert.equal(battleLayer.visible, true);
+  assert.equal(garrisonContainer.visible, false);
 });

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { dirname, join, relative } from "node:path";
+import { dirname, isAbsolute, join, relative } from "node:path";
 import { test } from "node:test";
 import { pathToFileURL } from "node:url";
 import { build } from "esbuild";
@@ -130,10 +130,11 @@ test("runtime bundle resolves isolated helpers and loads channel locks without c
 								kind: args.kind,
 								pluginData: { checked: true },
 							});
+							const rel = relative(stage, resolved.path);
 							if (
 								!resolved.external &&
 								!resolved.errors.length &&
-								relative(stage, resolved.path).startsWith("..")
+								(isAbsolute(rel) || rel.startsWith(".."))
 							) {
 								return { errors: [{ text: `Outside isolated install: ${args.path}` }] };
 							}

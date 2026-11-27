@@ -10,6 +10,7 @@
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "test": "node --test tests/unit.test.mjs",
+    "test:ci": "node --test --test-concurrency=1 tests/unit.test.mjs tests/battle-1-acceptance.test.mjs tests/battle-deployment.test.mjs tests/battle-editor.test.mjs tests/battle-export.test.mjs tests/battle-import.test.mjs tests/battle-layer.test.mjs tests/battle-orbat.test.mjs tests/battle-panel.test.mjs tests/battle-runtime.test.mjs tests/battle-terrain.test.mjs tests/field-battle-paint.test.mjs tests/field-battle-scene.test.mjs tests/field-battle-storage.test.mjs tests/field-battle-terrain.test.mjs tests/field-battle-units.test.mjs tests/image-sandbox.test.mjs tests/map-bridge-v1.test.mjs tests/military-symbols.test.mjs tests/retouch-and-scale.test.mjs tests/tactical-drawer.test.mjs",
     "test:battle": "node --test --test-concurrency=1 tests/battle-1-acceptance.test.mjs tests/battle-deployment.test.mjs tests/battle-editor.test.mjs tests/battle-export.test.mjs tests/battle-layer.test.mjs tests/battle-orbat.test.mjs tests/battle-terrain.test.mjs tests/battle-runtime.test.mjs tests/battle-import.test.mjs tests/tactical-drawer.test.mjs tests/military-symbols.test.mjs tests/battle-panel.test.mjs",
     "test:browser": "node bugfix.test.mjs && node theater-switch.test.mjs && node export-import.test.mjs",
     "setup:browser": "playwright install chromium --only-shell",

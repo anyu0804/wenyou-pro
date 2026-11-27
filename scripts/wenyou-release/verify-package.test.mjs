@@ -7,14 +7,16 @@ import { dirname, join, resolve } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { formatMacReleaseNotes } from "./build-installer.mjs";
+import { formatLinuxReleaseNotes, formatMacReleaseNotes } from "./build-installer.mjs";
 import {
 	extractLocalHtmlAssetRefs,
+	getExpectedArtifactNames,
 	loadAsarModule,
 	parseVerifyArgs,
 	resolveVerifyPlatform,
 	sanitizePathForDisplay,
 	scanUnmaskedLocalPaths,
+	verifyLinuxUnpackedApp,
 	verifyMacAppBundle,
 	verifyPortableZipExtract,
 	verifyReadmeFile,
@@ -346,6 +348,52 @@ async function createCompleteMacReleaseFixture(baseDir, options = {}) {
 	};
 }
 
+async function createCompleteLinuxReleaseFixture(baseDir, options = {}) {
+	const version = options.version ?? TEST_VERSION;
+	const arch = options.arch ?? "x64";
+	const artifactArch = arch === "x64" ? "x86_64" : arch;
+	const releaseDir = join(baseDir, `wenyou-pro-${version}-linux-${arch}`);
+	const unpackedDir = join(releaseDir, "raw", "linux-unpacked");
+	const resourcesDir = join(unpackedDir, "resources");
+
+	await writeFileEnsuringDir(join(unpackedDir, "wenyou-pro"), Buffer.from("ELF-FAKE-LINUX-BIN"));
+	await writeFileEnsuringDir(join(unpackedDir, "locales", "zh-CN.pak"), Buffer.from("PAK-ZH"));
+	await writeFileEnsuringDir(join(unpackedDir, "locales", "en-US.pak"), Buffer.from("PAK-EN"));
+
+	const asarFiles = defaultAsarFiles(version, options.asarOverrides);
+	await buildAsarFromFiles(baseDir, join(resourcesDir, "app.asar"), asarFiles);
+	await populateSharedExtraResources(resourcesDir, options);
+
+	for (const pyName of ["wenyou_read.py", "wenyou_vfs_sync.py", "ntqq_vfs.py", "wenyou_ntqq_bridge.py"]) {
+		await writeFileEnsuringDir(join(resourcesDir, "ntqq-vfs", pyName), `print('${pyName}')\n`);
+	}
+
+	const appImageName = `Wenyou-Pro-${version}-linux-${artifactArch}.AppImage`;
+	const appImageBytes = Buffer.from(`FAKE-APPIMAGE-${version}-${artifactArch}`);
+	const appImagePath = join(releaseDir, appImageName);
+	await writeFileEnsuringDir(appImagePath, appImageBytes);
+
+	await writeFileEnsuringDir(
+		join(releaseDir, "SHA256SUMS.txt"),
+		`${sha256Buffer(appImageBytes)}  ${appImageName}\n`,
+	);
+
+	const readmeContent = options.readmeContent ?? formatLinuxReleaseNotes(version, [arch]);
+	await writeFileEnsuringDir(join(releaseDir, "使用说明.txt"), readmeContent);
+
+	return {
+		version,
+		arch,
+		releaseDir,
+		unpackedDir,
+		resourcesDir,
+		appImageName,
+		appImagePath,
+		readmePath: join(releaseDir, "使用说明.txt"),
+		sha256Path: join(releaseDir, "SHA256SUMS.txt"),
+	};
+}
+
 test("full Wenyou release verification passes including Portable.zip extract-check, appIcon, and temp cleanup", async (t) => {
 	const baseDir = await createTempDir(t);
 	const extractTempParent = join(baseDir, "extract-tmp");
@@ -557,6 +605,72 @@ test("macOS negative gates block Windows .exe/.dll/.pyd/.ico/update-diagnostics 
 	await assert.rejects(
 		() => verifyReadmeFile(fixture.readmePath, fixture.version, { platform: "mac", arch: "x64" }),
 		/path sanitization gate/i,
+	);
+});
+
+test("Linux AppImage release verification passes for x64 (x86_64 AppImage) and blocks Windows resource leaks or bad Linux README", async (t) => {
+	const baseDir = await createTempDir(t);
+	const fixture = await createCompleteLinuxReleaseFixture(baseDir, { arch: "x64" });
+
+	assert.equal(resolveVerifyPlatform({ releaseDir: fixture.releaseDir, hostPlatform: "win32" }), "linux");
+	assert.equal(resolveVerifyPlatform({ hostPlatform: "linux" }), "linux");
+	assert.deepEqual(getExpectedArtifactNames(fixture.version, { platform: "linux" }).artifacts, [
+		`Wenyou-Pro-${fixture.version}-linux-x86_64.AppImage`,
+	]);
+
+	const report = await verifyWenyouRelease({
+		version: fixture.version,
+		platform: "linux",
+		releaseDir: fixture.releaseDir,
+	});
+	assert.equal(report.ok, true);
+	assert.equal(report.platform, "linux");
+	assert.deepEqual(report.archs, ["x64"]);
+	assert.equal(report.unpacked.extraResources.ntqqVfs.windowsViolations, 0);
+	assert.deepEqual(report.unpacked.locales, {
+		present: true,
+		checkedPaks: ["en-US.pak", "zh-CN.pak"],
+	});
+
+	// CLI invocation with --platform linux
+	const { stdout } = await execFileAsync(process.execPath, [
+		VERIFY_SCRIPT_PATH,
+		"--platform",
+		"linux",
+		"--version",
+		fixture.version,
+		"--release-dir",
+		fixture.releaseDir,
+		"--repo-root",
+		baseDir,
+	]);
+	const cliReport = JSON.parse(stdout);
+	assert.equal(cliReport.ok, true);
+	assert.equal(cliReport.platform, "linux");
+
+	// Negative 1: Windows binary inside Linux ntqq-vfs must be blocked
+	const leakedExe = join(fixture.resourcesDir, "ntqq-vfs", "qq_dump_db.exe");
+	await writeFileEnsuringDir(leakedExe, Buffer.from("MZ-LEAK"));
+	await assert.rejects(
+		() => verifyLinuxUnpackedApp(fixture.unpackedDir, fixture.version),
+		/Forbidden Windows binaries.*qq_dump_db\.exe/i,
+	);
+	await rm(leakedExe);
+
+	// Negative 2: Windows-only update-diagnostics or wenyou-pro.ico must be blocked
+	await writeFileEnsuringDir(join(fixture.resourcesDir, "wenyou-pro.ico"), createMinimalIcoBuffer([32, 256]));
+	await assert.rejects(
+		() => verifyLinuxUnpackedApp(fixture.unpackedDir, fixture.version),
+		/Forbidden Windows-only resource.*wenyou-pro\.ico/i,
+	);
+	await rm(join(fixture.resourcesDir, "wenyou-pro.ico"));
+
+	// Negative 3: Linux README with %USERPROFILE% must be blocked
+	const badLinuxReadme = `${formatLinuxReleaseNotes(fixture.version, ["x64"])}\n%USERPROFILE%\\.wenyou-pro\n`;
+	await writeFile(fixture.readmePath, badLinuxReadme, "utf8");
+	await assert.rejects(
+		() => verifyReadmeFile(fixture.readmePath, fixture.version, { platform: "linux", arch: "x64" }),
+		/%USERPROFILE%/i,
 	);
 });
 
@@ -957,9 +1071,22 @@ test("parseVerifyArgs, extractLocalHtmlAssetRefs, and sanitizePathForDisplay han
 			help: false,
 		},
 	);
+	assert.deepEqual(
+		parseVerifyArgs(["--platform", "linux", "--arch=x64", "--version=0.2.6"]),
+		{
+			version: "0.2.6",
+			platform: "linux",
+			arch: "x64",
+			releaseDir: undefined,
+			repoRoot: undefined,
+			extractCheck: false,
+			help: false,
+		},
+	);
 	assert.throws(() => parseVerifyArgs(["--version"]), /Missing value/);
-	assert.throws(() => parseVerifyArgs(["--platform", "linux"]), /Invalid verify platform/);
+	assert.throws(() => parseVerifyArgs(["--platform", "freebsd"]), /Invalid verify platform/);
 	assert.throws(() => parseVerifyArgs(["--platform", "win", "--arch", "arm64"]), /Invalid Windows verify arch/);
+	assert.throws(() => parseVerifyArgs(["--platform", "linux", "--arch", "all"]), /Invalid Linux verify arch/);
 	assert.throws(() => parseVerifyArgs(["--unknown-flag"]), /Unknown CLI argument/);
 
 	const html = [

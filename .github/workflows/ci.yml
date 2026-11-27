@@ -47,7 +47,7 @@ jobs:
         run: npm --prefix packages/pixi-sandbox ci --no-audit --no-fund
 
       - name: Run pixi-sandbox unit tests
-        run: npm --prefix packages/pixi-sandbox run test
+        run: npm --prefix packages/pixi-sandbox run test:ci
 
       - name: Build pixi-sandbox desktop bundle
         run: npm --prefix packages/pixi-sandbox run build:desktop

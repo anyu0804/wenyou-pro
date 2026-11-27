@@ -8,10 +8,12 @@ after(() => server.close());
 const { parseWorkingMap, SEA_LEVEL } = await server.ssrLoadModule('/src/map-loader.ts');
 const { serializeMap, originalMapRecords } = await server.ssrLoadModule('/src/map-serializer.ts');
 const { computeTerrainCellColor } = await server.ssrLoadModule('/src/terrain-heightmap.ts');
-const { appStore, recomputeBurgTiers } = await server.ssrLoadModule('/src/store.ts');
+const { appStore, recomputeBurgTiers, terrainContainer } = await server.ssrLoadModule('/src/store.ts');
 const { serializeProject, parseProject } = await server.ssrLoadModule('/src/project-serializer.ts');
 const { migrateLegacyBattle } = await server.ssrLoadModule('/src/battle-storage.ts');
 const { rebuildMapLabels, updateLabelLod } = await server.ssrLoadModule('/src/label-lod.ts');
+const { cellLocatorFor } = await server.ssrLoadModule('/src/map-renderer.ts');
+const { initBurgEditor, findBurgOccupyingCell, canPlaceBurgAtCell } = await server.ssrLoadModule('/src/burg-editor.ts');
 const { Container, Graphics } = await server.ssrLoadModule('pixi.js');
 // 启动不再附带底图；解析回归固定使用旧格式 fixture（v1.108 E群岛原字节副本）
 const source = await fs.readFile(new URL('./fixtures/fmg-legacy-default.map', import.meta.url), 'utf8');
@@ -223,4 +225,198 @@ test('城市名手动大小与动态双开关仅影响城市名，不动国名�
   assert.equal(visibleCities, cityCount);
   assert.ok(Math.abs(sampleCity.scale.x - (0.7 / 0.9)) < 1e-6);
   assert.ok(Math.abs(sampleState.scale.x - stateScaleAt09) < 1e-6);
+});
+
+test('Bug #27 回归：城邑编辑器前置拦截同 Voronoi 地块新建与拖入双城，允许自身格内微调与已删城邑地块复用', () => {
+  const edited = structuredClone(map);
+  const activeBurgs = edited.burgs.filter((b) => !b.removed);
+  assert.ok(activeBurgs.length >= 2, 'fixture 应至少包含两座活跃城邑');
+  const burgA = activeBurgs[0];
+  const burgB = activeBurgs[1];
+  assert.notEqual(burgA.cell, burgB.cell);
+
+  // 找一个空闲陆地格与一个海洋格
+  const occupiedCells = new Set(activeBurgs.map((b) => b.cell));
+  let emptyLandCell = -1;
+  let oceanCell = -1;
+  for (let c = 0; c < edited.cells.count; c++) {
+    if (edited.cells.h[c] >= 20 && !occupiedCells.has(c) && emptyLandCell < 0) emptyLandCell = c;
+    if (edited.cells.h[c] < 20 && oceanCell < 0) oceanCell = c;
+    if (emptyLandCell >= 0 && oceanCell >= 0) break;
+  }
+  assert.ok(emptyLandCell >= 0 && oceanCell >= 0);
+
+  // 1. 纯校验逻辑：占用拦截、自身排除、海洋拦截、已删除城邑不拦截
+  assert.equal(findBurgOccupyingCell(edited, burgB.cell)?.i, burgB.i);
+  assert.equal(findBurgOccupyingCell(edited, burgB.cell, burgB.i), null);
+  assert.deepEqual(canPlaceBurgAtCell(edited, burgB.cell), {
+    ok: false,
+    reason: 'occupied',
+    occupant: burgB,
+  });
+  assert.deepEqual(canPlaceBurgAtCell(edited, burgB.cell, burgA.i), {
+    ok: false,
+    reason: 'occupied',
+    occupant: burgB,
+  });
+  assert.deepEqual(canPlaceBurgAtCell(edited, burgA.cell, burgA.i), { ok: true });
+  assert.deepEqual(canPlaceBurgAtCell(edited, emptyLandCell), { ok: true });
+  assert.deepEqual(canPlaceBurgAtCell(edited, oceanCell), { ok: false, reason: 'not-land' });
+
+  // 已删除城邑所在陆地格允许重新建城
+  const removedCopy = structuredClone(edited);
+  removedCopy.burgs.find((b) => b.i === burgB.i).removed = true;
+  assert.deepEqual(canPlaceBurgAtCell(removedCopy, burgB.cell), { ok: true });
+
+  // 2. 端到端指针交互：新建点击被占用格与拖拽落入被占用格均被前置拒绝
+  const prevWindow = globalThis.window;
+  const prevDocument = globalThis.document;
+  const windowListeners = new Map();
+  const canvasListeners = new Map();
+
+  class MockNode {
+    constructor(tag = 'div') {
+      this.tagName = tag.toUpperCase();
+      this.id = '';
+      this.className = '';
+      this.style = {};
+      this.hidden = false;
+      this.textContent = '';
+      this.children = [];
+      this.attrs = {};
+      this.ownerDocument = null;
+    }
+    setAttribute(k, v) { this.attrs[k] = v; }
+    appendChild(child) { this.children.push(child); return child; }
+    append(...nodes) { for (const n of nodes) this.appendChild(n); }
+    remove() {}
+    querySelector(sel) {
+      if (sel.startsWith('#')) {
+        const id = sel.slice(1);
+        return this.children.find((c) => c.id === id) ?? null;
+      }
+      return null;
+    }
+  }
+
+  const head = new MockNode('head');
+  const mockDoc = {
+    head,
+    getElementById: (id) => head.children.find((c) => c.id === id) ?? null,
+    createElement: (tag) => {
+      const node = new MockNode(tag);
+      node.ownerDocument = mockDoc;
+      return node;
+    },
+  };
+  const mount = mockDoc.createElement('div');
+  const mockCanvas = {
+    style: {},
+    getBoundingClientRect: () => ({ left: 0, top: 0, width: edited.width, height: edited.height }),
+    addEventListener: (type, fn) => {
+      if (!canvasListeners.has(type)) canvasListeners.set(type, []);
+      canvasListeners.get(type).push(fn);
+    },
+    setPointerCapture: () => {},
+    releasePointerCapture: () => {},
+    hasPointerCapture: () => true,
+  };
+
+  globalThis.document = mockDoc;
+  globalThis.window = {
+    addEventListener: (type, fn) => {
+      if (!windowListeners.has(type)) windowListeners.set(type, []);
+      windowListeners.get(type).push(fn);
+    },
+    removeEventListener: () => {},
+  };
+
+  const dispatchCanvas = (type, evt) => {
+    for (const fn of canvasListeners.get(type) ?? []) fn(evt);
+  };
+  const dispatchWindow = (type, evt) => {
+    for (const fn of windowListeners.get(type) ?? []) fn(evt);
+  };
+
+  const prevMapData = appStore.mapData;
+  const prevMode = appStore.interactionMode;
+  const prevToMapCoords = appStore.toMapCoords;
+  let entityChangedCount = 0;
+  const onEntityChanged = () => { entityChangedCount += 1; };
+  appStore.on('entity:changed', onEntityChanged);
+
+  try {
+    // 仅保留两座距离充足的测试城邑，避免随机邻城落入探针命中半径
+    const pairMap = structuredClone(edited);
+    pairMap.burgs = [structuredClone(burgA), structuredClone(burgB)];
+    const testBurgA = pairMap.burgs[0];
+    const testBurgB = pairMap.burgs[1];
+    testBurgA.x = 120;
+    testBurgA.y = 120;
+    testBurgB.x = 420;
+    testBurgB.y = 220;
+    appStore.mapData = pairMap;
+    appStore.interactionMode = 'burg-edit';
+    terrainContainer.worldTransform.a = 1;
+    appStore.toMapCoords = (x, y) => [x, y];
+
+    // 精确映射测试坐标到目标 Voronoi 地块
+    const baseLocate = cellLocatorFor(pairMap);
+    const locateOverride = (x, y) => {
+      if (Math.hypot(x - (testBurgB.x + 25), y - testBurgB.y) < 1) return testBurgB.cell;
+      if (Math.hypot(x - testBurgB.x, y - testBurgB.y) < 1) return testBurgB.cell;
+      return baseLocate(x, y);
+    };
+
+    initBurgEditor(mockCanvas, mount, locateOverride);
+
+    // 场景 A：点击同一地块内空白偏置处（距 testBurgB 25px > HIT_RADIUS_PX，但仍落在 testBurgB.cell）：拒绝弹出新建弹窗并提示冲突
+    dispatchCanvas('pointerdown', {
+      button: 0, pointerId: 1, clientX: testBurgB.x + 25, clientY: testBurgB.y, preventDefault() {},
+    });
+    dispatchWindow('pointerup', {
+      button: 0, pointerId: 1, clientX: testBurgB.x + 25, clientY: testBurgB.y, preventDefault() {},
+    });
+    assert.equal(mount.querySelector('#wenyou-burg-editor-overlay'), null, '被占用地块不得打开新建城邑弹窗');
+    const noticeAfterCreate = mount.querySelector('#wenyou-burg-editor-notice');
+    assert.ok(noticeAfterCreate && noticeAfterCreate.hidden === false, '应显示冲突提示');
+    assert.match(noticeAfterCreate.textContent, /每格仅允许一座城市/);
+
+    // 场景 B：将 testBurgA 拖拽到 testBurgB 所在 Voronoi 地块松手：拒绝落点并保持原位，不触发 entity:changed
+    const origX = testBurgA.x;
+    const origY = testBurgA.y;
+    const origCell = testBurgA.cell;
+    const origState = testBurgA.state;
+    const origProvince = testBurgA.province;
+
+    dispatchCanvas('pointerdown', {
+      button: 0, pointerId: 2, clientX: origX, clientY: origY, preventDefault() {},
+    });
+    dispatchWindow('pointermove', {
+      pointerId: 2, clientX: testBurgB.x, clientY: testBurgB.y, target: mockCanvas, preventDefault() {},
+    });
+    dispatchWindow('pointerup', {
+      button: 0, pointerId: 2, clientX: testBurgB.x, clientY: testBurgB.y, preventDefault() {},
+    });
+
+    assert.equal(testBurgA.x, origX);
+    assert.equal(testBurgA.y, origY);
+    assert.equal(testBurgA.cell, origCell);
+    assert.equal(testBurgA.state, origState);
+    assert.equal(testBurgA.province, origProvince);
+    assert.equal(entityChangedCount, 0, '拖入已被占用地块不应触发 entity:changed');
+    assert.equal(mount.querySelector('#wenyou-burg-editor-notice').hidden, false);
+
+    // 清理内部 notice 计时器避免测试进程挂起
+    appStore.emit('theater:leaving');
+  } finally {
+    appStore.off('entity:changed', onEntityChanged);
+    appStore.mapData = prevMapData;
+    appStore.interactionMode = prevMode;
+    appStore.toMapCoords = prevToMapCoords;
+    if (prevWindow === undefined) delete globalThis.window;
+    else globalThis.window = prevWindow;
+    if (prevDocument === undefined) delete globalThis.document;
+    else globalThis.document = prevDocument;
+  }
 });
