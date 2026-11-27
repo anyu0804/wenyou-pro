@@ -1,13 +1,24 @@
-import { spawn } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, readdirSync, statSync } from "node:fs";
-import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { type Dirent, existsSync, readdirSync, statSync } from "node:fs";
+import {
+	type FileHandle,
+	mkdir,
+	open,
+	readdir,
+	readFile,
+	rename,
+	rm,
+	stat,
+	writeFile,
+} from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import type {
 	CampaignNtqqGroupBinding,
 	GroupRole,
+	NtqqDetectedAccount,
 	NtqqGroupSummary,
 	NtqqLocalConfig,
 	NtqqProbeStatus,
@@ -15,13 +26,35 @@ import type {
 	NtqqSyncCampaignResult,
 	NtqqSyncGroupDetail,
 } from "@percho/shared";
-import { computeUnreportedMessages, ingestExternalMessages, loadCursors, loadEvidenceRecords } from "./qq-ingest";
+import {
+	computeUnreportedMessages,
+	ingestExternalMessages,
+	loadCursors,
+	loadEvidenceRecords,
+} from "./qq-ingest";
 
 const QQ_UIN_RE = /^\d{5,12}$/;
 const GROUP_ID_RE = /^\d{5,15}$/;
 const BRIDGE_PREFIX = "__NTQQ_BRIDGE__";
-const KEY_EXTRACT_TIMEOUT_MS = 35_000;
+const KEY_EXTRACT_ATTEMPT_TIMEOUT_MS = 12_000;
+const KEY_EXTRACT_POLL_INTERVAL_MS = 150;
 const VFS_RUN_TIMEOUT_MS = 90_000;
+const NTQQ_EXT_HEADER = 1024;
+const NTQQ_PAGE_SIZE = 4096;
+const NTQQ_SALT_SIZE = 16;
+const HEX_SALT_RE = /^[0-9a-f]{32}$/;
+const HEX_KEY_RE = /^[0-9a-f]{64}$/;
+
+const FATAL_KEY_DUMP_PATTERNS: readonly RegExp[] = [
+	/ERROR:\s*No keys recovered/i,
+	/ERROR:\s*No QQ\.exe found/i,
+	/Cannot open PID/i,
+	/Failed to open (?:process|PID)/i,
+	/ERROR:\s*DB dir not found/i,
+];
+const KEY_DUMP_WAITING_RE = /Waiting for QQ to exit|press Enter to proceed/i;
+const KEY_DUMP_SAVED_RE = /Key map saved to/i;
+const KEY_DUMP_ZERO_SALTS_RE = /\b0 salts matched\b/i;
 
 const REQUIRED_BRIDGE_FILES = [
 	"ntqq_vfs.py",
@@ -78,6 +111,14 @@ export interface NtqqSyncServiceOptions {
 	homeDir?: string;
 	env?: NodeJS.ProcessEnv;
 	darwinPythonPaths?: readonly string[];
+	/** 覆盖本机 QQ.exe 进程 PID 列表枚举（用于单元测试或自定义探测） */
+	listQqPids?: () => Promise<number[]>;
+	/** 覆盖密钥提取可执行命令（默认使用 assetsDir/qq_dump_db.exe） */
+	keyDumpCommand?: { bin: string; prefixArgs?: string[] };
+	/** 单次 PID 密钥提取尝试超时毫秒数（默认 12_000） */
+	keyExtractAttemptTimeoutMs?: number;
+	/** 临时 key_map 轮询间隔毫秒数（默认 150） */
+	keyExtractPollIntervalMs?: number;
 }
 
 export interface AutoDetectNtqqDbDirOptions {
@@ -89,6 +130,179 @@ export interface AutoDetectNtqqDbDirOptions {
 export interface DetectPythonOptions extends AutoDetectNtqqDbDirOptions {
 	/** macOS GUI 优先探测的完整 Python 路径（默认探测 Homebrew 与 Python.org Framework） */
 	darwinPythonPaths?: readonly string[];
+}
+
+export interface KeyDumpAttemptResult {
+	pid: number | null;
+	entries: Record<string, string>;
+	stdout: string;
+	stderr: string;
+	exitCode: number | null;
+	timedOut: boolean;
+	abortedReason: string | null;
+}
+
+function stripUtf8Bom(raw: string): string {
+	return raw.startsWith("\uFEFF") ? raw.slice(1) : raw;
+}
+
+function parseJsonWithBom<T>(raw: string): T {
+	return JSON.parse(stripUtf8Bom(raw)) as T;
+}
+
+function pathContainsDirSegment(dirPath: string, segment: string): boolean {
+	const parts = dirPath.split(/[\\/]+/).filter(Boolean);
+	return parts.includes(segment);
+}
+
+function dbDirBelongsToDifferentQq(
+	dbDir: string,
+	targetQqUin: string,
+	previousQqUin?: string | null,
+): boolean {
+	const parts = dbDir.split(/[\\/]+/).filter(Boolean);
+	if (previousQqUin && previousQqUin !== targetQqUin && parts.includes(previousQqUin)) {
+		return true;
+	}
+	for (let i = 0; i < parts.length - 1; i += 1) {
+		const seg = parts[i];
+		const next = parts[i + 1];
+		if (seg && next && QQ_UIN_RE.test(seg) && next.toLowerCase() === "nt_qq" && seg !== targetQqUin) {
+			return true;
+		}
+	}
+	return false;
+}
+
+/** 纯只读读取 NTQQ 加密 SQLite 数据库偏移 1024 处的 16 字节盐值（小写 hex）；不足一页或不可读返回 null */
+export async function readNtqqDbSaltHex(dbPath: string): Promise<string | null> {
+	if (!dbPath || !existsSync(dbPath)) return null;
+	let fh: FileHandle | null = null;
+	try {
+		fh = await open(dbPath, "r");
+		const st = await fh.stat();
+		if (st.size < NTQQ_EXT_HEADER + NTQQ_PAGE_SIZE) {
+			return null;
+		}
+		const buf = Buffer.alloc(NTQQ_SALT_SIZE);
+		let offset = 0;
+		while (offset < NTQQ_SALT_SIZE) {
+			const { bytesRead } = await fh.read(buf, offset, NTQQ_SALT_SIZE - offset, NTQQ_EXT_HEADER + offset);
+			if (bytesRead <= 0) break;
+			offset += bytesRead;
+		}
+		if (offset < NTQQ_SALT_SIZE) return null;
+		return buf.toString("hex").toLowerCase();
+	} catch {
+		return null;
+	} finally {
+		if (fh) {
+			await fh.close().catch(() => undefined);
+		}
+	}
+}
+
+/** 从解析后的 JSON 对象提取合法 hex 盐值-密钥表（兼容 { key_map: {...} } 与扁平 { salt: key }） */
+export function parseKeyMapEntries(parsed: unknown): Record<string, string> {
+	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+	const obj = parsed as Record<string, unknown>;
+	let source: Record<string, unknown>;
+	if ("key_map" in obj) {
+		if (!obj.key_map || typeof obj.key_map !== "object" || Array.isArray(obj.key_map)) {
+			return {};
+		}
+		source = obj.key_map as Record<string, unknown>;
+	} else {
+		source = obj;
+	}
+	const out: Record<string, string> = {};
+	for (const [rawSalt, rawKey] of Object.entries(source)) {
+		if (typeof rawKey !== "string") continue;
+		const salt = rawSalt.trim().toLowerCase();
+		const key = rawKey.trim().toLowerCase();
+		if (HEX_SALT_RE.test(salt) && HEX_KEY_RE.test(key)) {
+			out[salt] = key;
+		}
+	}
+	return out;
+}
+
+/** 读取并解析本地 key_map.json（自动剥离 UTF-8 BOM，兼容嵌套与扁平结构，仅保留合法 hex 键值并转小写） */
+export async function loadKeyMapEntries(filePath: string): Promise<Record<string, string>> {
+	if (!filePath || !existsSync(filePath)) return {};
+	try {
+		const rawText = await readFile(filePath, "utf8");
+		return parseKeyMapEntries(parseJsonWithBom<unknown>(rawText));
+	} catch {
+		return {};
+	}
+}
+
+/** 解析 Windows `tasklist /FI "IMAGENAME eq QQ.exe" /FO CSV /NH` 输出并按内存占用降序返回进程 PID */
+export function parseWindowsTasklistCsv(stdout: string): Array<{ pid: number; memKb: number }> {
+	const results: Array<{ pid: number; memKb: number }> = [];
+	const seen = new Set<number>();
+	for (const rawLine of stdout.split(/\r?\n/)) {
+		const line = rawLine.trim();
+		if (!line.startsWith('"')) continue;
+		const fields: string[] = [];
+		const fieldRe = /"((?:[^"]|"")*)"/g;
+		let match: RegExpExecArray | null = fieldRe.exec(line);
+		while (match !== null) {
+			fields.push((match[1] ?? "").replace(/""/g, '"'));
+			match = fieldRe.exec(line);
+		}
+		if (fields.length < 2) continue;
+		const pidStr = fields[1]?.trim() ?? "";
+		if (!/^\d+$/.test(pidStr)) continue;
+		const pid = Number.parseInt(pidStr, 10);
+		if (!Number.isFinite(pid) || pid <= 0 || seen.has(pid)) continue;
+		seen.add(pid);
+		const memDigits = (fields[4] ?? "").replace(/[^\d]/g, "");
+		const memKb = memDigits ? Number.parseInt(memDigits, 10) : 0;
+		results.push({ pid, memKb: Number.isFinite(memKb) ? memKb : 0 });
+	}
+	results.sort((a, b) => b.memKb - a.memKb || a.pid - b.pid);
+	return results;
+}
+
+async function killProcessTree(child: ChildProcess): Promise<void> {
+	if (child.exitCode !== null || child.signalCode !== null) return;
+	const pid = child.pid;
+	const closePromise = new Promise<void>((res) => {
+		const done = () => res();
+		child.once("close", done);
+		child.once("exit", done);
+		setTimeout(done, 1500).unref?.();
+	});
+	try {
+		if (process.platform === "win32" && pid) {
+			await new Promise<void>((res) => {
+				const killer = spawn("taskkill", ["/PID", String(pid), "/T", "/F"], {
+					windowsHide: true,
+					stdio: "ignore",
+				});
+				killer.once("error", () => {
+					try {
+						child.kill("SIGKILL");
+					} catch {
+						// ignore
+					}
+					res();
+				});
+				killer.once("close", () => res());
+			});
+		} else {
+			child.kill("SIGKILL");
+		}
+	} catch {
+		try {
+			child.kill("SIGKILL");
+		} catch {
+			// ignore
+		}
+	}
+	await closePromise;
 }
 
 const DEFAULT_DARWIN_PYTHON_PATHS = [
@@ -322,6 +536,115 @@ export async function autoDetectNtqqDbDir(
 	return defaultLinuxBase;
 }
 
+async function getNtqqRootCandidates(
+	platform: NodeJS.Platform,
+	home: string,
+	env: NodeJS.ProcessEnv,
+): Promise<string[]> {
+	const rawBases: string[] = [];
+	if (platform === "win32") {
+		const iniRoots = await readQqUserDataRootsFromIni(platform, home, env);
+		rawBases.push(
+			...iniRoots,
+			join(home, "Documents", "Tencent Files"),
+			join(home, "OneDrive", "Documents", "Tencent Files"),
+		);
+	} else if (platform === "darwin") {
+		rawBases.push(
+			join(home, "Library", "Containers", "com.tencent.qq", "Data", "Library", "Application Support", "QQ"),
+			join(home, "Library", "Application Support", "QQ"),
+		);
+	} else {
+		const xdgConfigHome = env.XDG_CONFIG_HOME?.trim();
+		rawBases.push(join(xdgConfigHome || join(home, ".config"), "QQ"), join(home, ".config", "QQ"));
+	}
+	const out: string[] = [];
+	const seen = new Set<string>();
+	for (const base of rawBases) {
+		const key = pathDedupKey(base, platform);
+		if (seen.has(key)) continue;
+		seen.add(key);
+		out.push(base);
+	}
+	return out;
+}
+
+/** 扫描本机所有 NTQQ 账号数据目录（返回含 nt_msg.db 或 group_info.db 的账号列表，按 mtimeMs 降序排列） */
+export async function detectNtqqAccounts(
+	options?: AutoDetectNtqqDbDirOptions & { keyMapEntries?: Record<string, string> },
+): Promise<NtqqDetectedAccount[]> {
+	const platform = options?.platform ?? process.platform;
+	const home = options?.homeDir ?? homedir();
+	const env = options?.env ?? process.env;
+	const keyMapEntries = options?.keyMapEntries ?? {};
+	const bases = await getNtqqRootCandidates(platform, home, env);
+
+	const seenDirs = new Set<string>();
+	const byUin = new Map<string, NtqqDetectedAccount>();
+
+	for (const base of bases) {
+		if (!existsSync(base)) continue;
+		let entries: Dirent[];
+		try {
+			entries = await readdir(base, { withFileTypes: true });
+		} catch {
+			continue;
+		}
+		for (const entry of entries) {
+			if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
+			if (!QQ_UIN_RE.test(entry.name)) continue;
+			const qqUin = entry.name;
+			const dbDir = join(base, qqUin, "nt_qq", "nt_db");
+			const dirKey = pathDedupKey(dbDir, platform);
+			if (seenDirs.has(dirKey)) continue;
+			seenDirs.add(dirKey);
+
+			const msgDbPath = join(dbDir, "nt_msg.db");
+			const groupDbPath = join(dbDir, "group_info.db");
+			const msgDbExists = existsSync(msgDbPath);
+			const groupDbExists = existsSync(groupDbPath);
+			if (!msgDbExists && !groupDbExists) continue;
+
+			let mtimeMs = 0;
+			for (const p of [msgDbPath, `${msgDbPath}-wal`, groupDbPath, `${groupDbPath}-wal`]) {
+				if (!existsSync(p)) continue;
+				try {
+					const st = await stat(p);
+					if (st.mtimeMs > mtimeMs) mtimeMs = st.mtimeMs;
+				} catch {
+					// ignore stat errors
+				}
+			}
+
+			const salts: string[] = [];
+			if (msgDbExists) {
+				const s = await readNtqqDbSaltHex(msgDbPath);
+				if (s) salts.push(s);
+			}
+			if (groupDbExists) {
+				const s = await readNtqqDbSaltHex(groupDbPath);
+				if (s) salts.push(s);
+			}
+			const keyReady = salts.length > 0 && salts.every((s) => Boolean(keyMapEntries[s]));
+
+			const candidate: NtqqDetectedAccount = {
+				qqUin,
+				dbDir,
+				msgDbExists,
+				groupDbExists,
+				keyReady,
+				mtimeMs,
+			};
+			const existing = byUin.get(qqUin);
+			if (!existing || candidate.mtimeMs > existing.mtimeMs) {
+				byUin.set(qqUin, candidate);
+			}
+		}
+	}
+
+	return Array.from(byUin.values()).sort((a, b) => b.mtimeMs - a.mtimeMs || a.qqUin.localeCompare(b.qqUin));
+}
+
 function runCommandWithTimeout(
 	command: string,
 	args: string[],
@@ -381,6 +704,19 @@ function runCommandWithTimeout(
 			});
 		});
 	});
+}
+
+export async function listWindowsQqProcessPids(env?: NodeJS.ProcessEnv): Promise<number[]> {
+	try {
+		const res = await runCommandWithTimeout("tasklist", ["/FI", "IMAGENAME eq QQ.exe", "/FO", "CSV", "/NH"], {
+			timeoutMs: 5000,
+			env,
+		});
+		if (res.exitCode !== 0) return [];
+		return parseWindowsTasklistCsv(res.stdout).map((item) => item.pid);
+	} catch {
+		return [];
+	}
 }
 
 function resolveBundledPythonPath(
@@ -504,6 +840,10 @@ export class NtqqSyncService {
 	private readonly homeDirOverride?: string;
 	private readonly envOverride?: NodeJS.ProcessEnv;
 	private readonly darwinPythonPathsOverride?: readonly string[];
+	private readonly listQqPidsOverride?: () => Promise<number[]>;
+	private readonly keyDumpCommandOverride?: { bin: string; prefixArgs?: string[] };
+	private readonly keyExtractAttemptTimeoutMs: number;
+	private readonly keyExtractPollIntervalMs: number;
 	private queue: Promise<unknown> = Promise.resolve();
 	private cachedPython: { path: string; version: string; bundled: boolean } | null | undefined;
 
@@ -514,6 +854,10 @@ export class NtqqSyncService {
 		this.homeDirOverride = options?.homeDir;
 		this.envOverride = options?.env;
 		this.darwinPythonPathsOverride = options?.darwinPythonPaths;
+		this.listQqPidsOverride = options?.listQqPids;
+		this.keyDumpCommandOverride = options?.keyDumpCommand;
+		this.keyExtractAttemptTimeoutMs = options?.keyExtractAttemptTimeoutMs ?? KEY_EXTRACT_ATTEMPT_TIMEOUT_MS;
+		this.keyExtractPollIntervalMs = options?.keyExtractPollIntervalMs ?? KEY_EXTRACT_POLL_INTERVAL_MS;
 	}
 
 	private get currentPlatform(): NodeJS.Platform {
@@ -544,6 +888,15 @@ export class NtqqSyncService {
 		return join(this.dataDir, "tmp");
 	}
 
+	private async resolvePlainDbPath(kind: "msg" | "group", srcDbPath: string): Promise<string> {
+		const saltHex = await readNtqqDbSaltHex(srcDbPath);
+		if (saltHex && HEX_SALT_RE.test(saltHex)) {
+			const prefix = kind === "msg" ? "wenyou_msg" : "wenyou_group";
+			return join(this.dataDir, "plain", `${prefix}_${saltHex.slice(0, 12)}.db`);
+		}
+		return kind === "msg" ? this.plainMsgDbPath : this.plainGroupDbPath;
+	}
+
 	private resolveAssetsDir(): string | null {
 		if (this.assetsDirOverride && existsSync(this.assetsDirOverride)) return this.assetsDirOverride;
 		return defaultNtqqAssetsDir();
@@ -563,7 +916,7 @@ export class NtqqSyncService {
 			return { qqUin: null, dbDir: null, keyMapPath: null, pythonPath: null };
 		}
 		try {
-			const raw = JSON.parse(await readFile(this.configPath, "utf8")) as Partial<NtqqLocalConfig>;
+			const raw = parseJsonWithBom<Partial<NtqqLocalConfig>>(await readFile(this.configPath, "utf8"));
 			return {
 				qqUin: typeof raw.qqUin === "string" && QQ_UIN_RE.test(raw.qqUin.trim()) ? raw.qqUin.trim() : null,
 				dbDir: normalizeOptionalPath(raw.dbDir),
@@ -581,23 +934,38 @@ export class NtqqSyncService {
 		keyMapPath?: string | null;
 		pythonPath?: string | null;
 	}): Promise<NtqqStatusSnapshot> {
-		const current = await this.loadConfig();
-		const next: NtqqLocalConfig = {
-			qqUin: patch.qqUin !== undefined ? normalizeQqUin(patch.qqUin) : current.qqUin,
-			dbDir:
-				patch.dbDir !== undefined
-					? patch.dbDir
-						? resolveCustomDbDirCandidate(patch.dbDir)
-						: null
-					: current.dbDir,
-			keyMapPath: patch.keyMapPath !== undefined ? normalizeOptionalPath(patch.keyMapPath) : current.keyMapPath,
-			pythonPath: patch.pythonPath !== undefined ? normalizeOptionalPath(patch.pythonPath) : current.pythonPath,
-		};
-		if (patch.pythonPath !== undefined) {
-			this.cachedPython = undefined;
-		}
-		await atomicWriteJson(this.configPath, next);
-		return this.getStatus();
+		return this.enqueue(async () => {
+			const current = await this.loadConfig();
+			const nextQqUin = patch.qqUin !== undefined ? normalizeQqUin(patch.qqUin) : current.qqUin;
+			let nextDbDir: string | null;
+			if (patch.dbDir !== undefined) {
+				nextDbDir = patch.dbDir ? resolveCustomDbDirCandidate(patch.dbDir) : null;
+			} else if (
+				patch.qqUin !== undefined &&
+				current.dbDir &&
+				(nextQqUin
+					? dbDirBelongsToDifferentQq(current.dbDir, nextQqUin, current.qqUin)
+					: Boolean(current.qqUin && pathContainsDirSegment(current.dbDir, current.qqUin)))
+			) {
+				// 切换或清空 QQ 号且未显式传入 dbDir 时，自动解绑旧 QQ 号专属目录以便重新定位新账号 nt_db
+				nextDbDir = null;
+			} else {
+				nextDbDir = current.dbDir;
+			}
+			const next: NtqqLocalConfig = {
+				qqUin: nextQqUin,
+				dbDir: nextDbDir,
+				keyMapPath:
+					patch.keyMapPath !== undefined ? normalizeOptionalPath(patch.keyMapPath) : current.keyMapPath,
+				pythonPath:
+					patch.pythonPath !== undefined ? normalizeOptionalPath(patch.pythonPath) : current.pythonPath,
+			};
+			if (patch.pythonPath !== undefined) {
+				this.cachedPython = undefined;
+			}
+			await atomicWriteJson(this.configPath, next);
+			return this.getStatus();
+		});
 	}
 
 	private resolveKeyMapCandidate(config: NtqqLocalConfig): { path: string | null; exists: boolean } {
@@ -612,7 +980,7 @@ export class NtqqSyncService {
 				return { path: candidate, exists: true };
 			}
 		}
-		return { path: config.keyMapPath ?? this.defaultKeyMapPath, exists: false };
+		return { path: candidates[0] ?? this.defaultKeyMapPath, exists: false };
 	}
 
 	private async resolvePython(
@@ -639,7 +1007,9 @@ export class NtqqSyncService {
 			assetsDir && REQUIRED_BRIDGE_FILES.every((name) => existsSync(join(assetsDir, name))),
 		);
 		const dumpExe = assetsDir ? join(assetsDir, "qq_dump_db.exe") : null;
-		const canExtractKey = Boolean(platformSupported && dumpExe && existsSync(dumpExe));
+		const canExtractKey = Boolean(
+			platformSupported && (this.keyDumpCommandOverride || (dumpExe && existsSync(dumpExe))),
+		);
 
 		let resolvedDbDir: string | null = null;
 		let dbDirAutoDetected = false;
@@ -670,6 +1040,31 @@ export class NtqqSyncService {
 		}
 
 		const keyMapInfo = this.resolveKeyMapCandidate(config);
+		const keyMapEntries =
+			keyMapInfo.exists && keyMapInfo.path ? await loadKeyMapEntries(keyMapInfo.path) : {};
+		const [msgSalt, groupSalt] = await Promise.all([
+			msgDbPath && msgDbExists ? readNtqqDbSaltHex(msgDbPath) : Promise.resolve(null),
+			groupDbPath && groupDbExists ? readNtqqDbSaltHex(groupDbPath) : Promise.resolve(null),
+		]);
+		const requiredSalts = [msgSalt, groupSalt].filter((s): s is string => Boolean(s));
+		const hasValidKeyMap = Object.keys(keyMapEntries).length > 0;
+		let keyMatchedForCurrentDb: boolean | undefined;
+		if (!keyMapInfo.exists) {
+			keyMatchedForCurrentDb = false;
+		} else if (!msgDbExists && !groupDbExists && hasValidKeyMap) {
+			// 本地尚未定位到当前 QQ 的数据库文件，但存在有效 key_map.json，不误标为密钥不匹配
+			keyMatchedForCurrentDb = undefined;
+		} else {
+			keyMatchedForCurrentDb =
+				requiredSalts.length > 0 && requiredSalts.every((salt) => Boolean(keyMapEntries[salt]));
+		}
+
+		const detectedAccounts = await detectNtqqAccounts({
+			platform,
+			homeDir: this.homeDirOverride,
+			env: this.envOverride,
+			keyMapEntries,
+		});
 		const pythonInfo = await this.resolvePython(config, assetsDir);
 
 		const missingReasons: string[] = [];
@@ -688,6 +1083,24 @@ export class NtqqSyncService {
 					? "尚未准备解密密钥 key_map.json（可点「一键提取本机密钥」或手动导入）"
 					: "尚未导入解密密钥 key_map.json（一键提取仅支持 Windows；macOS/Linux 可将导出的 .txt/.json 放入 00-群聊收集/，或手动导入 key_map.json）",
 			);
+		} else if (keyMatchedForCurrentDb === false) {
+			if (requiredSalts.length > 0) {
+				missingReasons.push(
+					canExtractKey
+						? "当前 key_map.json 未包含此 QQ 账号消息库的解密密钥（多账号同时登录或切换账号后，请点击「一键提取密钥」补充）"
+						: "当前 key_map.json 未包含此 QQ 账号消息库的解密密钥（多账号或切换账号后，请重新导入包含当前账号的 key_map.json）",
+				);
+			} else if (!hasValidKeyMap) {
+				missingReasons.push(
+					canExtractKey
+						? "当前 key_map.json 内容为空或格式无效（请点击「一键提取密钥」或重新导入）"
+						: "当前 key_map.json 内容为空或格式无效（请重新导入有效的 key_map.json）",
+				);
+			} else if (msgDbExists || groupDbExists) {
+				missingReasons.push(
+					"未能读取当前 QQ 数据库头部盐值（文件可能尚未初始化或已损坏），无法校验密钥匹配状态",
+				);
+			}
 		}
 		if (!pythonInfo) {
 			missingReasons.push(
@@ -710,6 +1123,8 @@ export class NtqqSyncService {
 			walSizeBytes,
 			resolvedKeyMapPath: keyMapInfo.exists ? keyMapInfo.path : null,
 			keyMapExists: keyMapInfo.exists,
+			...(keyMatchedForCurrentDb !== undefined ? { keyMatchedForCurrentDb } : {}),
+			detectedAccounts,
 			canExtractKey,
 			pythonPath: pythonInfo?.path ?? null,
 			pythonVersion: pythonInfo?.version ?? null,
@@ -722,6 +1137,206 @@ export class NtqqSyncService {
 		return { config, status };
 	}
 
+	private runKeyDumpForPid(params: {
+		command: string;
+		prefixArgs: string[];
+		qqUin: string;
+		resolvedDbDir: string | null;
+		pid: number | null;
+		targetSalts: readonly string[];
+		tmpKeyMapPath: string;
+		timeoutMs: number;
+		pollIntervalMs: number;
+	}): Promise<KeyDumpAttemptResult> {
+		const args = [
+			...params.prefixArgs,
+			"--qq",
+			params.qqUin,
+			...(params.resolvedDbDir && existsSync(params.resolvedDbDir) ? ["--db-dir", params.resolvedDbDir] : []),
+			...(params.pid !== null ? ["--pid", String(params.pid)] : []),
+			"--output",
+			params.tmpKeyMapPath,
+		];
+
+		return new Promise<KeyDumpAttemptResult>((resolvePromise, rejectPromise) => {
+			// 关键：保持 stdin 为打开的 pipe（严禁 "ignore"/EOF，也严禁写入回车），
+			// 防止 qq_dump_db.exe 写出 key_map.json 后误以为收到回车而启动数 GB 全量原地解密！
+			const child = spawn(params.command, args, {
+				cwd: this.dataDir,
+				env: this.currentEnv,
+				windowsHide: true,
+				stdio: ["pipe", "pipe", "pipe"],
+			});
+			child.stdin?.on("error", () => undefined);
+
+			let stdout = "";
+			let stderr = "";
+			let settled = false;
+			let inspecting = false;
+
+			const finish = (result: KeyDumpAttemptResult) => {
+				if (settled) return;
+				settled = true;
+				clearInterval(pollTimer);
+				clearTimeout(timeoutTimer);
+				void killProcessTree(child).finally(() => {
+					resolvePromise(result);
+				});
+			};
+
+			const tryReadTmpEntries = async (): Promise<Record<string, string>> => {
+				if (!existsSync(params.tmpKeyMapPath)) return {};
+				try {
+					const st = await stat(params.tmpKeyMapPath);
+					if (st.size <= 0) return {};
+					return await loadKeyMapEntries(params.tmpKeyMapPath);
+				} catch {
+					return {};
+				}
+			};
+
+			const inspectProgress = async () => {
+				if (settled || inspecting) return;
+				inspecting = true;
+				try {
+					const entries = await tryReadTmpEntries();
+					if (settled) return;
+					const combined = `${stdout}\n${stderr}`;
+					// 防止分批落盘时只读到部分盐值就提前强杀：仅在覆盖全部 targetSalts 或进程已宣布写完/进入等待时早停
+					const canEarlyStop =
+						Object.keys(entries).length > 0 &&
+						((params.targetSalts.length > 0 ? params.targetSalts.every((s) => Boolean(entries[s])) : false) ||
+							KEY_DUMP_SAVED_RE.test(combined) ||
+							KEY_DUMP_WAITING_RE.test(combined));
+					if (canEarlyStop) {
+						finish({
+							pid: params.pid,
+							entries,
+							stdout,
+							stderr,
+							exitCode: child.exitCode,
+							timedOut: false,
+							abortedReason: null,
+						});
+						return;
+					}
+
+					for (const re of FATAL_KEY_DUMP_PATTERNS) {
+						const match = combined.match(re);
+						if (match) {
+							finish({
+								pid: params.pid,
+								entries: {},
+								stdout,
+								stderr,
+								exitCode: child.exitCode,
+								timedOut: false,
+								abortedReason: match[0],
+							});
+							return;
+						}
+					}
+
+					if (KEY_DUMP_WAITING_RE.test(combined)) {
+						let finalEntries = await tryReadTmpEntries();
+						if (Object.keys(finalEntries).length === 0 && KEY_DUMP_SAVED_RE.test(combined)) {
+							await new Promise((res) => setTimeout(res, 50));
+							finalEntries = await tryReadTmpEntries();
+						}
+						if (settled) return;
+						finish({
+							pid: params.pid,
+							entries: finalEntries,
+							stdout,
+							stderr,
+							exitCode: child.exitCode,
+							timedOut: false,
+							abortedReason:
+								Object.keys(finalEntries).length > 0
+									? null
+									: KEY_DUMP_ZERO_SALTS_RE.test(combined)
+										? "0 salts matched"
+										: "未提取到有效密钥",
+						});
+					}
+				} finally {
+					inspecting = false;
+				}
+			};
+
+			const pollTimer = setInterval(
+				() => {
+					void inspectProgress();
+				},
+				Math.max(20, params.pollIntervalMs),
+			);
+
+			const timeoutTimer = setTimeout(() => {
+				if (settled) return;
+				void (async () => {
+					const entries = await tryReadTmpEntries();
+					finish({
+						pid: params.pid,
+						entries,
+						stdout,
+						stderr,
+						exitCode: child.exitCode,
+						timedOut: Object.keys(entries).length === 0,
+						abortedReason:
+							Object.keys(entries).length > 0
+								? null
+								: `单次进程扫描超时（${Math.round(params.timeoutMs / 1000)}s）`,
+					});
+				})();
+			}, params.timeoutMs);
+
+			child.stdout?.on("data", (chunk: Buffer) => {
+				stdout += chunk.toString("utf8");
+				if (
+					KEY_DUMP_SAVED_RE.test(stdout) ||
+					KEY_DUMP_WAITING_RE.test(stdout) ||
+					FATAL_KEY_DUMP_PATTERNS.some((re) => re.test(stdout))
+				) {
+					void inspectProgress();
+				}
+			});
+
+			child.stderr?.on("data", (chunk: Buffer) => {
+				stderr += chunk.toString("utf8");
+				if (KEY_DUMP_WAITING_RE.test(stderr) || FATAL_KEY_DUMP_PATTERNS.some((re) => re.test(stderr))) {
+					void inspectProgress();
+				}
+			});
+
+			child.on("error", (err) => {
+				if (settled) return;
+				settled = true;
+				clearInterval(pollTimer);
+				clearTimeout(timeoutTimer);
+				rejectPromise(err);
+			});
+
+			child.on("close", (code) => {
+				if (settled) return;
+				void (async () => {
+					const entries = await tryReadTmpEntries();
+					finish({
+						pid: params.pid,
+						entries,
+						stdout,
+						stderr,
+						exitCode: code ?? 1,
+						timedOut: false,
+						abortedReason:
+							Object.keys(entries).length > 0
+								? null
+								: (stderr || stdout).trim().split(/\r?\n/).pop() || `exit=${code ?? 1}`,
+					});
+				})();
+			});
+		});
+	}
+
 	async extractKey(qqUinOverride?: string): Promise<NtqqStatusSnapshot & { message: string }> {
 		return this.enqueue(async () => {
 			if (this.currentPlatform !== "win32") {
@@ -732,39 +1347,156 @@ export class NtqqSyncService {
 			if (!qqUin) {
 				throw new Error("请先填写你的 QQ 号，再点击提取本机密钥");
 			}
-			if (qqUin !== current.qqUin) {
-				await atomicWriteJson(this.configPath, { ...current, qqUin });
-			}
-			const assetsDir = this.resolveAssetsDir();
-			const dumpExe = assetsDir ? join(assetsDir, "qq_dump_db.exe") : null;
-			if (!dumpExe || !existsSync(dumpExe)) {
-				throw new Error("未检测到密钥提取组件 qq_dump_db.exe，请手动导入已有 key_map.json");
-			}
-			await mkdir(this.dataDir, { recursive: true });
-			const res = await runCommandWithTimeout(
-				dumpExe,
-				["--qq", qqUin, "--output", this.defaultKeyMapPath],
-				{ cwd: this.dataDir, timeoutMs: KEY_EXTRACT_TIMEOUT_MS },
+
+			const dbDirPointsToOtherQq = Boolean(
+				current.dbDir && dbDirBelongsToDifferentQq(current.dbDir, qqUin, current.qqUin),
 			);
-			if (res.exitCode !== 0 || !existsSync(this.defaultKeyMapPath)) {
-				const detail = (res.stderr || res.stdout).trim();
+			const effectiveConfig: NtqqLocalConfig = {
+				...current,
+				qqUin,
+				dbDir: dbDirPointsToOtherQq ? null : current.dbDir,
+			};
+			if (qqUin !== current.qqUin || dbDirPointsToOtherQq) {
+				await atomicWriteJson(this.configPath, effectiveConfig);
+			}
+
+			let dumpCommand: { bin: string; prefixArgs: string[] };
+			if (this.keyDumpCommandOverride) {
+				dumpCommand = {
+					bin: this.keyDumpCommandOverride.bin,
+					prefixArgs: [...(this.keyDumpCommandOverride.prefixArgs ?? [])],
+				};
+			} else {
+				const assetsDir = this.resolveAssetsDir();
+				const dumpExe = assetsDir ? join(assetsDir, "qq_dump_db.exe") : null;
+				if (!dumpExe || !existsSync(dumpExe)) {
+					throw new Error("未检测到密钥提取组件 qq_dump_db.exe，请手动导入已有 key_map.json");
+				}
+				dumpCommand = { bin: dumpExe, prefixArgs: [] };
+			}
+
+			const resolvedDbDir = effectiveConfig.dbDir
+				? resolveCustomDbDirCandidate(effectiveConfig.dbDir)
+				: await autoDetectNtqqDbDir(qqUin, {
+						platform: this.currentPlatform,
+						homeDir: this.homeDirOverride,
+						env: this.envOverride,
+					});
+
+			const targetSalts: string[] = [];
+			if (resolvedDbDir && existsSync(resolvedDbDir)) {
+				const [msgSalt, groupSalt] = await Promise.all([
+					readNtqqDbSaltHex(join(resolvedDbDir, "nt_msg.db")),
+					readNtqqDbSaltHex(join(resolvedDbDir, "group_info.db")),
+				]);
+				if (msgSalt) targetSalts.push(msgSalt);
+				if (groupSalt && !targetSalts.includes(groupSalt)) targetSalts.push(groupSalt);
+			}
+
+			await mkdir(this.dataDir, { recursive: true });
+			await mkdir(this.tmpDir, { recursive: true });
+
+			const targetKeyMapPath = this.resolveKeyMapCandidate(effectiveConfig).path ?? this.defaultKeyMapPath;
+			const existingEntries = await loadKeyMapEntries(targetKeyMapPath);
+
+			const detectedPids = this.listQqPidsOverride
+				? await this.listQqPidsOverride()
+				: await listWindowsQqProcessPids(this.currentEnv);
+			const uniquePids: number[] = [];
+			const seenPid = new Set<number>();
+			for (const pid of detectedPids) {
+				if (Number.isInteger(pid) && pid > 0 && !seenPid.has(pid)) {
+					seenPid.add(pid);
+					uniquePids.push(pid);
+				}
+			}
+			const candidatePids: Array<number | null> = [...uniquePids, null];
+
+			const accumulatedRecovered: Record<string, string> = {};
+			let scannedPidCount = 0;
+			let lastDetail = "";
+			let matched = false;
+
+			for (const pid of candidatePids) {
+				if (pid !== null) scannedPidCount += 1;
+				const tmpKeyMapPath = join(this.tmpDir, `key-dump-${randomUUID().slice(0, 8)}.json`);
+				try {
+					const attempt = await this.runKeyDumpForPid({
+						command: dumpCommand.bin,
+						prefixArgs: dumpCommand.prefixArgs,
+						qqUin,
+						resolvedDbDir,
+						pid,
+						targetSalts,
+						tmpKeyMapPath,
+						timeoutMs: this.keyExtractAttemptTimeoutMs,
+						pollIntervalMs: this.keyExtractPollIntervalMs,
+					});
+					Object.assign(accumulatedRecovered, attempt.entries);
+					if (attempt.abortedReason) {
+						lastDetail = attempt.abortedReason;
+					} else if (attempt.stderr.trim() || attempt.stdout.trim()) {
+						lastDetail = (attempt.stderr || attempt.stdout).trim().split(/\r?\n/).pop() ?? lastDetail;
+					}
+
+					if (targetSalts.length > 0) {
+						if (targetSalts.every((salt) => Boolean(accumulatedRecovered[salt]))) {
+							matched = true;
+							break;
+						}
+					} else if (Object.keys(accumulatedRecovered).length > 0) {
+						matched = true;
+						break;
+					}
+				} finally {
+					await rm(tmpKeyMapPath, { force: true }).catch(() => undefined);
+				}
+			}
+
+			if (
+				!matched &&
+				targetSalts.length > 0 &&
+				targetSalts.some((salt) => Boolean(accumulatedRecovered[salt])) &&
+				targetSalts.every((salt) => Boolean(existingEntries[salt] || accumulatedRecovered[salt]))
+			) {
+				matched = true;
+			}
+
+			if (!matched) {
+				if (targetSalts.length > 0) {
+					const scannedHint =
+						scannedPidCount > 0
+							? `已扫描 ${scannedPidCount} 个 QQ.exe 进程，均未匹配到 QQ ${qqUin} 的数据库解密密钥`
+							: `未检测到运行中的 QQ.exe 进程，且默认提取未匹配到 QQ ${qqUin} 的数据库解密密钥`;
+					throw new Error(
+						`${scannedHint}（请确认该账号已在电脑版 NTQQ 登录完成${lastDetail ? `；详情：${lastDetail}` : ""}）`,
+					);
+				}
 				throw new Error(
-					`提取 NTQQ 密钥失败（请确认电脑版 NTQQ 已打开并登录 QQ ${qqUin}）：${detail || `exit=${res.exitCode}`}`,
+					`提取 NTQQ 密钥失败（已扫描 ${scannedPidCount} 个 QQ.exe 进程，请确认电脑版 NTQQ 已打开并登录 QQ ${qqUin}）：${lastDetail || "未提取到有效密钥"}`,
 				);
 			}
-			const st = await stat(this.defaultKeyMapPath);
-			if (st.size === 0) {
-				throw new Error("生成的 key_map.json 为空，请确认电脑版 NTQQ 已登录完成");
-			}
+
+			const mergedKeyMap: Record<string, string> = {
+				...existingEntries,
+				...accumulatedRecovered,
+			};
+			await atomicWriteJson(targetKeyMapPath, { key_map: mergedKeyMap });
+
 			const snapshot = await this.getStatus();
 			return {
 				...snapshot,
-				message: "已成功提取并保存本机 NTQQ 解密密钥",
+				message:
+					Object.keys(existingEntries).length > 0
+						? `已成功提取 QQ ${qqUin} 的解密密钥并合并保存（当前共保留 ${Object.keys(mergedKeyMap).length} 组库密钥）`
+						: "已成功提取并保存本机 NTQQ 解密密钥",
 			};
 		});
 	}
 
-	async listGroups(options?: { force?: boolean }): Promise<{ groups: NtqqGroupSummary[]; elapsedMs: number }> {
+	async listGroups(options?: {
+		force?: boolean;
+	}): Promise<{ groups: NtqqGroupSummary[]; elapsedMs: number }> {
 		return this.enqueue(async () => {
 			const { status } = await this.getStatus();
 			if (!status.groupDbExists || !status.resolvedDbDir) {
@@ -783,6 +1515,18 @@ export class NtqqSyncService {
 
 			const bridgePy = join(status.assetsDir, "wenyou_ntqq_bridge.py");
 			const srcGroup = join(status.resolvedDbDir, "group_info.db");
+			const groupSalt = await readNtqqDbSaltHex(srcGroup);
+			if (groupSalt) {
+				const keyMapEntries = await loadKeyMapEntries(status.resolvedKeyMapPath);
+				if (!keyMapEntries[groupSalt]) {
+					throw new Error(
+						status.canExtractKey
+							? "当前 key_map.json 未包含此 QQ 账号群资料库（group_info.db）的解密密钥（多账号同时登录或切换账号后，请点击「一键提取密钥」补充）"
+							: "当前 key_map.json 未包含此 QQ 账号群资料库（group_info.db）的解密密钥（请重新导入包含当前账号的 key_map.json）",
+					);
+				}
+			}
+			const outGroup = await this.resolvePlainDbPath("group", srcGroup);
 			const argv = [
 				"-B",
 				bridgePy,
@@ -790,7 +1534,7 @@ export class NtqqSyncService {
 				"--src-group",
 				srcGroup,
 				"--out-group",
-				this.plainGroupDbPath,
+				outGroup,
 				"--key-map",
 				status.resolvedKeyMapPath,
 			];
@@ -802,7 +1546,9 @@ export class NtqqSyncService {
 				timeoutMs: VFS_RUN_TIMEOUT_MS,
 			});
 			if (run.exitCode !== 0) {
-				throw new Error(`读取本机 QQ 群列表失败：${(run.stderr || run.stdout).trim() || `exit=${run.exitCode}`}`);
+				throw new Error(
+					`读取本机 QQ 群列表失败：${(run.stderr || run.stdout).trim() || `exit=${run.exitCode}`}`,
+				);
 			}
 			const parsed = parseBridgePayload<{
 				ok: boolean;
@@ -831,9 +1577,9 @@ export class NtqqSyncService {
 		const file = this.campaignBindingsPath(cwd);
 		if (!existsSync(file)) return [];
 		try {
-			const raw = JSON.parse(await readFile(file, "utf8")) as
-				| { groups?: unknown[] }
-				| CampaignNtqqGroupBinding[];
+			const raw = parseJsonWithBom<{ groups?: unknown[] } | CampaignNtqqGroupBinding[]>(
+				await readFile(file, "utf8"),
+			);
 			const list = Array.isArray(raw) ? raw : Array.isArray(raw?.groups) ? raw.groups : [];
 			const out: CampaignNtqqGroupBinding[] = [];
 			const seen = new Set<string>();
@@ -886,7 +1632,9 @@ export class NtqqSyncService {
 		const file = this.campaignSyncStatePath(cwd);
 		if (!existsSync(file)) return {};
 		try {
-			const raw = JSON.parse(await readFile(file, "utf8")) as Record<string, Partial<CampaignNtqqSyncWatermark>>;
+			const raw = parseJsonWithBom<Record<string, Partial<CampaignNtqqSyncWatermark>>>(
+				await readFile(file, "utf8"),
+			);
 			const out: CampaignNtqqSyncState = {};
 			for (const [gid, entry] of Object.entries(raw)) {
 				if (!GROUP_ID_RE.test(gid) || !entry || typeof entry !== "object") continue;
@@ -921,7 +1669,13 @@ export class NtqqSyncService {
 			}
 
 			const { status } = await this.getStatus();
-			if (!status.ready || !status.resolvedDbDir || !status.resolvedKeyMapPath || !status.pythonPath || !status.assetsDir) {
+			if (
+				!status.ready ||
+				!status.resolvedDbDir ||
+				!status.resolvedKeyMapPath ||
+				!status.pythonPath ||
+				!status.assetsDir
+			) {
 				throw new Error(`本机 NTQQ 只读环境未就绪：${status.missingReasons.join("；")}`);
 			}
 
@@ -936,6 +1690,10 @@ export class NtqqSyncService {
 			const bridgePy = join(status.assetsDir, "wenyou_ntqq_bridge.py");
 			const srcMsg = join(status.resolvedDbDir, "nt_msg.db");
 			const srcGroup = join(status.resolvedDbDir, "group_info.db");
+			const [outMsg, outGroup] = await Promise.all([
+				this.resolvePlainDbPath("msg", srcMsg),
+				this.resolvePlainDbPath("group", srcGroup),
+			]);
 			const limit = Math.max(1, Math.min(options?.limit ?? 500, 20_000));
 
 			const argv = [
@@ -945,11 +1703,11 @@ export class NtqqSyncService {
 				"--src-msg",
 				srcMsg,
 				"--out-msg",
-				this.plainMsgDbPath,
+				outMsg,
 				"--src-group",
 				srcGroup,
 				"--out-group",
-				this.plainGroupDbPath,
+				outGroup,
 				"--key-map",
 				status.resolvedKeyMapPath,
 				"--groups",
@@ -967,7 +1725,9 @@ export class NtqqSyncService {
 					timeoutMs: VFS_RUN_TIMEOUT_MS,
 				});
 				if (run.exitCode !== 0) {
-					throw new Error(`NTQQ VFS 同步失败：${(run.stderr || run.stdout).trim() || `exit=${run.exitCode}`}`);
+					throw new Error(
+						`NTQQ VFS 同步失败：${(run.stderr || run.stdout).trim() || `exit=${run.exitCode}`}`,
+					);
 				}
 				const parsed = parseBridgePayload<{
 					ok: boolean;
@@ -989,9 +1749,9 @@ export class NtqqSyncService {
 					throw new Error("NTQQ VFS 同步未返回成功状态");
 				}
 
-				const payload = JSON.parse(await readFile(outJsonPath, "utf8")) as {
-					messages?: BridgeExportedMessage[];
-				};
+				const payload = parseJsonWithBom<{ messages?: BridgeExportedMessage[] }>(
+					await readFile(outJsonPath, "utf8"),
+				);
 				const exported = Array.isArray(payload.messages) ? payload.messages : [];
 				const bindingByGid = new Map(targetBindings.map((b) => [b.groupId, b]));
 
@@ -1016,7 +1776,8 @@ export class NtqqSyncService {
 				const nowIso = new Date().toISOString();
 				const nextSyncState: CampaignNtqqSyncState = { ...syncState };
 				const groupDetails: NtqqSyncGroupDetail[] = parsed.perGroup.map((g) => {
-					const nextLastTs = Number.isFinite(Number(g.lastTs)) && Number(g.lastTs) > 0 ? Math.trunc(Number(g.lastTs)) : 0;
+					const nextLastTs =
+						Number.isFinite(Number(g.lastTs)) && Number(g.lastTs) > 0 ? Math.trunc(Number(g.lastTs)) : 0;
 					const nextLastRowid = normalizeDecimalRowid(g.lastRowid);
 					if (nextLastTs > 0) {
 						const prev = nextSyncState[g.groupId];

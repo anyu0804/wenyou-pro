@@ -499,6 +499,16 @@ export interface NtqqLocalConfig {
 	pythonPath: string | null;
 }
 
+/** 本机探测到的单个 NTQQ 账号数据库目录摘要 */
+export interface NtqqDetectedAccount {
+	qqUin: string;
+	dbDir: string;
+	msgDbExists: boolean;
+	groupDbExists: boolean;
+	keyReady: boolean;
+	mtimeMs: number;
+}
+
 /** 本机 NTQQ 只读解库环境探测快照 */
 export interface NtqqProbeStatus {
 	platformSupported: boolean;
@@ -510,6 +520,10 @@ export interface NtqqProbeStatus {
 	walSizeBytes: number;
 	resolvedKeyMapPath: string | null;
 	keyMapExists: boolean;
+	/** 当前 resolvedDbDir 下已存在的 nt_msg.db / group_info.db 头部盐值是否均已在 key_map.json 中找到对应密钥 */
+	keyMatchedForCurrentDb?: boolean;
+	/** 本机探测到的所有含 nt_msg.db 或 group_info.db 的 QQ 账号目录（按 mtimeMs 降序排列） */
+	detectedAccounts?: NtqqDetectedAccount[];
 	canExtractKey: boolean;
 	pythonPath: string | null;
 	pythonVersion: string | null;
