@@ -6,7 +6,7 @@ import { inflateRawSync } from "node:zlib";
 import type { WenyouCanvasEvent } from "@percho/shared";
 import { afterEach, describe, expect, it } from "vitest";
 import { computeCrc32 } from "../src/wenyou/docx-builder";
-import { ingestExternalMessages, pullQqGroupsIncremental } from "../src/wenyou/qq-ingest";
+import { inferGroupMeta, ingestExternalMessages, pullQqGroupsIncremental } from "../src/wenyou/qq-ingest";
 import { WenyouService } from "../src/wenyou/service";
 import {
 	assertPathInsideWorkspace,
@@ -643,6 +643,20 @@ describe("WenyouService 端到端领域闭环", () => {
 						timestamp: 1795695480000, // 2026-11-26 20:18:00 CST
 						text: "13位毫秒时间戳消息",
 					},
+					{
+						id: 9005,
+						sender: "谋士戊",
+						senderId: 10005,
+						timestamp: "2026-11-26T18:30:00Z", // 跨午夜 UTC -> 2026-11-27 02:30:00 CST
+						text: "跨午夜 UTC 消息",
+					},
+					{
+						id: 9006,
+						sender: "谋士己",
+						senderId: 10006,
+						timestamp: "2026-11-26T18:30:00-05:00", // -05:00 -> 2026-11-27 07:30:00 CST
+						text: "西五区跨日消息",
+					},
 				],
 			}),
 			"utf8",
@@ -650,8 +664,8 @@ describe("WenyouService 端到端领域闭环", () => {
 
 		// 按内部群号 888999 精准过滤拉取，不得因文件名不匹配被提前跳过
 		const qceOnly = await pullQqGroupsIncremental(root, "888999");
-		expect(qceOnly.newlyIngested).toBe(4);
-		expect(qceOnly.unreportedMessages.map((m) => m.sourceId)).toEqual(["9001", "9002", "9003", "9004"]);
+		expect(qceOnly.newlyIngested).toBe(6);
+		expect(qceOnly.unreportedMessages.map((m) => m.sourceId)).toEqual(["9001", "9002", "9003", "9004", "9005", "9006"]);
 		expect(qceOnly.unreportedMessages.every((m) => m.groupId === "888999" && m.groupName === "河朔密议群")).toBe(true);
 		expect(qceOnly.unreportedMessages.every((m) => !m.timestamp.includes("T"))).toBe(true);
 		expect(qceOnly.unreportedMessages[0]?.timestamp).toBe("2026-11-26 20:15:03");
@@ -660,13 +674,38 @@ describe("WenyouService 端到端领域闭环", () => {
 		expect(qceOnly.unreportedMessages[1]?.senderId).toBe("10002");
 		expect(qceOnly.unreportedMessages[2]?.timestamp).toBe("2026-11-26 20:17:00");
 		expect(qceOnly.unreportedMessages[3]?.timestamp).toBe("2026-11-26 20:18:00");
+		expect(qceOnly.unreportedMessages[4]?.timestamp).toBe("2026-11-27 02:30:00");
+		expect(qceOnly.unreportedMessages[5]?.timestamp).toBe("2026-11-27 07:30:00");
 
-		// until 过滤不再被残留 T 破坏
+		// until 过滤不再被残留 T 破坏，且跨午夜 Z/时区换算后精确区分 11-26 与 11-27
 		const untilSearch = await service.searchSourcesWithStats(root, {
 			groupId: "888999",
 			until: "2026-11-26",
 		});
 		expect(untilSearch.totalMatched).toBe(4);
+		const utcBoundSearch = await service.searchSourcesWithStats(root, {
+			groupId: "888999",
+			since: "2026-11-26T18:00:00Z", // 2026-11-27 02:00:00 CST
+			until: "2026-11-26T19:00:00Z", // 2026-11-27 03:00:00 CST
+		});
+		expect(utcBoundSearch.records.map((m) => m.sourceId)).toEqual(["9005"]);
+
+		// inferGroupMeta 去除首尾短横线
+		expect(inferGroupMeta("[主群] 战报.txt").groupId).toBe("主群-战报");
+
+		// 空拉取 recordExposedPullWindow(cwd, []) 不应写入空 Set 阻塞后续正常发布推进游标
+		service.recordExposedPullWindow(root, []);
+		const pubAfterEmptyPull = await service.publishBriefing({
+			cwd: root,
+			title: "空窗口回退验证",
+			turnLabel: "T1",
+			headline: "验证空窗口不卡死游标",
+			progressItems: [],
+			diplomacySummary: "平稳",
+			intelChecks: [],
+			strategicJudgment: "正常推进",
+		});
+		expect(pubAfterEmptyPull.remainingUnreportedCount).toBe(0);
 
 		// 拉取 PC QQ 日期在前 .txt：3 条完整消息，总攻时间： 08:30:00 未被误劈
 		const pcPull = await pullQqGroupsIncremental(root, "group-pc-1001");

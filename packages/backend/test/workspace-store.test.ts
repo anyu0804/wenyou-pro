@@ -103,13 +103,14 @@ describe("suggestRootCandidate", () => {
 		expect(suggestRootCandidate(join(home, "sub", "x"), home)).toBe(join(home, "sub"));
 	});
 
-	it("Windows 盘符根目录与 UNC 根目录绝不作为候选信任根", () => {
-		const winHome = "C:\\Users\\demo";
+	it("Windows 盘符根目录与 UNC 根目录绝不作为候选信任根，普通子目录正常返回父目录", () => {
+		const winHome = "C:\\Users\\user";
 		expect(suggestRootCandidate("C:\\secret.txt", winHome)).toBeNull();
 		expect(suggestRootCandidate("D:\\secret.txt", winHome)).toBeNull();
 		expect(suggestRootCandidate("D:/secret.txt", winHome)).toBeNull();
 		expect(suggestRootCandidate("\\\\server\\share\\file.txt", winHome)).toBeNull();
-		expect(suggestRootCandidate("C:\\Users\\todo.md", winHome)).toBeNull();
-		expect(suggestRootCandidate("C:\\Users\\demo\\todo.md", winHome)).toBeNull();
+		expect(suggestRootCandidate("C:\\Users\\test", winHome)).toBeNull();
+		expect(suggestRootCandidate("C:\\Users\\user\\todo.md", winHome)).toBeNull();
+		expect(suggestRootCandidate("D:\\work\\notes\\a.md", winHome)).toBe("D:\\work\\notes");
 	});
 });

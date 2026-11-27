@@ -1,5 +1,5 @@
 import { homedir } from "node:os";
-import { dirname, parse, resolve, sep } from "node:path";
+import { dirname, parse, resolve, sep, win32 } from "node:path";
 import { collectBashCandidates } from "./bash-chain";
 
 /**
@@ -151,27 +151,35 @@ export function matchTextFor(toolName: string, input: Record<string, unknown>): 
 	return typeof value === "string" && value.length > 0 ? value : null;
 }
 
+function isWindowsPath(p: string): boolean {
+	return /^[A-Za-z]:(?:[\\/]|$)/.test(p) || /^\\\\[^\\/]+[\\/]/.test(p) || p.includes("\\");
+}
+
 function isFilesystemRoot(dir: string): boolean {
 	if (!dir || dir === "/" || dir === "\\") return true;
-	if (parse(dir).root === dir) return true;
+	const parsed = isWindowsPath(dir) ? win32.parse(dir) : parse(dir);
+	if (parsed.root === dir) return true;
 	if (/^[A-Za-z]:[\\/]?$/.test(dir)) return true;
 	if (/^\\\\[^\\/]+[\\/][^\\/]+[\\/]?$/.test(dir)) return true;
 	return false;
 }
 
 function isSameOrAncestorDir(ancestor: string, target: string): boolean {
-	const normA = process.platform === "win32" ? ancestor.replace(/\//g, "\\").toLowerCase() : ancestor;
-	const normT = process.platform === "win32" ? target.replace(/\//g, "\\").toLowerCase() : target;
+	const winMode = process.platform === "win32" || isWindowsPath(ancestor) || isWindowsPath(target);
+	const normA = winMode ? ancestor.replace(/\//g, "\\").toLowerCase() : ancestor;
+	const normT = winMode ? target.replace(/\//g, "\\").toLowerCase() : target;
 	if (normA === normT) return true;
-	const prefix = normA.endsWith("/") || normA.endsWith("\\") ? normA : normA + sep;
+	const dirSep = winMode ? "\\" : sep;
+	const prefix = normA.endsWith("/") || normA.endsWith("\\") ? normA : normA + dirSep;
 	return normT.startsWith(prefix);
 }
 
 /** 目录粒度过宽的守卫：/、Windows 盘符根/UNC 根、home、home 祖先下的直接子文件用精确路径，不做目录模式 */
 function tooBroadDir(dir: string, home: string): boolean {
 	if (isFilesystemRoot(dir)) return true;
-	const resolvedHome = resolve(home);
-	const homeParent = dirname(resolvedHome);
+	const homeIsWin = isWindowsPath(home);
+	const resolvedHome = homeIsWin ? win32.resolve(home) : resolve(home);
+	const homeParent = homeIsWin ? win32.dirname(resolvedHome) : dirname(resolvedHome);
 	return isSameOrAncestorDir(dir, resolvedHome) || isSameOrAncestorDir(dir, homeParent);
 }
 
@@ -181,7 +189,7 @@ function tooBroadDir(dir: string, home: string): boolean {
  * 过宽目录（/、盘符根、UNC 根、home、home 祖先）退回精确路径，绝不因记忆键放大到整个家目录或整盘。
  */
 function pathToolPattern(toolName: string, path: string, home: string): string {
-	const dir = dirname(path);
+	const dir = isWindowsPath(path) ? win32.dirname(path) : dirname(path);
 	if (tooBroadDir(dir, home)) return `${toolName}: ${path}`;
 	if (dir.endsWith("/") || dir.endsWith("\\")) return `${toolName}: ${dir}*`;
 	const lastSlash = path.lastIndexOf("/");

@@ -41,11 +41,9 @@ function pad2(val: string): string {
 	return val.padStart(2, "0");
 }
 
-function formatUnixTimestampCst(unixValue: number): string {
-	if (!Number.isFinite(unixValue) || unixValue <= 0) return "";
-	// 10 位秒级 (< 1e11) 与 13 位毫秒级 (>= 1e11) 统一转 CST (UTC+8)
-	const ms = unixValue >= 1e11 ? Math.trunc(unixValue) : Math.trunc(unixValue * 1000);
-	const d = new Date(ms + 8 * 3600 * 1000);
+function formatEpochMsCst(ms: number): string {
+	if (!Number.isFinite(ms)) return "";
+	const d = new Date(Math.trunc(ms) + 8 * 3600 * 1000);
 	if (Number.isNaN(d.getTime())) return "";
 	const y = String(d.getUTCFullYear()).padStart(4, "0");
 	const m = String(d.getUTCMonth() + 1).padStart(2, "0");
@@ -54,6 +52,29 @@ function formatUnixTimestampCst(unixValue: number): string {
 	const mm = String(d.getUTCMinutes()).padStart(2, "0");
 	const ss = String(d.getUTCSeconds()).padStart(2, "0");
 	return `${y}-${m}-${day} ${hh}:${mm}:${ss}`;
+}
+
+function formatUnixTimestampCst(unixValue: number): string {
+	if (!Number.isFinite(unixValue) || unixValue <= 0) return "";
+	// 10 位秒级 (< 1e11) 与 13 位毫秒级 (>= 1e11) 统一转 CST (UTC+8)
+	const ms = unixValue >= 1e11 ? Math.trunc(unixValue) : Math.trunc(unixValue * 1000);
+	return formatEpochMsCst(ms);
+}
+
+function formatIsoWithOffsetToCst(baseIsoDate: string, baseTime: string, tz: string | undefined): string {
+	if (tz && !/^\+08:?00$/i.test(tz)) {
+		const normTz = /^z$/i.test(tz)
+			? "Z"
+			: tz.includes(":")
+				? tz
+				: `${tz.slice(0, 3)}:${tz.slice(3)}`;
+		const parsedMs = Date.parse(`${baseIsoDate}T${baseTime}${normTz}`);
+		if (Number.isFinite(parsedMs)) {
+			const formatted = formatEpochMsCst(parsedMs);
+			if (formatted) return formatted;
+		}
+	}
+	return `${baseIsoDate} ${baseTime}`;
 }
 
 function normalizeEvidenceTimestamp(raw: string | number | null | undefined): string {
@@ -69,10 +90,12 @@ function normalizeEvidenceTimestamp(raw: string | number | null | undefined): st
 	}
 
 	const isoOrDateTime = trimmed.match(
-		/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})[T\s]+([01]?\d|2[0-3]):([0-5]?\d)(?::([0-5]?\d))?(?:\.\d+)?(?:Z|[+-](?:[01]\d|2[0-3]):?[0-5]\d)?$/i,
+		/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})[T\s]+([01]?\d|2[0-3]):([0-5]?\d)(?::([0-5]?\d))?(?:\.\d+)?(Z|[+-](?:[01]\d|2[0-3]):?[0-5]\d)?$/i,
 	);
 	if (isoOrDateTime && isoOrDateTime[1] && isoOrDateTime[2] && isoOrDateTime[3] && isoOrDateTime[4] && isoOrDateTime[5]) {
-		return `${isoOrDateTime[1]}-${pad2(isoOrDateTime[2])}-${pad2(isoOrDateTime[3])} ${pad2(isoOrDateTime[4])}:${pad2(isoOrDateTime[5])}:${pad2(isoOrDateTime[6] ?? "00")}`;
+		const baseIsoDate = `${isoOrDateTime[1]}-${pad2(isoOrDateTime[2])}-${pad2(isoOrDateTime[3])}`;
+		const baseTime = `${pad2(isoOrDateTime[4])}:${pad2(isoOrDateTime[5])}:${pad2(isoOrDateTime[6] ?? "00")}`;
+		return formatIsoWithOffsetToCst(baseIsoDate, baseTime, isoOrDateTime[7]);
 	}
 
 	const dateOnly = trimmed.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/);
@@ -129,7 +152,11 @@ export function inferGroupMeta(fileName: string): {
 } {
 	const stem = basename(fileName, extname(fileName));
 	const idMatch = stem.match(/(group-[a-z0-9-]+|\d{6,12})/i);
-	const groupId = idMatch?.[1]?.toLowerCase() ?? stem.toLowerCase().replace(/[^a-z0-9\u4e00-\u9fa5-]+/g, "-");
+	const fallbackSlug = stem
+		.toLowerCase()
+		.replace(/[^a-z0-9\u4e00-\u9fa5-]+/g, "-")
+		.replace(/^-+|-+$/g, "");
+	const groupId = idMatch?.[1]?.toLowerCase() ?? (fallbackSlug || stem.toLowerCase());
 	const lower = stem.toLowerCase();
 	let role: GroupRole = "other";
 	if (lower.includes("主群") || lower.includes("main")) {
@@ -727,15 +754,16 @@ function normalizeDateBound(raw: string | undefined, bound: "since" | "until"): 
 	}
 
 	const dateTimeNoSec = trimmed.match(
-		/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})[T\s]+([01]?\d|2[0-3]):([0-5]?\d)(?:Z|[+-](?:[01]\d|2[0-3]):?[0-5]\d)?$/i,
+		/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})[T\s]+([01]?\d|2[0-3]):([0-5]?\d)(Z|[+-](?:[01]\d|2[0-3]):?[0-5]\d)?$/i,
 	);
 	if (dateTimeNoSec && dateTimeNoSec[1] && dateTimeNoSec[2] && dateTimeNoSec[3] && dateTimeNoSec[4] && dateTimeNoSec[5]) {
-		const base = `${dateTimeNoSec[1]}-${pad2(dateTimeNoSec[2])}-${pad2(dateTimeNoSec[3])} ${pad2(dateTimeNoSec[4])}:${pad2(dateTimeNoSec[5])}`;
-		return bound === "since" ? `${base}:00` : `${base}:59`;
+		const baseIsoDate = `${dateTimeNoSec[1]}-${pad2(dateTimeNoSec[2])}-${pad2(dateTimeNoSec[3])}`;
+		const baseTime = `${pad2(dateTimeNoSec[4])}:${pad2(dateTimeNoSec[5])}:${bound === "since" ? "00" : "59"}`;
+		return formatIsoWithOffsetToCst(baseIsoDate, baseTime, dateTimeNoSec[6]);
 	}
 
 	const dateTimeWithSec = trimmed.match(
-		/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})[T\s]+([01]?\d|2[0-3]):([0-5]?\d):([0-5]?\d)(?:\.\d+)?(?:Z|[+-](?:[01]\d|2[0-3]):?[0-5]\d)?$/i,
+		/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})[T\s]+([01]?\d|2[0-3]):([0-5]?\d):([0-5]?\d)(?:\.\d+)?(Z|[+-](?:[01]\d|2[0-3]):?[0-5]\d)?$/i,
 	);
 	if (
 		dateTimeWithSec &&
@@ -746,7 +774,9 @@ function normalizeDateBound(raw: string | undefined, bound: "since" | "until"): 
 		dateTimeWithSec[5] &&
 		dateTimeWithSec[6]
 	) {
-		return `${dateTimeWithSec[1]}-${pad2(dateTimeWithSec[2])}-${pad2(dateTimeWithSec[3])} ${pad2(dateTimeWithSec[4])}:${pad2(dateTimeWithSec[5])}:${pad2(dateTimeWithSec[6])}`;
+		const baseIsoDate = `${dateTimeWithSec[1]}-${pad2(dateTimeWithSec[2])}-${pad2(dateTimeWithSec[3])}`;
+		const baseTime = `${pad2(dateTimeWithSec[4])}:${pad2(dateTimeWithSec[5])}:${pad2(dateTimeWithSec[6])}`;
+		return formatIsoWithOffsetToCst(baseIsoDate, baseTime, dateTimeWithSec[7]);
 	}
 
 	const timeNoSec = trimmed.match(/^([01]?\d|2[0-3]):([0-5]\d)$/);

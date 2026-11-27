@@ -168,6 +168,7 @@ export class WenyouService {
 		messages: readonly { sourceId: string }[],
 		sessionId?: string,
 	): void {
+		if (messages.length === 0) return;
 		const key = this.pullWindowKey(cwd, sessionId);
 		let set = this.exposedPullWindows.get(key);
 		if (!set) {
@@ -599,7 +600,7 @@ export class WenyouService {
 			const unreported = computeUnreportedMessages(allEvidence, cursors);
 			const implicitCoveredIds = new Set<string>();
 			if (!explicitCovered) {
-				if (exposedWindow !== undefined) {
+				if (exposedWindow && exposedWindow.size > 0) {
 					for (const sourceId of exposedWindow) implicitCoveredIds.add(sourceId);
 				} else if (unreported.length <= DEFAULT_PULL_EXPOSURE_LIMIT) {
 					for (const msg of unreported) implicitCoveredIds.add(msg.sourceId);

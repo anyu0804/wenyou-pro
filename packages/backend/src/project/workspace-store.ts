@@ -1,6 +1,6 @@
 import { existsSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, parse, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, parse, resolve, sep, win32 } from "node:path";
 import { JsonStore } from "../json-store";
 import { createLogger } from "../log";
 
@@ -138,19 +138,26 @@ export function createWorkspacesLoader(agentDir: string): () => WorkspacesConfig
 	};
 }
 
+function isWindowsPath(p: string): boolean {
+	return /^[A-Za-z]:(?:[\\/]|$)/.test(p) || /^\\\\[^\\/]+[\\/]/.test(p) || p.includes("\\");
+}
+
 function isFilesystemRoot(dir: string): boolean {
 	if (!dir || dir === "/" || dir === "\\") return true;
-	if (parse(dir).root === dir) return true;
+	const parsed = isWindowsPath(dir) ? win32.parse(dir) : parse(dir);
+	if (parsed.root === dir) return true;
 	if (/^[A-Za-z]:[\\/]?$/.test(dir)) return true;
 	if (/^\\\\[^\\/]+[\\/][^\\/]+[\\/]?$/.test(dir)) return true;
 	return false;
 }
 
 function isSameOrAncestorDir(ancestor: string, target: string): boolean {
-	const normA = process.platform === "win32" ? ancestor.replace(/\//g, "\\").toLowerCase() : ancestor;
-	const normT = process.platform === "win32" ? target.replace(/\//g, "\\").toLowerCase() : target;
+	const winMode = process.platform === "win32" || isWindowsPath(ancestor) || isWindowsPath(target);
+	const normA = winMode ? ancestor.replace(/\//g, "\\").toLowerCase() : ancestor;
+	const normT = winMode ? target.replace(/\//g, "\\").toLowerCase() : target;
 	if (normA === normT) return true;
-	const prefix = normA.endsWith("/") || normA.endsWith("\\") ? normA : normA + sep;
+	const dirSep = winMode ? "\\" : sep;
+	const prefix = normA.endsWith("/") || normA.endsWith("\\") ? normA : normA + dirSep;
 	return normT.startsWith(prefix);
 }
 
@@ -159,16 +166,19 @@ function isSameOrAncestorDir(ancestor: string, target: string): boolean {
  * 无 .git 用父目录。根目录（含 Windows 盘符根/UNC 根）、home 本身/home 的祖先绝不作为根（防整个家目录或整盘放行）。
  */
 export function suggestRootCandidate(absPath: string, home: string = homedir()): string | null {
-	const homeParent = dirname(home);
+	const winPath = isWindowsPath(absPath);
+	const winHome = isWindowsPath(home);
+	const pathDirname = (p: string) => (winPath || isWindowsPath(p) ? win32.dirname(p) : dirname(p));
+	const homeParent = winHome ? win32.dirname(home) : dirname(home);
 	const unsafe = (dir: string): boolean =>
 		isFilesystemRoot(dir) || isSameOrAncestorDir(dir, home) || isSameOrAncestorDir(dir, homeParent);
 
-	const parent = dirname(absPath);
+	const parent = pathDirname(absPath);
 	if (unsafe(parent)) return null;
 	let dir = parent;
 	for (;;) {
 		if (existsSync(join(dir, ".git")) && !unsafe(dir)) return dir;
-		const up = dirname(dir);
+		const up = pathDirname(dir);
 		if (up === dir) return parent;
 		dir = up;
 	}
