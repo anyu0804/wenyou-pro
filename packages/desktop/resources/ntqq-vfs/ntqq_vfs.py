@@ -575,12 +575,35 @@ def parse_committed_wal(data: bytes) -> dict[str, Any]:
 
 
 def load_key_map(key_map_path: str) -> dict[str, str]:
-    with open(key_map_path, "r", encoding="utf-8") as fh:
+    with open(key_map_path, "r", encoding="utf-8-sig") as fh:
         raw = json.load(fh)
-    km = raw.get("key_map") if isinstance(raw, dict) else None
-    if not isinstance(km, dict):
+    if not isinstance(raw, dict):
         raise ValueError(f"Invalid key_map.json structure: {key_map_path}")
-    return {str(k).lower(): str(v) for k, v in km.items()}
+    if "key_map" in raw:
+        km = raw.get("key_map")
+        if not isinstance(km, dict):
+            raise ValueError(f"Invalid key_map.json structure: {key_map_path}")
+        return {
+            str(k).strip().lower(): str(v).strip().lower()
+            for k, v in km.items()
+            if isinstance(k, str) and isinstance(v, str)
+        }
+    flat: dict[str, str] = {}
+    for k, v in raw.items():
+        if not isinstance(k, str) or not isinstance(v, str):
+            continue
+        ks = k.strip().lower()
+        vs = v.strip().lower()
+        if len(ks) == 32 and len(vs) == 64:
+            try:
+                bytes.fromhex(ks)
+                bytes.fromhex(vs)
+            except ValueError:
+                continue
+            flat[ks] = vs
+    if flat or len(raw) == 0:
+        return flat
+    raise ValueError(f"Invalid key_map.json structure: {key_map_path}")
 
 
 def read_ntqq_salt_hex(db_path: str) -> str:
