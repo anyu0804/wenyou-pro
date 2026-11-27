@@ -94,13 +94,19 @@ export function NtqqConfigSection({
 			const res = await getPi().wenyouNtqqSaveConfig({ qqUin: trimmed || null });
 			applySnapshot(res);
 			const nextStatus = res.status as ExtendedNtqqProbeStatus;
-			const nextKeyMismatch = Boolean(nextStatus.keyMapExists && nextStatus.keyMatchedForCurrentDb === false);
+			const nextKeyMismatch = Boolean(
+				nextStatus.keyMapExists &&
+					(nextStatus.msgDbExists || nextStatus.groupDbExists) &&
+					nextStatus.keyMatchedForCurrentDb === false,
+			);
 			setFeedback({
 				kind: "info",
 				text: trimmed
 					? res.status.msgDbExists
 						? nextKeyMismatch
-							? `已保存 QQ ${trimmed}，已定位消息库；请点击下方「一键提取密钥」补充当前账号密钥`
+							? nextStatus.canExtractKey
+								? `已保存 QQ ${trimmed}，已定位消息库；请点击下方「一键提取密钥」补充当前账号密钥`
+								: `已保存 QQ ${trimmed}，已定位消息库；请重新导入包含当前账号的 key_map.json`
 							: `已保存 QQ ${trimmed}，并检测到本机 NTQQ 消息库`
 						: `已保存 QQ ${trimmed}；未在默认位置找到 nt_msg.db，可点击下方「选择目录」指定`
 					: "已清空绑定的 QQ 号",
@@ -124,12 +130,18 @@ export function NtqqConfigSection({
 			const res = await getPi().wenyouNtqqSaveConfig({ qqUin: uin });
 			applySnapshot(res);
 			const nextStatus = res.status as ExtendedNtqqProbeStatus;
-			const nextKeyMismatch = Boolean(nextStatus.keyMapExists && nextStatus.keyMatchedForCurrentDb === false);
+			const nextKeyMismatch = Boolean(
+				nextStatus.keyMapExists &&
+					(nextStatus.msgDbExists || nextStatus.groupDbExists) &&
+					nextStatus.keyMatchedForCurrentDb === false,
+			);
 			setFeedback({
 				kind: "info",
 				text: res.status.msgDbExists
 					? nextKeyMismatch
-						? `已切换到 QQ ${uin}，已定位消息库；请点击下方「一键提取密钥」补充当前账号密钥`
+						? nextStatus.canExtractKey
+							? `已切换到 QQ ${uin}，已定位消息库；请点击下方「一键提取密钥」补充当前账号密钥`
+							: `已切换到 QQ ${uin}，已定位消息库；请重新导入包含当前账号的 key_map.json`
 						: `已切换到 QQ ${uin}，并检测到本机 NTQQ 消息库`
 					: `已切换到 QQ ${uin}；未在默认位置找到 nt_msg.db，可点击下方「选择目录」指定`,
 			});
@@ -206,8 +218,11 @@ export function NtqqConfigSection({
 	const detectedAccounts = status?.detectedAccounts ?? [];
 	const showAccountSwitcher =
 		detectedAccounts.length > 1 || (detectedAccounts.length === 1 && !qqInput.trim());
-	const keyReadyForCurrent = Boolean(status?.keyMapExists && status?.keyMatchedForCurrentDb !== false);
-	const keyMismatchForCurrent = Boolean(status?.keyMapExists && status?.keyMatchedForCurrentDb === false);
+	const hasAnyDb = Boolean(status?.msgDbExists || status?.groupDbExists);
+	const keyMismatchForCurrent = Boolean(
+		status?.keyMapExists && hasAnyDb && status?.keyMatchedForCurrentDb === false,
+	);
+	const keyReadyForCurrent = Boolean(status?.keyMapExists && !keyMismatchForCurrent);
 
 	return (
 		<div className="space-y-4">
@@ -358,7 +373,9 @@ export function NtqqConfigSection({
 									: keyReadyForCurrent
 										? "已就绪 (key_map.json)"
 										: keyMismatchForCurrent
-											? "需提取当前账号密钥"
+											? status?.canExtractKey
+												? "需提取当前账号密钥"
+												: "需导入当前账号密钥"
 											: !status || status.canExtractKey
 												? "尚未提取"
 												: "尚未导入"}
@@ -368,7 +385,9 @@ export function NtqqConfigSection({
 							{keyReadyForCurrent
 								? "已定位本机 key_map.json，只读按页解密，不修改原库"
 								: keyMismatchForCurrent
-									? "已保留其他 QQ 账号密钥；请保持当前 QQ 在线并点击「一键提取密钥」合并补充"
+									? status?.canExtractKey
+										? "已保留其他 QQ 账号密钥；请保持当前 QQ 在线并点击「一键提取密钥」合并补充"
+										: "已保留其他 QQ 账号密钥；请重新导入包含当前账号的 key_map.json"
 									: !status || status.canExtractKey
 										? "提取前请保持电脑版 NTQQ 处于已登录状态"
 										: "一键提取仅支持 Windows；可手动导入已有 key_map.json，或使用 00-群聊收集/ 离线导入"}

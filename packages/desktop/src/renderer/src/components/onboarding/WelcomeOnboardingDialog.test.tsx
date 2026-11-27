@@ -443,4 +443,50 @@ describe("WelcomeOnboardingDialog", () => {
 
 		expect(dialog?.textContent).toContain("已就绪 (key_map.json)");
 	});
+
+	it("未定位到任何数据库时不误报需提取当前账号密钥；非 Windows 平台密钥不匹配提示重新导入而非一键提取", async () => {
+		piMocks.wenyouNtqqGetStatus.mockResolvedValueOnce(
+			makeNtqqSnapshot("30003", false, {
+				msgDbExists: false,
+				groupDbExists: false,
+				resolvedKeyMapPath: "C:\\mock\\key_map.json",
+				keyMapExists: true,
+				keyMatchedForCurrentDb: false,
+			}),
+		);
+		piMocks.wenyouNtqqSaveConfig.mockResolvedValueOnce(
+			makeNtqqSnapshot("30003", false, {
+				platformSupported: false,
+				canExtractKey: false,
+				msgDbExists: true,
+				groupDbExists: true,
+				resolvedKeyMapPath: "C:\\mock\\key_map.json",
+				keyMapExists: true,
+				keyMatchedForCurrentDb: false,
+			}),
+		);
+		useUiPreferencesStore.setState({
+			onboardingCompleted: false,
+			onboardingForceOpen: true,
+			onboardingInitialStep: 2,
+		});
+
+		await act(async () => {
+			root.render(<WelcomeOnboardingDialog />);
+		});
+
+		const dialog = document.body.querySelector('[role="dialog"]');
+		expect(dialog?.textContent).not.toContain("需提取当前账号密钥");
+
+		const saveQqBtn = [...(dialog?.querySelectorAll("button") ?? [])].find(
+			(b) => b.textContent === "保存并检测",
+		);
+		await act(async () => {
+			saveQqBtn?.click();
+		});
+
+		expect(dialog?.textContent).toContain("需导入当前账号密钥");
+		expect(dialog?.textContent).toContain("请重新导入包含当前账号的 key_map.json");
+		expect(dialog?.textContent).not.toContain("点击「一键提取密钥」");
+	});
 });

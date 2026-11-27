@@ -36,7 +36,7 @@ function createFakeWindowTarget() {
 }
 
 describe("installRendererGlobalErrorForwarding", () => {
-	it("转发 window error 事件并包含完整堆栈与源码位置", () => {
+	it("转发 window error 事件为单字符串参数，包含标签、完整堆栈与源码位置", () => {
 		const { target, emit } = createFakeWindowTarget();
 		const logger = { error: vi.fn() };
 		const dispose = installRendererGlobalErrorForwarding(target, logger);
@@ -52,11 +52,11 @@ describe("installRendererGlobalErrorForwarding", () => {
 		});
 
 		expect(logger.error).toHaveBeenCalledTimes(1);
-		const [tag, summary] = logger.error.mock.calls[0] ?? [];
-		expect(tag).toBe("[renderer-uncaught-error]");
-		expect(summary).toContain("Error: render crash");
-		expect(summary).toContain("at Panel (renderer/Panel.tsx:42:13)");
-		expect(summary).toContain("renderer/Panel.tsx:42:13");
+		expect(logger.error.mock.calls[0]).toHaveLength(1);
+		expect(logger.error).toHaveBeenCalledWith(expect.stringContaining("[renderer-uncaught-error] "));
+		expect(logger.error).toHaveBeenCalledWith(expect.stringContaining("Error: render crash"));
+		expect(logger.error).toHaveBeenCalledWith(expect.stringContaining("at Panel (renderer/Panel.tsx:42:13)"));
+		expect(logger.error).toHaveBeenCalledWith(expect.stringContaining("(renderer/Panel.tsx:42:13)"));
 
 		dispose();
 	});
@@ -78,37 +78,81 @@ describe("installRendererGlobalErrorForwarding", () => {
 			colno: 4,
 		});
 		expect(logger.error).toHaveBeenCalledTimes(1);
+		expect(logger.error.mock.calls[0]).toHaveLength(1);
 		expect(logger.error).toHaveBeenCalledWith(
-			"[renderer-uncaught-error]",
-			"Script error. (renderer/index.js:9:4)",
+			"[renderer-uncaught-error] Script error. (renderer/index.js:9:4)",
 		);
 
 		dispose();
 	});
 
-	it("转发 unhandledrejection 事件（Error 完整堆栈与非 Error 原因）", () => {
+	it("转发 unhandledrejection 事件为单字符串参数（Error 完整堆栈、非 Error 及不可序列化对象）", () => {
 		const { target, emit } = createFakeWindowTarget();
 		const logger = { error: vi.fn() };
 		const dispose = installRendererGlobalErrorForwarding(target, logger);
 
 		const ipcErr = new Error("IPC rejected");
 		ipcErr.stack = "Error: IPC rejected\n    at callApi (renderer/api.ts:18:5)";
+		const nullProto = Object.create(null);
+		const hostile = {
+			toJSON() {
+				throw new Error("toJSON boom");
+			},
+			toString() {
+				throw new Error("toString boom");
+			},
+		};
+
 		emit("unhandledrejection", { reason: ipcErr });
 		emit("unhandledrejection", { reason: "raw rejection text" });
 		emit("unhandledrejection", { reason: { code: "E_TIMEOUT", detail: "5000ms" } });
+		emit("unhandledrejection", { reason: nullProto });
+		emit("unhandledrejection", { reason: hostile });
 
-		expect(logger.error).toHaveBeenCalledTimes(3);
+		expect(logger.error).toHaveBeenCalledTimes(5);
+		for (const call of logger.error.mock.calls) {
+			expect(call).toHaveLength(1);
+		}
 		expect(logger.error).toHaveBeenNthCalledWith(
 			1,
-			"[renderer-unhandled-rejection]",
-			"Error: IPC rejected\n    at callApi (renderer/api.ts:18:5)",
+			"[renderer-unhandled-rejection] Error: IPC rejected\n    at callApi (renderer/api.ts:18:5)",
 		);
-		expect(logger.error).toHaveBeenNthCalledWith(2, "[renderer-unhandled-rejection]", "raw rejection text");
+		expect(logger.error).toHaveBeenNthCalledWith(2, "[renderer-unhandled-rejection] raw rejection text");
 		expect(logger.error).toHaveBeenNthCalledWith(
 			3,
-			"[renderer-unhandled-rejection]",
-			'{"code":"E_TIMEOUT","detail":"5000ms"}',
+			'[renderer-unhandled-rejection] {"code":"E_TIMEOUT","detail":"5000ms"}',
 		);
+		expect(logger.error).toHaveBeenNthCalledWith(4, "[renderer-unhandled-rejection] [unserializable]");
+		expect(logger.error).toHaveBeenNthCalledWith(5, "[renderer-unhandled-rejection] [unserializable]");
+
+		dispose();
+	});
+
+	it("logger.error 内部重入触发二次 error 或抛错时不死循环不崩溃，且后续错误仍可正常转发", () => {
+		const { target, emit } = createFakeWindowTarget();
+		let calls = 0;
+		const logger = {
+			error: vi.fn(() => {
+				calls += 1;
+				if (calls === 1) {
+					// 模拟 logger.error 内部同步再抛/触发 error 与 unhandledrejection
+					emit("error", { error: new Error("reentrant error"), filename: "loop.ts", lineno: 1, colno: 1 });
+					emit("unhandledrejection", { reason: "reentrant rejection" });
+					throw new Error("logger crashed");
+				}
+			}),
+		};
+		const dispose = installRendererGlobalErrorForwarding(target, logger);
+
+		expect(() =>
+			emit("error", { error: new Error("first boom"), filename: "a.ts", lineno: 10, colno: 2 }),
+		).not.toThrow();
+		expect(logger.error).toHaveBeenCalledTimes(1);
+
+		// finally 释放锁后，后续真实错误照常转发
+		emit("unhandledrejection", { reason: "recovered rejection" });
+		expect(logger.error).toHaveBeenCalledTimes(2);
+		expect(logger.error.mock.calls[1]).toEqual(["[renderer-unhandled-rejection] recovered rejection"]);
 
 		dispose();
 	});
