@@ -1,8 +1,20 @@
 // @vitest-environment happy-dom
-import type { NtqqStatusSnapshot, ProviderInfo } from "@percho/shared";
+import type { NtqqProbeStatus, NtqqStatusSnapshot, ProviderInfo } from "@percho/shared";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+type TestExtendedNtqqProbeStatus = NtqqProbeStatus & {
+	keyMatchedForCurrentDb?: boolean;
+	detectedAccounts?: Array<{
+		qqUin: string;
+		dbDir: string;
+		msgDbExists: boolean;
+		groupDbExists: boolean;
+		keyReady: boolean;
+		mtimeMs: number;
+	}>;
+};
 
 const piMocks = vi.hoisted(() => ({
 	wenyouNtqqGetStatus: vi.fn<() => Promise<NtqqStatusSnapshot>>(),
@@ -59,27 +71,33 @@ vi.mock("../settings/providers/LoginDialog", () => ({
 import { useUiPreferencesStore } from "../../stores/ui-preferences";
 import { slugProviderId, WelcomeOnboardingDialog } from "./WelcomeOnboardingDialog";
 
-function makeNtqqSnapshot(qqUin: string | null, ready = false): NtqqStatusSnapshot {
+function makeNtqqSnapshot(
+	qqUin: string | null,
+	ready = false,
+	statusOverrides?: Partial<TestExtendedNtqqProbeStatus>,
+): NtqqStatusSnapshot {
+	const status: TestExtendedNtqqProbeStatus = {
+		platformSupported: true,
+		qqUin,
+		resolvedDbDir: qqUin ? `C:\\mock\\Tencent Files\\${qqUin}\\nt_qq\\nt_db` : null,
+		dbDirAutoDetected: Boolean(qqUin),
+		msgDbExists: ready,
+		groupDbExists: ready,
+		walSizeBytes: 0,
+		resolvedKeyMapPath: ready ? "C:\\mock\\key_map.json" : null,
+		keyMapExists: ready,
+		canExtractKey: true,
+		pythonPath: "python",
+		pythonVersion: "3.13.9",
+		assetsDir: "C:\\mock\\ntqq-vfs",
+		assetsReady: true,
+		ready,
+		missingReasons: ready ? [] : ["尚未提取密钥"],
+		...statusOverrides,
+	};
 	return {
 		config: { qqUin, dbDir: null, keyMapPath: null, pythonPath: null },
-		status: {
-			platformSupported: true,
-			qqUin,
-			resolvedDbDir: qqUin ? `C:\\mock\\Tencent Files\\${qqUin}\\nt_qq\\nt_db` : null,
-			dbDirAutoDetected: Boolean(qqUin),
-			msgDbExists: ready,
-			groupDbExists: ready,
-			walSizeBytes: 0,
-			resolvedKeyMapPath: ready ? "C:\\mock\\key_map.json" : null,
-			keyMapExists: ready,
-			canExtractKey: true,
-			pythonPath: "python",
-			pythonVersion: "3.13.9",
-			assetsDir: "C:\\mock\\ntqq-vfs",
-			assetsReady: true,
-			ready,
-			missingReasons: ready ? [] : ["尚未提取密钥"],
-		},
+		status,
 	};
 }
 
@@ -163,7 +181,9 @@ describe("WelcomeOnboardingDialog", () => {
 		expect(sessionsLoadModels).toHaveBeenCalledTimes(1);
 
 		// Step 1B: 切换「接入订阅账号」并点击登录（仅带 apiKeyLogin 的 DeepSeek 不应出现在 OAuth 列表里）
-		const oauthTab = [...(dialog?.querySelectorAll("button") ?? [])].find((b) => b.textContent === "接入订阅账号");
+		const oauthTab = [...(dialog?.querySelectorAll("button") ?? [])].find(
+			(b) => b.textContent === "接入订阅账号",
+		);
 		await act(async () => {
 			oauthTab?.click();
 		});
@@ -279,7 +299,9 @@ describe("WelcomeOnboardingDialog", () => {
 		await act(async () => {
 			saveCustomBtn?.click();
 		});
-		expect(settingsState.addCustom).toHaveBeenCalledWith(expect.objectContaining({ id: idA, name: "硅基流动" }));
+		expect(settingsState.addCustom).toHaveBeenCalledWith(
+			expect.objectContaining({ id: idA, name: "硅基流动" }),
+		);
 	});
 
 	it("内置厂商 saveKey 失败时展示真实报错、不清空已输入的 API Key 且不显示成功提示", async () => {
@@ -306,5 +328,119 @@ describe("WelcomeOnboardingDialog", () => {
 		expect(dialog?.textContent).not.toContain("已保存 DeepSeek 配置");
 		expect(keyInput?.value).toBe("sk-keep-me-on-error");
 		expect(sessionsLoadModels).not.toHaveBeenCalled();
+	});
+
+	it("多账号 detectedAccounts 支持一键胶囊切换，且 keyMapExists=true 但 keyMatchedForCurrentDb=false 时提示需提取当前账号密钥", async () => {
+		const detectedAccounts = [
+			{
+				qqUin: "10001",
+				dbDir: "C:\\mock\\Tencent Files\\10001\\nt_qq\\nt_db",
+				msgDbExists: true,
+				groupDbExists: true,
+				keyReady: true,
+				mtimeMs: 2000,
+			},
+			{
+				qqUin: "20002",
+				dbDir: "C:\\mock\\Tencent Files\\20002\\nt_qq\\nt_db",
+				msgDbExists: true,
+				groupDbExists: true,
+				keyReady: false,
+				mtimeMs: 1000,
+			},
+		];
+		piMocks.wenyouNtqqGetStatus.mockResolvedValueOnce(
+			makeNtqqSnapshot("10001", true, {
+				keyMatchedForCurrentDb: true,
+				detectedAccounts,
+			}),
+		);
+		piMocks.wenyouNtqqSaveConfig.mockResolvedValueOnce(
+			makeNtqqSnapshot("20002", false, {
+				msgDbExists: true,
+				groupDbExists: true,
+				resolvedKeyMapPath: "C:\\mock\\key_map.json",
+				keyMapExists: true,
+				keyMatchedForCurrentDb: false,
+				detectedAccounts,
+				missingReasons: ["当前 key_map.json 未包含此 QQ 账号消息库的解密密钥"],
+			}),
+		);
+		useUiPreferencesStore.setState({
+			onboardingCompleted: false,
+			onboardingForceOpen: true,
+			onboardingInitialStep: 2,
+		});
+
+		await act(async () => {
+			root.render(<WelcomeOnboardingDialog />);
+		});
+
+		const dialog = document.body.querySelector('[role="dialog"]');
+		expect(dialog).not.toBeNull();
+		expect(dialog?.textContent).toContain("本机已检测账号：");
+		expect(dialog?.textContent).toContain("已就绪 (key_map.json)");
+
+		const secondAccBtn = [...(dialog?.querySelectorAll("button") ?? [])].find((b) =>
+			b.textContent?.includes("20002"),
+		);
+		expect(secondAccBtn).toBeDefined();
+		expect(secondAccBtn?.textContent).toContain("待提取");
+
+		await act(async () => {
+			secondAccBtn?.click();
+		});
+
+		expect(piMocks.wenyouNtqqSaveConfig).toHaveBeenCalledWith({ qqUin: "20002" });
+		const qqInput = dialog?.querySelector<HTMLInputElement>("#wenyou-qq-uin-input");
+		expect(qqInput?.value).toBe("20002");
+		expect(dialog?.textContent).toContain("需提取当前账号密钥");
+		expect(dialog?.textContent).toContain(
+			"已保留其他 QQ 账号密钥；请保持当前 QQ 在线并点击「一键提取密钥」合并补充",
+		);
+		expect(dialog?.textContent).not.toContain("已就绪 (key_map.json)");
+	});
+
+	it("一键提取密钥进行中防连点重入：快速连点仅发起一次提取并展示提取中状态", async () => {
+		let resolveExtract!: (value: NtqqStatusSnapshot & { message: string }) => void;
+		piMocks.wenyouNtqqGetStatus.mockResolvedValueOnce(makeNtqqSnapshot("10001", false));
+		piMocks.wenyouNtqqExtractKey.mockImplementationOnce(
+			() =>
+				new Promise<NtqqStatusSnapshot & { message: string }>((resolve) => {
+					resolveExtract = resolve;
+				}),
+		);
+		useUiPreferencesStore.setState({
+			onboardingCompleted: false,
+			onboardingForceOpen: true,
+			onboardingInitialStep: 2,
+		});
+
+		await act(async () => {
+			root.render(<WelcomeOnboardingDialog />);
+		});
+
+		const dialog = document.body.querySelector('[role="dialog"]');
+		const extractBtn = [...(dialog?.querySelectorAll("button") ?? [])].find(
+			(b) => b.textContent === "一键提取密钥",
+		);
+		expect(extractBtn).toBeDefined();
+
+		await act(async () => {
+			extractBtn?.click();
+			extractBtn?.click();
+		});
+
+		expect(piMocks.wenyouNtqqExtractKey).toHaveBeenCalledTimes(1);
+		expect(dialog?.textContent).toContain("提取中…");
+
+		await act(async () => {
+			resolveExtract({
+				...makeNtqqSnapshot("10001", true, { keyMatchedForCurrentDb: true }),
+				message: "已成功提取并保存本机 NTQQ 解密密钥",
+			});
+		});
+
+		expect(dialog?.textContent).toContain("已就绪 (key_map.json)");
 	});
 });

@@ -96,3 +96,65 @@ describe("toasts pushExtension（issue #45 限流）", () => {
 		expect(useToastsStore.getState().toasts.some((t) => t.titleKey === "toast.tabsSaveFailed")).toBe(true);
 	});
 });
+
+describe("toasts push（应用级同文 8s 去重防刷屏）", () => {
+	beforeEach(() => {
+		vi.useFakeTimers();
+		clockStep += 9000;
+		vi.advanceTimersByTime(clockStep);
+		useToastsStore.setState({ toasts: [], overflowCount: 0 });
+	});
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	it("8s 窗口内连续高频触发相同应用错误 Toast 仅入栈 1 条；超窗后可再次弹出", () => {
+		const push = useToastsStore.getState().push;
+		push("error", "toast.sessionOpenFailed", "NTQQ extractor timeout");
+		push("error", "toast.sessionOpenFailed", "NTQQ extractor timeout");
+		push("error", "toast.sessionOpenFailed", "NTQQ extractor timeout");
+		expect(useToastsStore.getState().toasts).toHaveLength(1);
+		expect(useToastsStore.getState().toasts[0]).toMatchObject({
+			severity: "error",
+			titleKey: "toast.sessionOpenFailed",
+			detail: "NTQQ extractor timeout",
+		});
+
+		// 4.5s 自动退场后仍在 8s 去重窗口内，同文错误继续被抑制
+		vi.advanceTimersByTime(4501);
+		expect(useToastsStore.getState().toasts).toHaveLength(0);
+		push("error", "toast.sessionOpenFailed", "NTQQ extractor timeout");
+		expect(useToastsStore.getState().toasts).toHaveLength(0);
+
+		// 超过 8s 窗口后恢复正常弹出
+		vi.advanceTimersByTime(3500);
+		push("error", "toast.sessionOpenFailed", "NTQQ extractor timeout");
+		expect(useToastsStore.getState().toasts).toHaveLength(1);
+	});
+
+	it("同一毫秒内不同 detail、不同 severity 或不同 titleKey 均正常保留，不误合并", () => {
+		const push = useToastsStore.getState().push;
+		push("error", "toast.sessionOpenFailed", "reason A");
+		push("error", "toast.sessionOpenFailed", "reason B");
+		push("warning", "toast.sessionOpenFailed", "reason A");
+		push("error", "toast.tabsSaveFailed", "reason A");
+		const toasts = useToastsStore.getState().toasts;
+		expect(toasts).toHaveLength(4);
+		expect(toasts.map((t) => `${t.severity}|${t.titleKey}|${t.detail ?? ""}`)).toEqual([
+			"error|toast.sessionOpenFailed|reason A",
+			"error|toast.sessionOpenFailed|reason B",
+			"warning|toast.sessionOpenFailed|reason A",
+			"error|toast.tabsSaveFailed|reason A",
+		]);
+	});
+
+	it("通过 setState({ toasts: [] }) 重置后立即允许再次入栈，不跨单测污染", () => {
+		const push = useToastsStore.getState().push;
+		push("error", "toast.sessionOpenFailed", "same detail");
+		expect(useToastsStore.getState().toasts).toHaveLength(1);
+
+		useToastsStore.setState({ toasts: [] });
+		push("error", "toast.sessionOpenFailed", "same detail");
+		expect(useToastsStore.getState().toasts).toHaveLength(1);
+	});
+});
