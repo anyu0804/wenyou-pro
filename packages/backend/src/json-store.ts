@@ -98,6 +98,40 @@ async function renameJsonRecord(source: string, target: string): Promise<void> {
 	}
 }
 
+const syncWaitState = new Int32Array(new SharedArrayBuffer(4));
+
+function sleepSync(delayMs: number): void {
+	try {
+		Atomics.wait(syncWaitState, 0, 0, delayMs);
+	} catch {
+		const deadline = Date.now() + delayMs;
+		while (Date.now() < deadline) {
+			/* Atomics.wait 不可用时的兜底等待 */
+		}
+	}
+}
+
+// 同步写入路径同样在 Windows 下容忍短暂文件扫描/外部读取占用，仅重试原子 rename。
+function renameJsonRecordSync(source: string, target: string): void {
+	const delays = [10, 25, 50];
+	for (let attempt = 0; ; attempt++) {
+		try {
+			renameSync(source, target);
+			return;
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			const delay = delays[attempt];
+			if (
+				process.platform !== "win32" ||
+				!["EPERM", "EACCES", "EBUSY"].includes(code ?? "") ||
+				delay === undefined
+			)
+				throw error;
+			sleepSync(delay);
+		}
+	}
+}
+
 export class JsonStore<T> {
 	private readonly path: string;
 	private readonly defaultValue: () => T;
@@ -118,7 +152,8 @@ export class JsonStore<T> {
 	/** 读取原始状态（不回退）：ENOENT → missing+default；解析失败 → corrupted；其他 IO 错误上抛 */
 	private classify(text: string): ReadResult<T> {
 		try {
-			return { kind: "ok", value: this.parse(text) };
+			const clean = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
+			return { kind: "ok", value: this.parse(clean) };
 		} catch (error) {
 			return { kind: "corrupted", error };
 		}
@@ -197,7 +232,7 @@ export class JsonStore<T> {
 					closeSync(fd);
 				}
 			} else writeFileSync(tmp, this.stringify(value), { encoding: "utf8", mode: this.mode });
-			renameSync(tmp, this.path);
+			renameJsonRecordSync(tmp, this.path);
 			if (this.durable && process.platform !== "win32") {
 				const fd = openSync(dir, "r");
 				try {
@@ -207,7 +242,11 @@ export class JsonStore<T> {
 				}
 			}
 		} catch (err) {
-			rmSync(tmp, { force: true });
+			try {
+				rmSync(tmp, { force: true });
+			} catch {
+				// 清理临时文件失败不遮蔽原始写入错误
+			}
 			throw err;
 		}
 	}

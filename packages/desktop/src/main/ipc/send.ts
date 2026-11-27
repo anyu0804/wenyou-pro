@@ -21,10 +21,14 @@ export function sendToRenderer<C extends SubscriptionChannel>(
 		environment = environmentRef(environment);
 	}
 	const window = BrowserWindow.getAllWindows()[0];
-	if (window && !window.isDestroyed()) {
-		if (environment && boundary) window.webContents.send(channel, payload, environment, boundary);
-		else if (environment) window.webContents.send(channel, payload, environment);
-		else window.webContents.send(channel, payload);
+	if (window && !window.isDestroyed() && !window.webContents.isDestroyed?.()) {
+		try {
+			if (environment && boundary) window.webContents.send(channel, payload, environment, boundary);
+			else if (environment) window.webContents.send(channel, payload, environment);
+			else window.webContents.send(channel, payload);
+		} catch {
+			// 渲染帧瞬时销毁/重载过渡态下 send 可能抛同步异常，忽略以防主进程未捕获异常风暴
+		}
 	}
 }
 
