@@ -526,6 +526,7 @@ function createSettingsStore(environment: EnvironmentRef) {
 					await afterMutation();
 				} catch (error) {
 					set({ error: errorMessage(error) });
+					throw error;
 				}
 			},
 

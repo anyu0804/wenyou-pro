@@ -34,14 +34,28 @@ function stripInvokePrefix(err: unknown): string {
 	return raw.replace(/^Error invoking remote method '[^']*':\s*(?:Error:\s*)?/, "");
 }
 
-function slugProviderId(raw: string): string {
-	const clean = raw
-		.trim()
+function shortHash6(input: string): string {
+	let hash = 0x811c9dc5;
+	for (let i = 0; i < input.length; i += 1) {
+		hash ^= input.charCodeAt(i);
+		hash = Math.imul(hash, 0x01000193) >>> 0;
+	}
+	return hash.toString(16).padStart(8, "0").slice(0, 6);
+}
+
+/** 生成确定性、互不冲突的自定义中转站 providerId（纯中文或含非 ASCII 名称附加 6 位哈希，同名重编辑保持幂等） */
+export function slugProviderId(raw: string): string {
+	const normalized = raw.trim().normalize("NFKC");
+	if (!normalized) return "custom-relay";
+	const clean = normalized
 		.toLowerCase()
 		.replace(/[^a-z0-9-]+/g, "-")
 		.replace(/-+/g, "-")
 		.replace(/^-|-$/g, "");
-	return clean || "custom-relay";
+	const hasNonAscii = [...normalized].some((ch) => ch.charCodeAt(0) > 127);
+	if (!hasNonAscii && clean.length >= 2) return clean;
+	const suffix = shortHash6(normalized);
+	return clean ? `${clean}-${suffix}` : `custom-relay-${suffix}`;
 }
 
 /**

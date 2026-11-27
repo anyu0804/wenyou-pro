@@ -1,26 +1,81 @@
-import { useMemo, useState } from "react";
+import { Fragment, type ReactNode, useMemo, useState } from "react";
 import { getPi } from "../../api";
 import { pushExtensionToast } from "../../stores/toasts";
 import { fillWenyouPrompt, useWenyouCanvasStore } from "../../stores/wenyou-canvas";
 import { formatShortTime, isRemoteCwd, unwrapCwdPath } from "./wenyou-helpers";
 
-/** 拆分自然段用于公文纸面预览 */
-function parsePolicyParagraphs(content: string): { heading?: string; paragraphs: string[] } {
+export type PolicyPreviewBlock =
+	| { kind: "subheading"; text: string; key: string }
+	| { kind: "list-item"; text: string; bullet?: boolean; key: string }
+	| { kind: "paragraph"; text: string; key: string };
+
+/** 识别条陈/列表项起始行：`一、`、`（一）`、`1、`、`1.`、`- `、以及 `**条目标题**：内容` / `条目：内容` */
+const UNORDERED_ITEM_RE = /^[-*+•·]\s+(.+)$/;
+const ORDERED_ITEM_RE = /^(?:\d{1,3}(?:\.\s+|\s*[、)）]\s*)|[一二三四五六七八九十百]+[、.．]\s*|[（(][一二三四五六七八九十百\d]+[)）]\s*)/;
+const COLON_ITEM_RE = /^(?:\*\*[^*\n]{1,24}\*\*|[^：:，。！？；,.!?;]{1,20})[：:]\s*\S/;
+const HORIZONTAL_RULE_RE = /^(?:---+|\*\*\*+|___+)$/;
+
+function stripControlChars(input: string): string {
+	let out = "";
+	for (let i = 0; i < input.length; i += 1) {
+		const code = input.charCodeAt(i);
+		out += code < 32 ? "-" : input[i];
+	}
+	return out;
+}
+
+/** 清洗另存为 `.docx` 的默认文件名：去除 `/`/`:` 等非法字符、尾随点空格与保留名 */
+export function sanitizePolicyFileName(rawName: string, fallback = "国策文书.docx"): string {
+	const withoutExt = rawName.trim().replace(/\.docx$/i, "");
+	const cleaned = stripControlChars(withoutExt)
+		.replace(/[\\/:*?"<>|]+/g, "-")
+		.replace(/\s*-\s*/g, "-")
+		.replace(/-+/g, "-")
+		.replace(/^[\s.-]+|[\s.-]+$/g, "")
+		.slice(0, 100)
+		.replace(/[\s.]+$/g, "");
+	if (!cleaned) return fallback;
+	const safeStem = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(cleaned) ? `${cleaned}-doc` : cleaned;
+	return `${safeStem}.docx`;
+}
+
+/** 拆分自然段与条陈/列表项用于公文纸面预览，避免无空行条陈粘成一行 */
+export function parsePolicyParagraphs(content: string): {
+	heading?: string;
+	paragraphs: string[];
+	blocks: PolicyPreviewBlock[];
+} {
 	const lines = content.replace(/\r\n/g, "\n").split("\n");
 	let heading: string | undefined;
-	const paragraphs: string[] = [];
-	let buffer: string[] = [];
+	const blocks: PolicyPreviewBlock[] = [];
+	let buffer: { kind: "paragraph" | "list-item"; bullet?: boolean; lines: string[]; lineNo: number } | null =
+		null;
 
 	const flush = () => {
-		if (buffer.length > 0) {
-			paragraphs.push(buffer.join(" ").trim());
-			buffer = [];
+		if (!buffer || buffer.lines.length === 0) {
+			buffer = null;
+			return;
 		}
+		const text = buffer.lines.join(" ").trim();
+		if (text) {
+			const key = `${buffer.kind}-${buffer.lineNo}`;
+			blocks.push(
+				buffer.kind === "list-item"
+					? { kind: "list-item", text, key, ...(buffer.bullet ? { bullet: true } : {}) }
+					: { kind: "paragraph", text, key },
+			);
+		}
+		buffer = null;
 	};
 
-	for (const rawLine of lines) {
+	for (let lineNo = 0; lineNo < lines.length; lineNo += 1) {
+		const rawLine = lines[lineNo] ?? "";
 		const line = rawLine.trim();
 		if (!line) {
+			flush();
+			continue;
+		}
+		if (HORIZONTAL_RULE_RE.test(line)) {
 			flush();
 			continue;
 		}
@@ -30,13 +85,82 @@ function parsePolicyParagraphs(content: string): { heading?: string; paragraphs:
 		}
 		if (/^#{2,6}\s+/.test(line)) {
 			flush();
-			paragraphs.push(line.replace(/^#{2,6}\s+/, "").trim());
+			blocks.push({ kind: "subheading", text: line.replace(/^#{2,6}\s+/, "").trim(), key: `sub-${lineNo}` });
 			continue;
 		}
-		buffer.push(line);
+		const normalizedLine = line.replace(/^>\s*/, "").trim();
+		if (!normalizedLine) {
+			flush();
+			continue;
+		}
+		const unordered = normalizedLine.match(UNORDERED_ITEM_RE);
+		if (unordered?.[1]) {
+			flush();
+			buffer = { kind: "list-item", bullet: true, lines: [unordered[1].trim()], lineNo };
+			continue;
+		}
+		if (ORDERED_ITEM_RE.test(normalizedLine) || COLON_ITEM_RE.test(normalizedLine)) {
+			flush();
+			buffer = { kind: "list-item", lines: [normalizedLine], lineNo };
+			continue;
+		}
+		if (!buffer) {
+			buffer = { kind: "paragraph", lines: [normalizedLine], lineNo };
+		} else {
+			buffer.lines.push(normalizedLine);
+		}
 	}
 	flush();
-	return { heading, paragraphs };
+	return { heading, blocks, paragraphs: blocks.map((b) => b.text) };
+}
+
+/** 轻量行内富文本解析：将 `***加粗斜体***` / `**加粗**` / `*斜体*` / `` `行内代码` `` 转为真实节点 */
+const INLINE_RICH_RE = /(\*\*\*[^*\n]+?\*\*\*|\*\*[^*\n]+?\*\*|\*(?!\s)[^*\n]+?(?<!\s)\*|`[^`\n]+?`)/g;
+
+export function renderPolicyInlineRichText(text: string): ReactNode[] {
+	const nodes: ReactNode[] = [];
+	let cursor = 0;
+	let key = 0;
+	for (const match of text.matchAll(INLINE_RICH_RE)) {
+		const index = match.index ?? -1;
+		const token = match[0];
+		if (index < 0 || !token) continue;
+		if (index > cursor) {
+			nodes.push(<Fragment key={key++}>{text.slice(cursor, index)}</Fragment>);
+		}
+		if (token.startsWith("***") && token.endsWith("***") && token.length > 6) {
+			nodes.push(
+				<strong key={key++} className="font-semibold text-ink">
+					<em className="italic">{token.slice(3, -3)}</em>
+				</strong>,
+			);
+		} else if (token.startsWith("**") && token.endsWith("**") && token.length > 4) {
+			nodes.push(
+				<strong key={key++} className="font-semibold text-ink">
+					{token.slice(2, -2)}
+				</strong>,
+			);
+		} else if (token.startsWith("*") && token.endsWith("*") && token.length > 2) {
+			nodes.push(
+				<em key={key++} className="italic">
+					{token.slice(1, -1)}
+				</em>,
+			);
+		} else if (token.startsWith("`") && token.endsWith("`") && token.length > 2) {
+			nodes.push(
+				<code key={key++} className="rounded bg-hover px-1 py-0.5 font-mono text-ui-12">
+					{token.slice(1, -1)}
+				</code>,
+			);
+		} else {
+			nodes.push(<Fragment key={key++}>{token}</Fragment>);
+		}
+		cursor = index + token.length;
+	}
+	if (cursor < text.length) {
+		nodes.push(<Fragment key={key++}>{text.slice(cursor)}</Fragment>);
+	}
+	return nodes.length > 0 ? nodes : [text];
 }
 
 const DRAFT_POLICY_PROMPT =
@@ -66,7 +190,7 @@ export function PolicyDeskPanel() {
 	const stats = useMemo(() => {
 		if (!currentPolicy || !parsed) return { chars: 0, paras: 0 };
 		const cleanChars = currentPolicy.content.replace(/\s+/g, "").length;
-		return { chars: cleanChars, paras: parsed.paragraphs.length };
+		return { chars: cleanChars, paras: parsed.blocks.length };
 	}, [currentPolicy, parsed]);
 
 	const handleExportDocx = async () => {
@@ -77,7 +201,7 @@ export function PolicyDeskPanel() {
 		}
 		setExporting(true);
 		try {
-			const defaultName = `${currentPolicy.serialNo}-${currentPolicy.title}.docx`;
+			const defaultName = sanitizePolicyFileName(`${currentPolicy.serialNo}-${currentPolicy.title}`);
 			const savedPath = await getPi().wenyouExportDocxDialog({
 				cwd: rawCwd,
 				relPath: currentPolicy.docxPath,
@@ -200,7 +324,7 @@ export function PolicyDeskPanel() {
 									className="text-ui-18 font-semibold tracking-wide text-ink"
 									style={{ fontFamily: '"Songti SC", "SimSun", "Noto Serif SC", Georgia, serif' }}
 								>
-									{parsed.heading || currentPolicy.title}
+									{renderPolicyInlineRichText(parsed.heading || currentPolicy.title)}
 								</h2>
 								<p className="mt-2 text-ui-11 text-ink-dim">
 									{[
@@ -217,11 +341,28 @@ export function PolicyDeskPanel() {
 								className="mt-5 space-y-3.5 text-ui-14 leading-[1.9] text-ink"
 								style={{ fontFamily: '"Songti SC", "SimSun", "Noto Serif SC", Georgia, serif' }}
 							>
-								{parsed.paragraphs.map((para, idx) => (
-									<p key={idx} className="indent-[2em] break-words">
-										{para}
-									</p>
-								))}
+								{parsed.blocks.map((block) => {
+									if (block.kind === "subheading") {
+										return (
+											<h3 key={block.key} className="pt-1 text-ui-15 font-semibold text-ink break-words">
+												{renderPolicyInlineRichText(block.text)}
+											</h3>
+										);
+									}
+									if (block.kind === "list-item" && block.bullet) {
+										return (
+											<p key={block.key} className="pl-[1.5em] -indent-[0.9em] break-words">
+												<span className="mr-1.5 text-ink-dim">•</span>
+												{renderPolicyInlineRichText(block.text)}
+											</p>
+										);
+									}
+									return (
+										<p key={block.key} className="indent-[2em] break-words">
+											{renderPolicyInlineRichText(block.text)}
+										</p>
+									);
+								})}
 							</div>
 						</article>
 					</div>

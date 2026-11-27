@@ -89,29 +89,86 @@ function SourceRefPills({
 	);
 }
 
-/** 将正文中的 [qq-xxx] / [src-xxx] 引用自动渲染为可点溯源胶囊 */
+/** NTQQ / 旧版显式前缀 sourceId（如 `qq-123-45`、`ntqq-10001-2`、`src-01`、`msg_1`、`ev-3`） */
+const PREFIXED_SOURCE_ID_RE = /^(?:ntqq|qq|src|msg|ev)(?:[-_][a-zA-Z0-9._-]+|\d+[a-zA-Z0-9_-]*)$/i;
+
+/**
+ * 离线导入 `00-群聊收集/` 生成的 `${groupId}-${hash}`（及去重碰撞后缀 `-${n}`）溯源 ID：
+ * `groupId` 可为数字群号、`group-main`、英文 slug 或中文群名；末尾为 6-16 位十六进制指纹哈希及可选碰撞序号
+ * （6-7 位时要求含至少 1 位数字，避免误把普通英文单词如 `[next-decade]` 认成哈希）。
+ */
+const OFFLINE_HASH_SOURCE_ID_RE =
+	/^[a-zA-Z0-9\u4e00-\u9fa5][a-zA-Z0-9\u4e00-\u9fa5._-]*-(?:[0-9a-f]{8,16}|(?=[a-f]*\d)[0-9a-f]{6,7})(?:-\d{1,3})?$/;
+
+export function isLikelySourceId(candidate: string, knownSourceIds?: ReadonlySet<string>): boolean {
+	if (!candidate) return false;
+	if (knownSourceIds?.has(candidate)) return true;
+	if (/\s/.test(candidate)) return false;
+	return PREFIXED_SOURCE_ID_RE.test(candidate) || OFFLINE_HASH_SOURCE_ID_RE.test(candidate);
+}
+
+export type SourceLinkSegment =
+	| { kind: "text"; text: string; offset: number }
+	| { kind: "source"; id: string; raw: string; offset: number };
+
+/**
+ * 扫描正文中的 `[sourceId]` 片段：
+ * - 命中当前局势书已知 `coveredSourceIds`/`sourceRefs`，或符合 NTQQ/离线指纹 `groupId-hexHash` 格式时转为可点击胶囊；
+ * - 自动跳过 Markdown 链接 `[文字](url)` 及普通中文方括号标记（如 `[未定案草案]`）。
+ */
+export function parseSourceLinkSegments(
+	text: string,
+	knownSourceIds?: ReadonlySet<string>,
+): SourceLinkSegment[] {
+	const segments: SourceLinkSegment[] = [];
+	const bracketRe = /\[([^[\]\r\n]+)\]/g;
+	let cursor = 0;
+	for (const match of text.matchAll(bracketRe)) {
+		const index = match.index ?? -1;
+		const inner = match[1];
+		if (index < 0 || !inner) continue;
+		const end = index + match[0].length;
+		// 紧跟 `(` 时属于 Markdown 链接 `[label](url)`，不拦截为溯源胶囊
+		if (text[end] === "(") continue;
+		if (!isLikelySourceId(inner, knownSourceIds)) continue;
+		if (index > cursor) {
+			segments.push({ kind: "text", text: text.slice(cursor, index), offset: cursor });
+		}
+		segments.push({ kind: "source", id: inner, raw: match[0], offset: index });
+		cursor = end;
+	}
+	if (cursor < text.length) {
+		segments.push({ kind: "text", text: text.slice(cursor), offset: cursor });
+	}
+	return segments.length > 0 ? segments : [{ kind: "text", text, offset: 0 }];
+}
+
+/** 将正文中的 `[sourceId]` 引用自动渲染为可点溯源胶囊 */
 function TextWithSourceLinks({
 	text,
+	knownSourceIds,
 	onOpen,
 }: {
 	text: string;
+	knownSourceIds?: ReadonlySet<string>;
 	onOpen: (sourceId: string, highlightQuote?: string) => void;
 }) {
-	const parts = useMemo(() => text.split(/(\[(?:qq|src|msg|ev)[-_a-zA-Z0-9]+\])/g), [text]);
+	const segments = useMemo(
+		() => parseSourceLinkSegments(text, knownSourceIds),
+		[text, knownSourceIds],
+	);
 	return (
 		<>
-			{parts.map((part, idx) => {
-				const match = part.match(/^\[((?:qq|src|msg|ev)[-_a-zA-Z0-9]+)\]$/);
-				if (!match?.[1]) return <Fragment key={idx}>{part}</Fragment>;
-				const id = match[1];
+			{segments.map((seg) => {
+				if (seg.kind === "text") return <Fragment key={`t-${seg.offset}`}>{seg.text}</Fragment>;
 				return (
 					<button
-						key={`${id}-${idx}`}
+						key={`s-${seg.id}-${seg.offset}`}
 						type="button"
-						onClick={() => onOpen(id)}
+						onClick={() => onOpen(seg.id)}
 						className="mx-0.5 inline-flex cursor-pointer items-center rounded border border-accent/30 bg-accent/8 px-1.5 py-0.5 font-mono text-ui-11 text-accent transition-colors hover:border-accent hover:bg-accent/15"
 					>
-						{part}
+						{seg.raw}
 					</button>
 				);
 			})}
@@ -163,6 +220,28 @@ export function BriefingPanel() {
 		briefings.find((b) => b.id === selectedBriefingId) ?? briefings[0] ?? null;
 	const ledger = overview?.rollingLedger ?? [];
 	const cursors = overview?.cursors ?? [];
+
+	const knownSourceIds = useMemo(() => {
+		const ids = new Set<string>();
+		if (!currentBriefing) return ids;
+		for (const id of currentBriefing.coveredSourceIds ?? []) {
+			const trimmed = id.trim();
+			if (trimmed) ids.add(trimmed);
+		}
+		for (const item of currentBriefing.progressItems ?? []) {
+			for (const id of item.sourceRefs ?? []) {
+				const trimmed = id.trim();
+				if (trimmed) ids.add(trimmed);
+			}
+		}
+		for (const check of currentBriefing.intelChecks ?? []) {
+			for (const id of check.sourceRefs ?? []) {
+				const trimmed = id.trim();
+				if (trimmed) ids.add(trimmed);
+			}
+		}
+		return ids;
+	}, [currentBriefing]);
 
 	const filteredLedger = useMemo(() => {
 		const list =
@@ -314,6 +393,7 @@ export function BriefingPanel() {
 								<p className="mt-2 select-text text-ui-14 leading-relaxed text-ink">
 									<TextWithSourceLinks
 										text={currentBriefing.headline}
+										knownSourceIds={knownSourceIds}
 										onOpen={(id, q) => void openSourceContext(id, q)}
 									/>
 								</p>
@@ -341,6 +421,7 @@ export function BriefingPanel() {
 													<p className="mt-1 select-text text-ui-13 leading-relaxed text-ink-2">
 														<TextWithSourceLinks
 															text={item.detail}
+															knownSourceIds={knownSourceIds}
 															onOpen={(id, q) => void openSourceContext(id, q)}
 														/>
 													</p>
@@ -362,6 +443,7 @@ export function BriefingPanel() {
 								<p className="select-text whitespace-pre-wrap text-ui-13 leading-relaxed text-ink-2">
 									<TextWithSourceLinks
 										text={currentBriefing.diplomacySummary}
+										knownSourceIds={knownSourceIds}
 										onOpen={(id, q) => void openSourceContext(id, q)}
 									/>
 								</p>
@@ -402,6 +484,7 @@ export function BriefingPanel() {
 													<p className="mt-1 select-text text-ui-12 leading-relaxed text-ink-2">
 														<TextWithSourceLinks
 															text={check.verdict}
+															knownSourceIds={knownSourceIds}
 															onOpen={(id, q) => void openSourceContext(id, q)}
 														/>
 													</p>
@@ -432,6 +515,7 @@ export function BriefingPanel() {
 								<p className="select-text whitespace-pre-wrap text-ui-13 leading-relaxed text-ink-2">
 									<TextWithSourceLinks
 										text={currentBriefing.strategicJudgment}
+										knownSourceIds={knownSourceIds}
 										onOpen={(id, q) => void openSourceContext(id, q)}
 									/>
 								</p>
@@ -516,7 +600,11 @@ export function BriefingPanel() {
 												</span>
 											</div>
 											<p className="mt-1.5 select-text text-ui-13 leading-relaxed text-ink">
-												{entry.summary}
+												<TextWithSourceLinks
+													text={entry.summary}
+													knownSourceIds={new Set(entry.sourceRefs ?? [])}
+													onOpen={(id, q) => void openSourceContext(id, q)}
+												/>
 											</p>
 											<SourceRefPills
 												refs={entry.sourceRefs}

@@ -57,7 +57,7 @@ vi.mock("../settings/providers/LoginDialog", () => ({
 }));
 
 import { useUiPreferencesStore } from "../../stores/ui-preferences";
-import { WelcomeOnboardingDialog } from "./WelcomeOnboardingDialog";
+import { slugProviderId, WelcomeOnboardingDialog } from "./WelcomeOnboardingDialog";
 
 function makeNtqqSnapshot(qqUin: string | null, ready = false): NtqqStatusSnapshot {
 	return {
@@ -239,5 +239,72 @@ describe("WelcomeOnboardingDialog", () => {
 		const dialog = document.body.querySelector('[role="dialog"]');
 		expect(dialog).not.toBeNull();
 		expect(dialog?.querySelector("#wenyou-qq-uin-input")).not.toBeNull();
+	});
+
+	it("中文自定义中转站名称生成互不冲突且幂等的 providerId，不再全部坍缩为 custom-relay", async () => {
+		const idA = slugProviderId("硅基流动");
+		const idB = slugProviderId("火山方舟");
+		expect(idA).not.toBe("custom-relay");
+		expect(idB).not.toBe("custom-relay");
+		expect(idA).not.toBe(idB);
+		expect(slugProviderId("硅基流动")).toBe(idA);
+		expect(slugProviderId("硅基流动 Pro")).not.toBe(slugProviderId("火山方舟 Pro"));
+		expect(idA).toMatch(/^[a-z0-9][a-z0-9-_]*$/i);
+		expect(idB).toMatch(/^[a-z0-9][a-z0-9-_]*$/i);
+
+		await act(async () => {
+			root.render(<WelcomeOnboardingDialog />);
+		});
+		const dialog = document.body.querySelector('[role="dialog"]');
+		expect(dialog).not.toBeNull();
+		const customTab = [...(dialog?.querySelectorAll("button") ?? [])].find(
+			(b) => b.textContent === "自定义中转站",
+		);
+		await act(async () => {
+			customTab?.click();
+		});
+		const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+		const inputs = dialog?.querySelectorAll<HTMLInputElement>("input") ?? [];
+		await act(async () => {
+			setter?.call(inputs[0], "硅基流动");
+			inputs[0]?.dispatchEvent(new Event("input", { bubbles: true }));
+			setter?.call(inputs[2], "https://api.siliconflow.cn/v1");
+			inputs[2]?.dispatchEvent(new Event("input", { bubbles: true }));
+			setter?.call(inputs[3], "deepseek-ai/DeepSeek-V3");
+			inputs[3]?.dispatchEvent(new Event("input", { bubbles: true }));
+		});
+		const saveCustomBtn = [...(dialog?.querySelectorAll("button") ?? [])].find(
+			(b) => b.textContent === "保存中转站",
+		);
+		await act(async () => {
+			saveCustomBtn?.click();
+		});
+		expect(settingsState.addCustom).toHaveBeenCalledWith(expect.objectContaining({ id: idA, name: "硅基流动" }));
+	});
+
+	it("内置厂商 saveKey 失败时展示真实报错、不清空已输入的 API Key 且不显示成功提示", async () => {
+		settingsState.saveKey.mockRejectedValueOnce(
+			new Error("Error invoking remote method 'saveApiKey': Error: 磁盘写入权限不足"),
+		);
+		await act(async () => {
+			root.render(<WelcomeOnboardingDialog />);
+		});
+		const dialog = document.body.querySelector('[role="dialog"]');
+		expect(dialog).not.toBeNull();
+		const keyInput = dialog?.querySelector<HTMLInputElement>('input[type="password"]');
+		expect(keyInput).not.toBeNull();
+		const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+		await act(async () => {
+			setter?.call(keyInput, "sk-keep-me-on-error");
+			keyInput?.dispatchEvent(new Event("input", { bubbles: true }));
+		});
+		const saveBtn = [...(dialog?.querySelectorAll("button") ?? [])].find((b) => b.textContent === "保存配置");
+		await act(async () => {
+			saveBtn?.click();
+		});
+		expect(dialog?.textContent).toContain("磁盘写入权限不足");
+		expect(dialog?.textContent).not.toContain("已保存 DeepSeek 配置");
+		expect(keyInput?.value).toBe("sk-keep-me-on-error");
+		expect(sessionsLoadModels).not.toHaveBeenCalled();
 	});
 });

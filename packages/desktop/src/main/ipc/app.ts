@@ -2,7 +2,7 @@ import { writeFile } from "node:fs/promises";
 import { type PiBackend, validateProjectDirectory } from "@percho/backend";
 import { APP_CHANNELS, environmentEntityRef } from "@percho/shared";
 import { app, BrowserWindow, dialog, nativeTheme, shell } from "electron";
-import { releaseChannel } from "../app-identity";
+import { releaseChannel, supportsUpdates } from "../app-identity";
 import { pickBackgroundImage } from "../background";
 import { cancelComposerEditMenu, showComposerEditMenu } from "../composer-edit-menu";
 import { ensureDailyDir } from "../daily";
@@ -28,11 +28,11 @@ import { ackQuitDialog, setQuitGuard } from "../window";
 import { registerInvokeHandlers } from "./invoke";
 
 /** 项目仓库地址（帮助跳转 + 关于页） */
-const REPO_URL = "https://github.com/Jaxton07/percho";
+const REPO_URL = "https://github.com/anyu0804/wenyou-pro";
 
 /** Native file actions must never interpret a remote UI reference as a local path. */
 function localDirectory(cwd: string | null): string | null {
-	if (cwd === null) return null;
+	if (!cwd?.trim()) return null;
 	const reference = environmentEntityRef(cwd);
 	if (reference.environment.kind !== "local") throw new Error("Remote paths cannot be opened by the desktop");
 	return reference.id;
@@ -98,6 +98,7 @@ export function registerAppIpc(backend: PiBackend): void {
 		getAppInfo: (): import("@percho/shared").AppInfo => ({
 			name: app.getName(),
 			releaseChannel,
+			supportsUpdates,
 			version: app.getVersion(),
 			electron: process.versions.electron ?? "",
 			chrome: process.versions.chrome ?? "",

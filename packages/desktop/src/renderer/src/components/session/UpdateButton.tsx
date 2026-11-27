@@ -1,5 +1,6 @@
 import { getPi } from "../../api";
 import { useT } from "../../i18n";
+import { buildReleaseTagUrl } from "../../lib/release-links";
 import { useUpdateStore } from "../../stores/update";
 import { DownloadIcon } from "../icons";
 import { Tooltip } from "../ui/Tooltip";
@@ -18,7 +19,7 @@ export function UpdateButton() {
 
 	const openReleasePage = async (version: string) => {
 		const info = await getPi().getAppInfo();
-		void getPi().openExternal({ url: `${info.repoUrl}/releases/tag/v${version}` });
+		void getPi().openExternal({ url: buildReleaseTagUrl(info.repoUrl, version) });
 	};
 
 	const label =

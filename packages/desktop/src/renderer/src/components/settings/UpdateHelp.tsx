@@ -2,6 +2,7 @@ import type { UpdateDiagnosticsInfo } from "@percho/shared";
 import { useState } from "react";
 import { getPi } from "../../api";
 import { useT } from "../../i18n";
+import { buildReleasesUrl } from "../../lib/release-links";
 import { pushToast } from "../../stores/toasts";
 
 /** 导出为用户显式操作，无自动上传；不把缺少安装结果当作确定失败。 */
@@ -47,7 +48,7 @@ export function UpdateHelp({
 				<button
 					type="button"
 					className="rounded-lg px-2 py-1 text-ink-faint transition-colors hover:bg-hover hover:text-ink-2"
-					onClick={() => void getPi().openExternal({ url: `${repoUrl}/releases/latest` })}
+					onClick={() => void getPi().openExternal({ url: buildReleasesUrl(repoUrl) })}
 				>
 					{t("update.manualInstaller")}
 				</button>

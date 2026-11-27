@@ -96,13 +96,16 @@ function cyclesIn(graph: Map<string, string[]>): string[][] {
 	for (const node of graph.keys()) if (!done.has(node)) visit(node);
 	return cycles;
 }
+function toPosixRelative(root: string, file: string): string {
+	return relative(root, file).replace(/\\/g, "/");
+}
 function fixture(domain: string, sources: Record<string, string>) {
 	const root = resolve("/virtual", domain);
 	const result = buildGraph(new Map(Object.entries(sources).map(([name, text]) => [join(root, name), text])));
 	return {
 		...result,
 		root,
-		cycles: cyclesIn(result.graph).map((cycle) => cycle.map((file) => relative(root, file))),
+		cycles: cyclesIn(result.graph).map((cycle) => cycle.map((file) => toPosixRelative(root, file))),
 	};
 }
 const actual = DOMAINS.map((domain) => ({ ...domain, ...buildGraph(sourcesIn(domain.root)) }));
@@ -112,7 +115,7 @@ describe("main/preload/renderer production relative imports are acyclic", () => 
 		expect(domain.graph.size, `${domain.name}: source glob is empty`).toBeGreaterThan(0);
 		expect(domain.parsedSpecifiers, `${domain.name}: no actual imports parsed`).toBeGreaterThan(0);
 		expect(
-			cyclesIn(domain.graph).map((cycle) => cycle.map((file) => relative(domain.root, file)).join(" → ")),
+			cyclesIn(domain.graph).map((cycle) => cycle.map((file) => toPosixRelative(domain.root, file)).join(" → ")),
 		).toEqual([]);
 	});
 	it("combined production graphs have actual resolved edges; single-file preload may legitimately have zero", () => {
@@ -158,7 +161,7 @@ describe("same graph parser counterexamples (including preload-style relative cy
 			expect(example.parsedSpecifiers).toBe(6);
 			expect(example.edgeCount).toBe(4);
 			expect(
-				example.graph.get(join(example.root, "index.ts"))?.map((file) => relative(example.root, file)),
+				example.graph.get(join(example.root, "index.ts"))?.map((file) => toPosixRelative(example.root, file)),
 			).toEqual(["types.d.ts", "boot.ts", "folder/index.tsx", "lazy.ts"]);
 			expect(example.cycles).toEqual([]);
 		},

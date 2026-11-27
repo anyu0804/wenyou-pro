@@ -23,7 +23,7 @@ import { UpdateHelp } from "./UpdateHelp";
 
 const props = {
 	windows: true,
-	repoUrl: "https://github.com/Jaxton07/percho",
+	repoUrl: "https://github.com/anyu0804/wenyou-pro",
 	diagnostics: null as UpdateDiagnosticsInfo | null,
 };
 beforeEach(() => {
@@ -83,10 +83,14 @@ describe("update recovery help", () => {
 		await flush();
 		expect(mock.toast).toHaveBeenCalledWith("error", "update.diagnosticsFailed", "permission denied");
 	});
-	it("manual download points to the official latest release, not a local executable", () => {
+	it("manual download points to Wenyou Pro releases page, not upstream or a local executable", () => {
 		buttons(UpdateHelp(props))[1]?.onClick();
 		expect(mock.openExternal).toHaveBeenCalledWith({
-			url: "https://github.com/Jaxton07/percho/releases/latest",
+			url: "https://github.com/anyu0804/wenyou-pro/releases",
+		});
+		buttons(UpdateHelp({ ...props, repoUrl: "" }))[1]?.onClick();
+		expect(mock.openExternal).toHaveBeenLastCalledWith({
+			url: "https://github.com/anyu0804/wenyou-pro/releases",
 		});
 	});
 });

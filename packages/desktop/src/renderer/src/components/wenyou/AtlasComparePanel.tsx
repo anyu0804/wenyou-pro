@@ -473,14 +473,18 @@ export function AtlasComparePanel() {
 	const [bridgeStatus, setBridgeStatus] = useState<string>("等待沙盘连接");
 	const [selectionHint, setSelectionHint] = useState<string | null>(null);
 	const [bridgeBusy, setBridgeBusy] = useState(false);
+	const mountedRef = useRef(true);
 	const cwdRef = useRef(cwd);
 	cwdRef.current = cwd;
+	const worldGenRef = useRef(0);
 	const bridgeReadyRef = useRef(bridgeReady);
 	bridgeReadyRef.current = bridgeReady;
 	const snapshotsSeqRef = useRef(0);
 	const autoRestoreSeqRef = useRef(0);
+	const loadSnapshotSeqRef = useRef(0);
 	const pendingExportRef = useRef(false);
 	const pendingImageTheaterRef = useRef<{
+		targetCwd: string | null;
 		name: string;
 		imageUrl: string;
 		imageRelPath: string;
@@ -492,6 +496,14 @@ export function AtlasComparePanel() {
 	const queuedAutosaveRef = useRef<{ targetCwd: string; projectJson: string } | null>(null);
 	const bridgeTimerRef = useRef<number | null>(null);
 	const iframeRef = useRef<HTMLIFrameElement | null>(null);
+	const sandboxSessionKeyRef = useRef("");
+
+	useEffect(() => {
+		mountedRef.current = true;
+		return () => {
+			mountedRef.current = false;
+		};
+	}, []);
 
 	const clearBridgeTimer = useCallback(() => {
 		if (bridgeTimerRef.current !== null) {
@@ -518,8 +530,10 @@ export function AtlasComparePanel() {
 	// 切换世界时立即清空全部跨世界桥接状态、在途队列与快照列表，防串档写盘或错乱展示
 	useEffect(() => {
 		clearBridgeTimer();
+		worldGenRef.current += 1;
 		snapshotsSeqRef.current += 1;
 		autoRestoreSeqRef.current += 1;
+		loadSnapshotSeqRef.current += 1;
 		pendingImageTheaterRef.current = null;
 		queuedAutosaveRef.current = null;
 		pendingExportRef.current = false;
@@ -636,25 +650,34 @@ export function AtlasComparePanel() {
 
 	const handleImportMapFile = async () => {
 		if (!rawCwd || !localWorkspace || importingFile) return;
+		const requestCwd = cwd;
+		const requestRawCwd = rawCwd;
+		const requestWorldGen = worldGenRef.current;
 		setImportingFile(true);
 		try {
-			const imported = await getPi().wenyouImportMapFileDialog({ cwd: rawCwd });
-			if (!imported) return;
+			const imported = await getPi().wenyouImportMapFileDialog({ cwd: requestRawCwd });
+			if (!mountedRef.current || !imported) return;
 			pushExtensionToast("info", `已导入至 ${imported.relPath}`, "Wenyou Pro");
-			await refreshOverview(cwd, { silent: true });
+			if (cwdRef.current !== requestCwd || worldGenRef.current !== requestWorldGen) return;
+			await refreshOverview(requestCwd, { silent: true });
+			if (!mountedRef.current || cwdRef.current !== requestCwd || worldGenRef.current !== requestWorldGen) {
+				return;
+			}
 			await reloadSnapshots();
 		} catch (error) {
+			if (!mountedRef.current) return;
 			pushExtensionToast(
 				"error",
 				`导入地图失败：${error instanceof Error ? error.message : String(error)}`,
 				"Wenyou Pro",
 			);
 		} finally {
-			setImportingFile(false);
+			if (mountedRef.current) setImportingFile(false);
 		}
 	};
 
 	const sanitizedPixiUrl = useMemo(() => sanitizePixiSandboxUrl(pixiUrl), [pixiUrl]);
+	sandboxSessionKeyRef.current = `${cwd ?? ""}::${sanitizedPixiUrl ?? ""}::${pixiNonce}::${mapMode}`;
 
 	const isBuiltinSandbox = useMemo(
 		() => Boolean(sanitizedPixiUrl && isBuiltinSandboxUrl(sanitizedPixiUrl)),
@@ -765,7 +788,8 @@ export function AtlasComparePanel() {
 				queuedAutosaveRef.current = { targetCwd, projectJson };
 				return;
 			}
-			if (cwdRef.current !== targetCwd) return;
+			const requestWorldGen = worldGenRef.current;
+			if (!mountedRef.current || cwdRef.current !== targetCwd) return;
 			autosaveInFlightRef.current = true;
 			try {
 				const saved = await getExecutionApi(targetCwd).wenyouSaveMapSnapshot({
@@ -773,12 +797,12 @@ export function AtlasComparePanel() {
 					fileName: "active-sandbox.json",
 					content: projectJson,
 				});
-				if (cwdRef.current === targetCwd) {
+				if (mountedRef.current && cwdRef.current === targetCwd && worldGenRef.current === requestWorldGen) {
 					setBridgeStatus(`已自动同步至 ${saved.relPath}`);
 					void reloadSnapshots();
 				}
 			} catch (err) {
-				if (cwdRef.current === targetCwd) {
+				if (mountedRef.current && cwdRef.current === targetCwd && worldGenRef.current === requestWorldGen) {
 					const msg = err instanceof Error ? err.message : String(err);
 					setBridgeStatus(`自动同步失败：${msg}`);
 				}
@@ -786,7 +810,7 @@ export function AtlasComparePanel() {
 				autosaveInFlightRef.current = false;
 				const nextQueued = queuedAutosaveRef.current;
 				queuedAutosaveRef.current = null;
-				if (nextQueued && cwdRef.current === nextQueued.targetCwd) {
+				if (mountedRef.current && nextQueued && cwdRef.current === nextQueued.targetCwd) {
 					void flushAutosave(nextQueued.targetCwd, nextQueued.projectJson);
 				}
 			}
@@ -797,15 +821,18 @@ export function AtlasComparePanel() {
 	const attemptAutoRestoreSnapshot = useCallback(
 		async (targetCwd: string) => {
 			const seq = ++autoRestoreSeqRef.current;
+			const requestWorldGen = worldGenRef.current;
+			const requestSessionKey = sandboxSessionKeyRef.current;
+			const isStale = () =>
+				!mountedRef.current ||
+				seq !== autoRestoreSeqRef.current ||
+				cwdRef.current !== targetCwd ||
+				worldGenRef.current !== requestWorldGen ||
+				sandboxSessionKeyRef.current !== requestSessionKey ||
+				Boolean(pendingImageTheaterRef.current);
 			try {
 				const list = await getExecutionApi(targetCwd).wenyouListMapSnapshots({ cwd: targetCwd });
-				if (
-					seq !== autoRestoreSeqRef.current ||
-					cwdRef.current !== targetCwd ||
-					pendingImageTheaterRef.current
-				) {
-					return;
-				}
+				if (isStale()) return;
 				const activeFile = list.find(
 					(s) =>
 						s.format === "wenyou-project" &&
@@ -820,13 +847,7 @@ export function AtlasComparePanel() {
 					cwd: targetCwd,
 					relPath: target.relPath,
 				});
-				if (
-					seq !== autoRestoreSeqRef.current ||
-					cwdRef.current !== targetCwd ||
-					pendingImageTheaterRef.current
-				) {
-					return;
-				}
+				if (isStale()) return;
 				silentAutoLoadRef.current = true;
 				const ok = sendHostMessage({
 					protocol: WENYOU_MAP_BRIDGE_PROTOCOL,
@@ -891,12 +912,25 @@ export function AtlasComparePanel() {
 
 	const handleLoadSnapshotToSandbox = async () => {
 		if (!cwd || !selectedSandboxSnapshot || bridgeBusy) return;
+		const requestCwd = cwd;
+		const requestRelPath = selectedSandboxSnapshot;
+		const requestWorldGen = worldGenRef.current;
+		const requestSeq = ++loadSnapshotSeqRef.current;
+		const requestSessionKey = sandboxSessionKeyRef.current;
+		const isStale = () =>
+			!mountedRef.current ||
+			cwdRef.current !== requestCwd ||
+			worldGenRef.current !== requestWorldGen ||
+			loadSnapshotSeqRef.current !== requestSeq ||
+			sandboxSessionKeyRef.current !== requestSessionKey;
 		setBridgeBusy(true);
 		try {
-			const raw = await getExecutionApi(cwd).wenyouReadMapSnapshotRaw({
-				cwd,
-				relPath: selectedSandboxSnapshot,
+			const raw = await getExecutionApi(requestCwd).wenyouReadMapSnapshotRaw({
+				cwd: requestCwd,
+				relPath: requestRelPath,
 			});
+			// 异步读取期间若已切换世界、卸载或重建沙盘，立即中止，绝不向新世界 iframe 发送 forceOverwrite load_project
+			if (isStale()) return;
 			const ok = sendHostMessage({
 				protocol: WENYOU_MAP_BRIDGE_PROTOCOL,
 				type: "load_project",
@@ -915,6 +949,7 @@ export function AtlasComparePanel() {
 			setBridgeStatus(`正在载入 ${raw.fileName}…`);
 			armBridgeTimeout("载入快照超时，请确认沙盘已更新至支持桥接的版本");
 		} catch (error) {
+			if (isStale()) return;
 			clearBridgeTimer();
 			setBridgeBusy(false);
 			pushExtensionToast(
@@ -975,8 +1010,10 @@ export function AtlasComparePanel() {
 					if (pendingImageTheaterRef.current) {
 						const req = pendingImageTheaterRef.current;
 						pendingImageTheaterRef.current = null;
-						autoRestoredKeyRef.current = restoreKey;
-						dispatchCreateImageTheater(req);
+						if (req.targetCwd === cwdRef.current) {
+							autoRestoredKeyRef.current = restoreKey;
+							dispatchCreateImageTheater(req);
+						}
 					} else if (
 						data.type === "ready" &&
 						data.payload.activeMapId === null &&
@@ -1014,7 +1051,9 @@ export function AtlasComparePanel() {
 					if (pendingImageTheaterRef.current) {
 						const req = pendingImageTheaterRef.current;
 						pendingImageTheaterRef.current = null;
-						dispatchCreateImageTheater(req);
+						if (req.targetCwd === cwdRef.current) {
+							dispatchCreateImageTheater(req);
+						}
 					}
 					break;
 				}
@@ -1053,6 +1092,7 @@ export function AtlasComparePanel() {
 					}
 					if (!shouldSave || !cwd || !matchesWorkspaceKey(data.payload.workspaceKey)) break;
 					const targetCwd = cwd;
+					const exportWorldGen = worldGenRef.current;
 					const fileName = defaultExportFileName(overview?.currentEra);
 					void getExecutionApi(targetCwd)
 						.wenyouSaveMapSnapshot({
@@ -1061,14 +1101,21 @@ export function AtlasComparePanel() {
 							content: data.payload.projectJson,
 						})
 						.then(async (saved) => {
-							if (cwdRef.current !== targetCwd) return;
+							if (!mountedRef.current || cwdRef.current !== targetCwd || worldGenRef.current !== exportWorldGen) {
+								return;
+							}
 							setBridgeStatus(`已存回 ${saved.relPath}`);
 							pushExtensionToast("info", `沙盘工程已存回 ${saved.relPath}`, "Wenyou Pro");
 							await refreshOverview(targetCwd, { silent: true });
+							if (!mountedRef.current || cwdRef.current !== targetCwd || worldGenRef.current !== exportWorldGen) {
+								return;
+							}
 							await reloadSnapshots();
 						})
 						.catch((err) => {
-							if (cwdRef.current !== targetCwd) return;
+							if (!mountedRef.current || cwdRef.current !== targetCwd || worldGenRef.current !== exportWorldGen) {
+								return;
+							}
 							const msg = err instanceof Error ? err.message : String(err);
 							setBridgeStatus(`存回失败：${msg}`);
 							pushExtensionToast("error", `存回工作区失败：${msg}`, "Wenyou Pro");
@@ -1134,6 +1181,7 @@ export function AtlasComparePanel() {
 		if (!localWorkspace || !leftMap || !leftSrc) return;
 		autoRestoreSeqRef.current += 1;
 		pendingImageTheaterRef.current = {
+			targetCwd: cwd,
 			name: leftMap.name,
 			imageUrl: leftSrc,
 			imageRelPath: leftMap.relPath,

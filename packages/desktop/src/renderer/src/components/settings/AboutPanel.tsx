@@ -2,6 +2,7 @@ import type { AppInfo, UpdateDiagnosticsInfo } from "@percho/shared";
 import { useEffect, useState } from "react";
 import { getPi } from "../../api";
 import { useT } from "../../i18n";
+import { buildReleasesUrl, buildReleaseTagUrl, DEFAULT_REPO_URL } from "../../lib/release-links";
 import { useUpdateStore } from "../../stores/update";
 import { SessionSwitchDiagnostics } from "./SessionSwitchDiagnostics";
 import { UpdateHelp } from "./UpdateHelp";
@@ -11,8 +12,10 @@ export function AboutPanel() {
 	const t = useT();
 	const [info, setInfo] = useState<AppInfo | null>(null);
 	const [diagnostics, setDiagnostics] = useState<UpdateDiagnosticsInfo | null>(null);
+	const [openedReleasesHint, setOpenedReleasesHint] = useState(false);
 	const state = useUpdateStore((s) => s.state);
 	const separateChannel = info?.releaseChannel === "beta" || info?.releaseChannel === "dev";
+	const manualUpdatesOnly = !separateChannel && info?.supportsUpdates === false;
 
 	useEffect(() => {
 		let cancelled = false;
@@ -53,11 +56,19 @@ export function AboutPanel() {
 							? t("update.upToDate")
 							: state?.phase === "error"
 								? t("update.checkFailed", { message: state.message })
-								: null;
+								: openedReleasesHint
+									? t("update.openedReleases")
+									: null;
 
 	const openReleasePage = async (version: string) => {
 		const appInfo = info ?? (await getPi().getAppInfo());
-		void getPi().openExternal({ url: `${appInfo.repoUrl}/releases/tag/v${version}` });
+		void getPi().openExternal({ url: buildReleaseTagUrl(appInfo.repoUrl, version) });
+	};
+
+	const openReleasesPage = async () => {
+		const appInfo = info ?? (await getPi().getAppInfo());
+		setOpenedReleasesHint(true);
+		void getPi().openExternal({ url: buildReleasesUrl(appInfo.repoUrl) });
 	};
 
 	const buttonLabel =
@@ -65,7 +76,9 @@ export function AboutPanel() {
 			? t("update.installNow")
 			: state?.phase === "available" && state.manual
 				? t("update.goDownload")
-				: t("update.checkForUpdates");
+				: manualUpdatesOnly
+					? t("update.checkReleases")
+					: t("update.checkForUpdates");
 
 	const displayAppName =
 		info?.name && (info.name.startsWith("Wenyou Pro ") || info.name.startsWith("司命 · 文游 Pro"))
@@ -139,9 +152,27 @@ export function AboutPanel() {
 					disabled={separateChannel}
 					className="rounded-lg border border-border px-4 py-1.5 text-ui-13 text-ink-2 transition-colors hover:border-border-strong hover:bg-hover hover:text-ink"
 					onClick={() => {
-						if (state?.phase === "downloaded") void getPi().installUpdate();
-						else if (state?.phase === "available" && state.manual) void openReleasePage(state.version);
-						else void getPi().checkForUpdates();
+						if (state?.phase === "downloaded") {
+							void getPi().installUpdate();
+							return;
+						}
+						if (state?.phase === "available" && state.manual) {
+							void openReleasePage(state.version);
+							return;
+						}
+						if (manualUpdatesOnly) {
+							void openReleasesPage();
+							return;
+						}
+						void (async () => {
+							const appInfo = info ?? (await getPi().getAppInfo().catch(() => null));
+							if (appInfo?.supportsUpdates === false) {
+								setOpenedReleasesHint(true);
+								void getPi().openExternal({ url: buildReleasesUrl(appInfo.repoUrl) });
+								return;
+							}
+							await getPi().checkForUpdates();
+						})();
 					}}
 				>
 					{separateChannel ? t("update.separateChannel") : buttonLabel}
@@ -150,7 +181,7 @@ export function AboutPanel() {
 					type="button"
 					className="rounded-lg border border-border px-4 py-1.5 text-ui-13 text-ink-2 transition-colors hover:border-border-strong hover:bg-hover hover:text-ink"
 					onClick={() => {
-						void getPi().openExternal({ url: info?.repoUrl || upstreamUrl });
+						void getPi().openExternal({ url: info?.repoUrl || DEFAULT_REPO_URL });
 					}}
 				>
 					{t("settings.about.sourceCode")}

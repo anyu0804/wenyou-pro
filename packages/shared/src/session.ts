@@ -428,6 +428,8 @@ export interface GitBranches {
 /** 应用信息（设置 → 关于页展示，来自主进程） */
 export interface AppInfo {
 	releaseChannel?: "stable" | "beta" | "dev";
+	/** 当前构建是否支持应用内自动更新（离线优先分发包或 dev/beta 通道为 false） */
+	supportsUpdates?: boolean;
 	/** 应用名 */
 	name: string;
 	/** 应用版本 */

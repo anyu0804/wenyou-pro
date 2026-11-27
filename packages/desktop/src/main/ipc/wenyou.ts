@@ -28,6 +28,31 @@ const ALLOWED_IMPORT_MAP_EXTS = new Set([
 	".map",
 ]);
 
+function stripControlChars(input: string): string {
+	let out = "";
+	for (let i = 0; i < input.length; i += 1) {
+		const code = input.charCodeAt(i);
+		out += code < 32 ? "-" : input[i];
+	}
+	return out;
+}
+
+/** 清洗另存为 `.docx` 的默认文件名：去除跨平台非法路径字符、保留合法中英文并兜底保留名 */
+export function sanitizeDocxFileName(rawName: string | undefined, fallback = "国策文书.docx"): string {
+	const trimmed = (rawName ?? "").trim();
+	const withoutExt = trimmed.replace(/\.docx$/i, "");
+	const cleaned = stripControlChars(withoutExt)
+		.replace(/[\\/:*?"<>|]+/g, "-")
+		.replace(/\s*-\s*/g, "-")
+		.replace(/-+/g, "-")
+		.replace(/^[\s.-]+|[\s.-]+$/g, "")
+		.slice(0, 100)
+		.replace(/[\s.]+$/g, "");
+	if (!cleaned) return fallback;
+	const safeStem = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(cleaned) ? `${cleaned}-doc` : cleaned;
+	return `${safeStem}.docx`;
+}
+
 function sanitizeImportedStem(rawStem: string): string {
 	const cleaned = rawStem
 		.trim()
@@ -63,8 +88,9 @@ export function registerWenyouIpc(backend: PiBackend): void {
 				throw new Error("仅允许导出工作区内非私有目录的 .docx 文书文件");
 			}
 			const window = BrowserWindow.getAllWindows()[0];
+			const fallbackName = sanitizeDocxFileName(basename(sourceReal), "国策文书.docx");
 			const options: Electron.SaveDialogOptions = {
-				defaultPath: defaultName?.trim() || basename(sourceReal),
+				defaultPath: sanitizeDocxFileName(defaultName, fallbackName),
 				filters: [{ name: "Word Document (.docx)", extensions: ["docx"] }],
 			};
 			const result = window

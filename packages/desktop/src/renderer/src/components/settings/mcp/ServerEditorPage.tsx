@@ -48,6 +48,21 @@ const hint = "mt-1 text-ui-105 leading-relaxed text-ink-faint";
 const ghost =
 	"rounded-full px-2.5 py-1 text-ui-115 text-ink-faint transition-colors hover:bg-hover hover:text-ink-2";
 
+/**
+ * 判断 MCP stdio 命令是否为相对路径（仅拦截 `./foo`、`../bar`、带斜杠的相对子路径与盘符相对路径）；
+ * 放行 POSIX 绝对路径、Windows 盘符绝对路径（`C:\...`/`D:/...`）、UNC 路径（`\\...`）、`~/...`/`~\...` 及 bare 命令名（`npx`/`node`/`uvx`）。
+ */
+export function isRelativeMcpCommand(rawCommand: string): boolean {
+	const cmd = rawCommand.trim();
+	if (!cmd) return false;
+	if (cmd.startsWith("/")) return false;
+	if (/^[A-Za-z]:[\\/]/.test(cmd)) return false;
+	if (/^\\\\[^\\/]/.test(cmd)) return false;
+	if (cmd.startsWith("~/") || cmd.startsWith("~\\")) return false;
+	if (/^[A-Za-z]:(?![\\/])/.test(cmd)) return true;
+	return cmd === "." || cmd === ".." || cmd.includes("/") || cmd.includes("\\");
+}
+
 /** 分段控件（当前值一眼可见，比下拉直观） */
 function Segmented<T extends string>({
 	value,
@@ -117,8 +132,7 @@ export function ServerEditorPage({
 	const [error, setError] = useState<string | null>(null);
 	const [saving, setSaving] = useState(false);
 
-	const absolutePathHint =
-		form.transport === "command" && form.command.length > 0 && !form.command.startsWith("/");
+	const absolutePathHint = form.transport === "command" && isRelativeMcpCommand(form.command);
 	const projectDisabled = !cwd || !projectTrusted;
 
 	const save = async () => {
