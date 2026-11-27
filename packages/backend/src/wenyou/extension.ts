@@ -1,7 +1,7 @@
 import { defineTool, type InlineExtension } from "@earendil-works/pi-coding-agent";
 import { INTEL_RELIABILITIES, type WenyouCanvasEvent } from "@percho/shared";
 import { Type } from "typebox";
-import type { WenyouService } from "./service";
+import { DEFAULT_PULL_EXPOSURE_LIMIT, type WenyouService } from "./service";
 
 export interface WenyouExtensionOptions {
 	service: WenyouService;
@@ -92,7 +92,9 @@ const publishBriefingParams = Type.Object({
 	),
 	strategicJudgment: Type.String({ minLength: 1, description: "战略判断与下一步行动建议" }),
 	coveredSourceIds: Type.Optional(
-		Type.Array(Type.String(), { description: "本次简报覆盖的消息 sourceId；留空则自动推进全部已入库未报消息游标" }),
+		Type.Array(Type.String(), {
+			description: "本次简报覆盖的消息 sourceId；留空则仅推进本次已拉取展示窗口（或引用范围）内的游标，绝不吞掉未展示积压",
+		}),
 	),
 	ledgerUpdates: Type.Optional(
 		Type.Array(
@@ -224,8 +226,9 @@ export function makeWenyouExtension(options: WenyouExtensionOptions): InlineExte
 							historyLimit: params.historyLimit,
 							backfill: params.backfill,
 						});
-						const cap = params.maxMessages ?? 80;
+						const cap = params.maxMessages ?? DEFAULT_PULL_EXPOSURE_LIMIT;
 						const slice = res.unreportedMessages.slice(0, cap);
+						service.recordExposedPullWindow(workDir, slice, activeSessionId);
 						const cursorLines = res.cursors.map(
 							(c) =>
 								`- ${c.groupName} (${c.groupId}/${c.role}): 总入库 ${c.totalIngested}，未汇报 ${c.unreportedCount}（已报至 ${c.lastReportedSourceId ?? "无"}）`,
@@ -235,6 +238,7 @@ export function makeWenyouExtension(options: WenyouExtensionOptions): InlineExte
 								? `[${m.sourceId}] (${m.groupName}) ${m.timestamp} ${m.sender}: ${m.text}`
 								: `[${m.sourceId}] (${m.groupName}) ${m.sender}: ${m.text}`,
 						);
+						const remainingHidden = Math.max(0, res.unreportedMessages.length - slice.length);
 						const summary = [
 							`增量采集完成：新入库 ${res.newlyIngested} 条${res.ntqqSyncedCount ? `（其中本机 NTQQ 直读 ${res.ntqqSyncedCount} 条）` : ""}，跳过重复 ${res.skippedDuplicates} 条，总证据 ${res.totalEvidenceCount} 条，待汇报 ${res.unreportedMessages.length} 条。`,
 							...(res.ntqqWarning ? [`[本机 NTQQ 提示] ${res.ntqqWarning}`] : []),
@@ -246,6 +250,12 @@ export function makeWenyouExtension(options: WenyouExtensionOptions): InlineExte
 							"",
 							`未汇报新消息（展示 ${slice.length}/${res.unreportedMessages.length} 条）：`,
 							...(msgLines.length ? msgLines : ["（无新增未汇报消息）"]),
+							...(remainingHidden > 0
+								? [
+										"",
+										`提示：尚有 ${remainingHidden} 条未展示消息；发布局势简报时默认仅推进本次已展示窗口内的游标，剩余消息需继续调 wenyou_pull_qq 拉取。`,
+									]
+								: []),
 						].join("\n");
 						return {
 							content: [{ type: "text", text: summary }],
@@ -386,7 +396,9 @@ export function makeWenyouExtension(options: WenyouExtensionOptions): InlineExte
 						if (recentBriefings.length > 0) {
 							sections.push("\n## 最新局势简报（L1）");
 							for (const b of recentBriefings) {
-								sections.push(`### ${b.title} (${b.turnLabel}, ${b.id})\n核心结论：${b.headline}\n外交：${b.diplomacySummary}\n判断：${b.strategicJudgment}`);
+								sections.push(
+									`### ${b.title || b.id} (${b.turnLabel || "未定"}, ${b.id})\n核心结论：${b.headline || ""}\n外交：${b.diplomacySummary || ""}\n判断：${b.strategicJudgment || ""}`,
+								);
 							}
 						}
 
@@ -398,8 +410,9 @@ export function makeWenyouExtension(options: WenyouExtensionOptions): InlineExte
 									: `\n## 跨群滚动台账（L1，共 ${overview.rollingLedger.length} 条）`;
 							sections.push(ledgerHeader);
 							for (const entry of shownLedger) {
-								const refs = entry.sourceRefs.length ? ` [${entry.sourceRefs.join(", ")}]` : "";
-								sections.push(`- ${entry.tag}${entry.faction ? `(${entry.faction})` : ""} ${entry.summary}${refs}`);
+								const sourceRefs = Array.isArray(entry.sourceRefs) ? entry.sourceRefs : [];
+								const refs = sourceRefs.length ? ` [${sourceRefs.join(", ")}]` : "";
+								sections.push(`- ${entry.tag || "[fact]"}${entry.faction ? `(${entry.faction})` : ""} ${entry.summary || ""}${refs}`);
 							}
 						}
 
@@ -480,17 +493,22 @@ export function makeWenyouExtension(options: WenyouExtensionOptions): InlineExte
 							ledgerUpdates: params.ledgerUpdates,
 							sessionId: activeSessionId,
 						});
+						const remainHint =
+							result.remainingUnreportedCount > 0
+								? `（尚余 ${result.remainingUnreportedCount} 条未汇报消息，请继续调 wenyou_pull_qq 拉取）`
+								: "";
 						return {
 							content: [
 								{
 									type: "text",
-									text: `局势书已落盘：${result.briefing.markdownPath}（编号 ${result.briefing.id}），已推进 ${result.advancedGroups.length} 个群的汇报游标，追加台账 ${result.addedLedgerCount} 条，右侧「局势书」画布已自动打开。`,
+									text: `局势书已落盘：${result.briefing.markdownPath}（编号 ${result.briefing.id}），已推进 ${result.advancedGroups.length} 个群的汇报游标，追加台账 ${result.addedLedgerCount} 条${remainHint}，右侧「局势书」画布已自动打开。`,
 								},
 							],
 							details: {
 								wenyouAction: "publish_briefing",
 								briefingId: result.briefing.id,
 								markdownPath: result.briefing.markdownPath,
+								remainingUnreportedCount: result.remainingUnreportedCount,
 							},
 						};
 					},

@@ -35,12 +35,18 @@ function decodePercent(text: string): string {
 	}
 }
 
-/** file:// URL → 本地路径；非法 URL 退化成正则剥前缀 + 解码 */
+/** file:// URL → 本地路径；非法 URL 退化成正则剥前缀 + 解码，并处理 Windows /D:/... 前导斜杠 */
 function fromFileUrl(text: string): string {
 	try {
 		return fileURLToPath(text);
 	} catch {
-		return decodePercent(text.replace(/^file:\/\//i, ""));
+		let stripped = decodePercent(text.replace(/^file:\/\/(?:localhost)?/i, ""));
+		if (/^\/[A-Za-z]:[\\/]/.test(stripped)) {
+			stripped = stripped.slice(1);
+		} else if (/^\/[A-Za-z]:$/.test(stripped)) {
+			stripped = `${stripped.slice(1)}/`;
+		}
+		return normalize(stripped);
 	}
 }
 
@@ -70,7 +76,7 @@ export function resolvePathTarget(raw: string, cwd: string | null): string {
 	if (!cleaned) throw new Error(`Empty path: ${JSON.stringify(raw)}`);
 	let text = /^file:\/\//i.test(cleaned) ? fromFileUrl(cleaned) : decodePercent(cleaned);
 	if (text === "~") text = homedir();
-	else if (text.startsWith("~/")) text = join(homedir(), text.slice(2));
+	else if (text.startsWith("~/") || text.startsWith("~\\")) text = join(homedir(), text.slice(2));
 	const base = cwd && isAbsolute(cwd) ? cwd : process.cwd();
 	return isAbsolute(text) ? normalize(text) : resolve(base, text);
 }

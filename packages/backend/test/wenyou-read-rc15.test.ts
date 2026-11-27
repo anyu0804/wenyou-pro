@@ -630,4 +630,40 @@ print(json.dumps({
 			"7712000000000000010",
 		]);
 	});
+
+	it("line_for 对无文件名图片/表情输出干净标签，绝不拼出 None", () => {
+		const rendered = runPythonJson<{
+			imgNone: string;
+			imgEmpty: string;
+			imgNamed: string;
+			stkNone: string;
+			stkEmpty: string;
+			stkNamed: string;
+		}>(
+			`
+import json, sys
+sys.path.insert(0, sys.argv[1])
+import wenyou_read as reader
+
+entry = {"time": "11-26 10:00:00", "gname": "河朔主群", "sender": "燕王"}
+print(json.dumps({
+    "imgNone": reader.line_for(entry, {"type": 2, "text": None, "image": None, "sticker": None, "ats": []}),
+    "imgEmpty": reader.line_for(entry, {"type": 2, "text": None, "image": "   ", "sticker": None, "ats": []}),
+    "imgNamed": reader.line_for(entry, {"type": 2, "text": None, "image": "map.png", "sticker": None, "ats": []}),
+    "stkNone": reader.line_for(entry, {"type": 6, "text": None, "image": None, "sticker": None, "ats": []}),
+    "stkEmpty": reader.line_for(entry, {"type": 6, "text": None, "image": None, "sticker": "", "ats": []}),
+    "stkNamed": reader.line_for(entry, {"type": 6, "text": None, "image": None, "sticker": "微笑", "ats": []}),
+}, ensure_ascii=False))
+`,
+		);
+
+		expect(rendered.imgNone).toBe("[11-26 10:00:00] [河朔主群] 燕王: [图片]");
+		expect(rendered.imgEmpty).toBe("[11-26 10:00:00] [河朔主群] 燕王: [图片]");
+		expect(rendered.imgNamed).toBe("[11-26 10:00:00] [河朔主群] 燕王: [图片] map.png");
+		expect(rendered.stkNone).toBe("[11-26 10:00:00] [河朔主群] 燕王: [表情]");
+		expect(rendered.stkEmpty).toBe("[11-26 10:00:00] [河朔主群] 燕王: [表情]");
+		expect(rendered.stkNamed).toBe("[11-26 10:00:00] [河朔主群] 燕王: [表情] 微笑");
+		expect(rendered.imgNone).not.toContain("None");
+		expect(rendered.stkNone).not.toContain("None");
+	});
 });

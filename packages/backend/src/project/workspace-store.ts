@@ -1,6 +1,6 @@
 import { existsSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, parse, resolve, sep } from "node:path";
 import { JsonStore } from "../json-store";
 import { createLogger } from "../log";
 
@@ -138,13 +138,30 @@ export function createWorkspacesLoader(agentDir: string): () => WorkspacesConfig
 	};
 }
 
+function isFilesystemRoot(dir: string): boolean {
+	if (!dir || dir === "/" || dir === "\\") return true;
+	if (parse(dir).root === dir) return true;
+	if (/^[A-Za-z]:[\\/]?$/.test(dir)) return true;
+	if (/^\\\\[^\\/]+[\\/][^\\/]+[\\/]?$/.test(dir)) return true;
+	return false;
+}
+
+function isSameOrAncestorDir(ancestor: string, target: string): boolean {
+	const normA = process.platform === "win32" ? ancestor.replace(/\//g, "\\").toLowerCase() : ancestor;
+	const normT = process.platform === "win32" ? target.replace(/\//g, "\\").toLowerCase() : target;
+	if (normA === normT) return true;
+	const prefix = normA.endsWith("/") || normA.endsWith("\\") ? normA : normA + sep;
+	return normT.startsWith(prefix);
+}
+
 /**
  * 「允许此目录」的候选根启发式：从路径父目录向上找最近含 .git 的目录；
- * 无 .git 用父目录。home 本身/home 的祖先绝不作为根（防整个家目录放行）。
+ * 无 .git 用父目录。根目录（含 Windows 盘符根/UNC 根）、home 本身/home 的祖先绝不作为根（防整个家目录或整盘放行）。
  */
 export function suggestRootCandidate(absPath: string, home: string = homedir()): string | null {
+	const homeParent = dirname(home);
 	const unsafe = (dir: string): boolean =>
-		dir === "/" || dir === home || home.startsWith(dir + sep) || dir === dirname(home);
+		isFilesystemRoot(dir) || isSameOrAncestorDir(dir, home) || isSameOrAncestorDir(dir, homeParent);
 
 	const parent = dirname(absPath);
 	if (unsafe(parent)) return null;

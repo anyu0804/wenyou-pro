@@ -545,7 +545,7 @@ export interface NtqqSyncGroupDetail {
 	newlyIngested: number;
 	skippedDuplicates: number;
 	lastTs: number;
-	lastRowid: number;
+	lastRowid: string;
 	truncated: boolean;
 }
 

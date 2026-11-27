@@ -1,5 +1,10 @@
+import { join } from "node:path";
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const AGENT_DIR = "/agent";
+const MODELS_FILE = join(AGENT_DIR, "models.json");
+const AUTH_FILE = join(AGENT_DIR, "auth.json");
 
 const files = new Map<string, string>();
 
@@ -46,7 +51,7 @@ describe("SettingsService provider mutations", () => {
 
 		expect(refresh).toHaveBeenCalledOnce();
 		expect(refresh).toHaveBeenCalledWith({ allowNetwork: false });
-		expect(JSON.parse(files.get("/agent/models.json") ?? "{}").providers.proxy).toMatchObject({
+		expect(JSON.parse(files.get(MODELS_FILE) ?? "{}").providers.proxy).toMatchObject({
 			baseUrl: "https://proxy.example/v1",
 			api: "openai-codex-responses",
 		});
@@ -83,14 +88,14 @@ describe("SettingsService provider mutations", () => {
 			models: [{ id: "gpt-5" }, { id: "gpt-5-mini" }],
 		});
 
-		expect(JSON.parse(files.get("/agent/models.json") ?? "{}").providers.proxy).toMatchObject({
+		expect(JSON.parse(files.get(MODELS_FILE) ?? "{}").providers.proxy).toMatchObject({
 			name: "Proxy 2",
 			baseUrl: "https://proxy2.example/v1",
 			api: "openai-responses",
 			models: [{ id: "gpt-5" }, { id: "gpt-5-mini" }],
 		});
 		// key 留空 = auth.json 原样保留
-		expect(JSON.parse(files.get("/agent/auth.json") ?? "{}").proxy).toEqual({
+		expect(JSON.parse(files.get(AUTH_FILE) ?? "{}").proxy).toEqual({
 			type: "api_key",
 			key: "secret",
 		});
@@ -105,7 +110,7 @@ describe("SettingsService provider mutations", () => {
 			api: "openai-completions",
 			models: [{ id: "gpt-5" }],
 		});
-		const entry = JSON.parse(files.get("/agent/models.json") ?? "{}").providers.proxy;
+		const entry = JSON.parse(files.get(MODELS_FILE) ?? "{}").providers.proxy;
 		expect(entry).not.toHaveProperty("name");
 	});
 
@@ -119,7 +124,7 @@ describe("SettingsService provider mutations", () => {
 			models: [{ id: "gpt-5" }],
 			apiKey: "new-secret",
 		});
-		expect(JSON.parse(files.get("/agent/auth.json") ?? "{}").proxy.key).toBe("new-secret");
+		expect(JSON.parse(files.get(AUTH_FILE) ?? "{}").proxy.key).toBe("new-secret");
 
 		// 不传 key = 保持不变（删除凭证走 removeCredential/removeCustomProvider）
 		await settings.updateCustomProvider({
@@ -128,7 +133,7 @@ describe("SettingsService provider mutations", () => {
 			api: "openai-completions",
 			models: [{ id: "gpt-5" }],
 		});
-		expect(JSON.parse(files.get("/agent/auth.json") ?? "{}").proxy.key).toBe("new-secret");
+		expect(JSON.parse(files.get(AUTH_FILE) ?? "{}").proxy.key).toBe("new-secret");
 	});
 
 	it("writes per-model metadata (reasoning/contextWindow/maxTokens/input) when provided", async () => {
@@ -142,7 +147,7 @@ describe("SettingsService provider mutations", () => {
 				{ id: "gpt-5-mini" },
 			],
 		});
-		const providers = JSON.parse(files.get("/agent/models.json") ?? "{}").providers;
+		const providers = JSON.parse(files.get(MODELS_FILE) ?? "{}").providers;
 		expect(providers.relay.models[0]).toEqual({
 			id: "gpt-5.6-terra",
 			reasoning: true,
@@ -169,7 +174,7 @@ describe("SettingsService provider mutations", () => {
 				{ id: "gpt-5-mini", thinkingLevelMap: {} },
 			],
 		});
-		const providers = JSON.parse(files.get("/agent/models.json") ?? "{}").providers;
+		const providers = JSON.parse(files.get(MODELS_FILE) ?? "{}").providers;
 		// 只留 SDK 认得的档位；字符串 trim；null（不支持）保留原义
 		expect(providers.relay.models[0]).toEqual({
 			id: "gpt-5.6-terra",
@@ -224,7 +229,7 @@ describe("内置 provider 改名读侧归一（azure-openai-responses → azure�
 	}
 
 	function modelJson(providers: Record<string, unknown>) {
-		files.set("/agent/models.json", JSON.stringify({ providers }));
+		files.set(MODELS_FILE, JSON.stringify({ providers }));
 	}
 
 	beforeEach(() => files.clear());
@@ -273,18 +278,18 @@ describe("内置 provider 改名读侧归一（azure-openai-responses → azure�
 
 		await settings.setProviderBaseUrl("azure", "https://new.example/v1");
 
-		expect(JSON.parse(files.get("/agent/models.json") ?? "{}").providers).toEqual({
+		expect(JSON.parse(files.get(MODELS_FILE) ?? "{}").providers).toEqual({
 			azure: { headers: { a: "b" }, baseUrl: "https://new.example/v1" },
 		});
 	});
 
 	it("删除 provider 连旧键一起清掉", async () => {
 		modelJson({ "azure-openai-responses": { baseUrl: "https://old.example/v1" } });
-		files.set("/agent/auth.json", JSON.stringify({}));
+		files.set(AUTH_FILE, JSON.stringify({}));
 		const settings = new SettingsService(async () => fakeRuntime(["azure"]));
 
 		await settings.removeCustomProvider("azure");
 
-		expect(JSON.parse(files.get("/agent/models.json") ?? "{}").providers).toEqual({});
+		expect(JSON.parse(files.get(MODELS_FILE) ?? "{}").providers).toEqual({});
 	});
 });

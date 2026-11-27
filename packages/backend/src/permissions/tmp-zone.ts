@@ -1,6 +1,6 @@
 import { realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, isAbsolute, relative, resolve } from "node:path";
+import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 
 /**
  * 系统临时区判定 + rm 目标提取（纯函数，供权限门控的地理分区豁免使用）。
@@ -9,13 +9,17 @@ import { dirname, isAbsolute, relative, resolve } from "node:path";
 
 let cachedRoots: string[] | undefined;
 
+/** 判断 target 是否严格位于 root 内（含 root 本身），避免 ..notes.md 等合法文件名被 startsWith("..") 误判越界 */
+export function isPathInsideRoot(root: string, target: string): boolean {
+	const rel = relative(root, target);
+	return rel !== ".." && !rel.startsWith(`..${sep}`) && !rel.startsWith("../") && !isAbsolute(rel);
+}
+
 /**
- * 临时区根集合（四拼写 → 两物理目录）：
- * resolve(tmpdir()) ∪ realpathSync(tmpdir()) ∪ "/tmp"（字面）∪ realpathSync("/tmp")（存在时）。
+ * 临时区根集合（POSIX：os.tmpdir() ∪ /tmp 双拼写；Windows：仅信任 os.tmpdir() 及其 realpath，不放行裸 /tmp）：
  * macOS 实测（2026-08 双重复核）：os.tmpdir() 字面 = /var/folders/<a>/<b>/T（$TMPDIR 形态，
  * agent/工具最常用）；realpath = /private/var/folders/...（/var 本身是 symlink，两拼写 inode 同址）。
  * 权限匹配文本经 path.resolve（纯词法、不解 symlink），只收 realpath 根会漏掉字面拼写 → 两拼写都收。
- * "/tmp" 同理收字面 + realpath 双根；Linux 四拼写坍缩为单根 /tmp；Windows 无 /tmp 时跳过。
  * 进程内计算一次并缓存。
  */
 export function temporaryRoots(): string[] {
@@ -28,11 +32,13 @@ export function temporaryRoots(): string[] {
 	} catch {
 		// realpath 失败（目录异常消失等）保留字面根即可
 	}
-	roots.add("/tmp");
-	try {
-		roots.add(realpathSync("/tmp"));
-	} catch {
-		// 非 POSIX 平台无 /tmp
+	if (process.platform !== "win32") {
+		roots.add("/tmp");
+		try {
+			roots.add(realpathSync("/tmp"));
+		} catch {
+			// 非 POSIX 平台无 /tmp
+		}
 	}
 	cachedRoots = [...roots];
 	return cachedRoots;
@@ -41,10 +47,7 @@ export function temporaryRoots(): string[] {
 /** abs 是否落在任一临时区根下（含根本身）。abs 必须是绝对路径；内部自行 resolve（穿越在此塌缩）。 */
 export function isTemporaryPath(abs: string): boolean {
 	const target = resolve(abs);
-	return temporaryRoots().some((root) => {
-		const rel = relative(root, target);
-		return !rel.startsWith("..") && !isAbsolute(rel);
-	});
+	return temporaryRoots().some((root) => isPathInsideRoot(root, target));
 }
 
 /** 段首 token 是否为 rm（rm 家族判定；sudo rm / xargs rm / find -exec 的首 token 不是 rm → 不豁免）。 */

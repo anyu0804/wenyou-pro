@@ -581,4 +581,210 @@ describe("WenyouService 端到端领域闭环", () => {
 		// 4. readCanonDoc 指向目录时抛出清晰错误
 		await expect(service.readCanonDoc(root, "01-设定与国力实册")).rejects.toThrow("目标不是常规文件");
 	});
+
+	it("Bug #3 & #4: 标准 PC QQ 日期在前 .txt、行末 HH:MM:SS 不误拆，以及第三方/QCE JSON 时区/Unix时间戳/数字ID与 groupIdFilter 兼容", async () => {
+		const root = await mkdtemp(join(tmpdir(), "wenyou-qq-formats-"));
+		tempDirs.push(root);
+		const service = new WenyouService();
+		await service.initCampaign(root, { worldTitle: "格式兼容测试", currentEra: "T1" });
+
+		// 1. 标准 PC QQ 导出「日期在前」.txt（含 QQ号、邮箱、纯昵称、/分隔与单位时分秒，以及正文含 总攻时间： 08:30:00）
+		await writeFile(
+			join(root, "00-群聊收集", "主群_group-pc-1001.txt"),
+			[
+				"消息记录（此消息记录为文本格式，不支持重新导入）",
+				"================================================================",
+				"消息对象:河朔主群(900001)",
+				"================================================================",
+				"",
+				"2026-11-26 08:01:02 【北周】燕王(12345678)",
+				"今晨传令各营，总攻时间： 08:30:00",
+				"务须按时集结，不得延误。",
+				"",
+				"2026-11-26 08:02:05 西凉使节<xiliang@example.com>",
+				"西凉骑兵已在渡口待命。",
+				"",
+				"2026/11/26 8:5:9 司历GM",
+				"【裁定】北岸大雾已散。",
+			].join("\n"),
+			"utf8",
+		);
+
+		// 2. QCE 导出 JSON：文件名不含群号，但顶层 chatInfo.uin 声明群号，且含带偏移 ISO、+0800、毫秒、10位/13位 Unix 时间戳与数字型 ID
+		await writeFile(
+			join(root, "00-群聊收集", "export-qce-dump.json"),
+			JSON.stringify({
+				chatInfo: { uin: 888999, name: "河朔密议群" },
+				messages: [
+					{
+						id: 9001,
+						sender: "谋士甲",
+						uin: 10001,
+						timestamp: "2026-11-26T20:15:03+08:00",
+						text: "ISO 冒号时区消息",
+					},
+					{
+						id: 9002,
+						sender: { name: "谋士乙", uin: 10002 },
+						timestamp: "2026-11-26T20:16:04.123+0800",
+						content: { text: "ISO 毫秒无冒号时区消息" },
+					},
+					{
+						id: 9003,
+						sender: "谋士丙",
+						uid: 10003,
+						time: 1795695420, // 2026-11-26 20:17:00 CST
+						text: "10位秒级时间戳消息",
+					},
+					{
+						id: 9004,
+						sender: "谋士丁",
+						senderId: 10004,
+						timestamp: 1795695480000, // 2026-11-26 20:18:00 CST
+						text: "13位毫秒时间戳消息",
+					},
+				],
+			}),
+			"utf8",
+		);
+
+		// 按内部群号 888999 精准过滤拉取，不得因文件名不匹配被提前跳过
+		const qceOnly = await pullQqGroupsIncremental(root, "888999");
+		expect(qceOnly.newlyIngested).toBe(4);
+		expect(qceOnly.unreportedMessages.map((m) => m.sourceId)).toEqual(["9001", "9002", "9003", "9004"]);
+		expect(qceOnly.unreportedMessages.every((m) => m.groupId === "888999" && m.groupName === "河朔密议群")).toBe(true);
+		expect(qceOnly.unreportedMessages.every((m) => !m.timestamp.includes("T"))).toBe(true);
+		expect(qceOnly.unreportedMessages[0]?.timestamp).toBe("2026-11-26 20:15:03");
+		expect(qceOnly.unreportedMessages[1]?.timestamp).toBe("2026-11-26 20:16:04");
+		expect(qceOnly.unreportedMessages[1]?.sender).toBe("谋士乙");
+		expect(qceOnly.unreportedMessages[1]?.senderId).toBe("10002");
+		expect(qceOnly.unreportedMessages[2]?.timestamp).toBe("2026-11-26 20:17:00");
+		expect(qceOnly.unreportedMessages[3]?.timestamp).toBe("2026-11-26 20:18:00");
+
+		// until 过滤不再被残留 T 破坏
+		const untilSearch = await service.searchSourcesWithStats(root, {
+			groupId: "888999",
+			until: "2026-11-26",
+		});
+		expect(untilSearch.totalMatched).toBe(4);
+
+		// 拉取 PC QQ 日期在前 .txt：3 条完整消息，总攻时间： 08:30:00 未被误劈
+		const pcPull = await pullQqGroupsIncremental(root, "group-pc-1001");
+		expect(pcPull.newlyIngested).toBe(3);
+		expect(pcPull.unreportedMessages[0]?.sender).toBe("【北周】燕王");
+		expect(pcPull.unreportedMessages[0]?.senderId).toBe("12345678");
+		expect(pcPull.unreportedMessages[0]?.text).toContain("总攻时间： 08:30:00");
+		expect(pcPull.unreportedMessages[1]?.sender).toBe("西凉使节");
+		expect(pcPull.unreportedMessages[1]?.senderId).toBe("xiliang@example.com");
+		expect(pcPull.unreportedMessages[2]?.sender).toBe("司历GM");
+		expect(pcPull.unreportedMessages[2]?.timestamp).toBe("2026-11-26 08:05:09");
+	});
+
+	it("Bug #7, #22 & #23: 双引号国策标题无反斜杠回显、去重双层 Frontmatter、损坏简报/台账容错与无日期补抓防游标回跳", async () => {
+		const root = await mkdtemp(join(tmpdir(), "wenyou-robust-"));
+		tempDirs.push(root);
+		const service = new WenyouService();
+		await service.initCampaign(root, { worldTitle: "健壮性测试", currentEra: "T1" });
+
+		// Bug #7: 英文双引号标题 + 含 Frontmatter 的正文写入与回读
+		const pol = await service.writePolicyDocx({
+			cwd: root,
+			title: '论"河朔"防务与"常平"粮策',
+			content: "---\ntitle: 旧头\nactor: 旧方\n---\n\n一、清源固守。\n二、粮秣入仓。",
+		});
+		expect(pol.ok).toBe(true);
+		const mdRaw = await readFile(join(root, pol.artifact!.markdownPath), "utf8");
+		expect(mdRaw.match(/^---$/gm)?.length).toBe(2); // 仅一层 Frontmatter，绝无双层 ---
+		const listed = await service.listPolicies(root);
+		expect(listed[0]?.title).toBe('论"河朔"防务与"常平"粮策');
+
+		// Bug #22: 缺失 createdAt 的简报 JSON、语法损坏的简报 JSON 与缺失 sourceRefs 的台账条目不炸毁 getOverview
+		await writeFile(
+			join(root, "02-局势简报与台账", "briefings", "briefing-001-partial.json"),
+			JSON.stringify({ id: "briefing-001", headline: "缺时间戳简报" }),
+			"utf8",
+		);
+		await writeFile(
+			join(root, "02-局势简报与台账", "briefings", "briefing-002-broken.json"),
+			"{broken-json",
+			"utf8",
+		);
+		await writeFile(
+			join(root, "02-局势简报与台账", "rolling-ledger.json"),
+			JSON.stringify({
+				version: 1,
+				entries: [null, { id: "l-1", category: "fact", summary: "缺 sourceRefs 条目" }],
+			}),
+			"utf8",
+		);
+		const overview = await service.getOverview(root);
+		expect(overview.briefings).toHaveLength(1);
+		expect(overview.briefings[0]?.createdAt).toBe("");
+		expect(overview.rollingLedger).toHaveLength(1);
+		expect(overview.rollingLedger[0]?.sourceRefs).toEqual([]);
+
+		// Bug #23: 已有带日期消息后再入库无日期/纯时间消息必须触发排序，且乱序历史文件修复游标后不触发大面积重报
+		await ingestExternalMessages(root, [
+			{ sourceId: "m-d1", groupId: "g1", groupName: "主群", sender: "甲", timestamp: "2026-11-26 10:00:00", text: "带日期1" },
+			{ sourceId: "m-d2", groupId: "g1", groupName: "主群", sender: "乙", timestamp: "2026-11-26 11:00:00", text: "带日期2" },
+		]);
+		await service.publishBriefing({
+			cwd: root,
+			title: "基线简报",
+			turnLabel: "T1",
+			headline: "已报至 d2",
+			progressItems: [],
+			diplomacySummary: "稳",
+			intelChecks: [],
+			strategicJudgment: "守",
+		});
+		// 新入库纯时间消息（应在时间桶 1，触发排序移到带日期消息之前，且不把已报游标顶乱重报 d1/d2）
+		await ingestExternalMessages(root, [
+			{ sourceId: "m-t1", groupId: "g1", groupName: "主群", sender: "丙", timestamp: "09:15:30", text: "补录纯时间消息" },
+		]);
+		const afterTimeOnly = await service.pullQq(root);
+		expect(afterTimeOnly.unreportedMessages).toHaveLength(0);
+		const orderedWin = await service.lookupSource(root, "m-d2", 5);
+		expect(orderedWin?.messages.map((m) => m.sourceId)).toEqual(["m-t1", "m-d1", "m-d2"]);
+
+		// 模拟旧盘面遗留的乱序 evidence.jsonl（带日期在前、无日期在后且游标停在末尾无日期条目）+ 新到历史补抓 + 新消息
+		const legacyRecords = [
+			{ sourceId: "leg-d1", groupId: "g2", groupName: "密群", sender: "甲", timestamp: "2026-11-26 10:00:00", text: "旧已报1", fingerprint: "fp1", lineIndex: 0 },
+			{ sourceId: "leg-d2", groupId: "g2", groupName: "密群", sender: "乙", timestamp: "2026-11-26 11:00:00", text: "旧已报2", fingerprint: "fp2", lineIndex: 1 },
+			{ sourceId: "leg-u1", groupId: "g2", groupName: "密群", sender: "丙", timestamp: "", text: "旧末尾无日期", fingerprint: "fp3", lineIndex: 2 },
+		];
+		await writeFile(
+			join(root, ".wenyou", "evidence.jsonl"),
+			`${legacyRecords.map((r) => JSON.stringify(r)).join("\n")}\n`,
+			"utf8",
+		);
+		await writeFile(
+			join(root, ".wenyou", "cursors.json"),
+			JSON.stringify({
+				version: 1,
+				groups: {
+					g2: {
+						groupId: "g2",
+						groupName: "密群",
+						role: "cabinet",
+						totalIngested: 3,
+						lastIngestedSourceId: "leg-u1",
+						lastIngestedTimestamp: null,
+						lastReportedSourceId: "leg-u1",
+						lastReportedAt: "2026-11-26T12:00:00.000Z",
+						unreportedCount: 0,
+						sourceFiles: [],
+					},
+				},
+			}),
+			"utf8",
+		);
+		// 乱序补抓早期历史 leg-d0 + 新消息 leg-d3：绝不重报旧已报 leg-d1/leg-d2，仅 leg-d3 待报
+		await ingestExternalMessages(root, [
+			{ sourceId: "leg-d0", groupId: "g2", groupName: "密群", sender: "丁", timestamp: "2026-11-25 09:00:00", text: "早期补抓" },
+			{ sourceId: "leg-d3", groupId: "g2", groupName: "密群", sender: "戊", timestamp: "2026-11-26 12:00:00", text: "最新消息" },
+		]);
+		const afterRepair = await service.pullQq(root, "g2");
+		expect(afterRepair.unreportedMessages.map((m) => m.sourceId)).toEqual(["leg-d3"]);
+	});
 });

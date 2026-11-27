@@ -21,7 +21,7 @@ async function initialize(path: string) {
 	await writeFile(`${path}/file.txt`, "FEATURE");
 	await git(path, "commit", "-qam", "Feature fixture");
 	await git(path, "checkout", "-q", "main");
-	expect(await git(path, "rev-parse", "--show-toplevel")).toBe(path);
+	expect(resolve(await git(path, "rev-parse", "--show-toplevel"))).toBe(resolve(path));
 }
 beforeEach(async () => {
 	const parent = resolve("../../.local/tmp/ssh-remote-runtime/git-tests");

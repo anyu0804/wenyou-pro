@@ -250,9 +250,14 @@ describe("matchTextFor / suggestPattern", () => {
 		expect(extractShellExecArg("ls -la")).toBeNull();
 	});
 
-	it("文件工具用父目录前缀（目录化记忆键）；过宽目录/自定义工具退回精确路径或工具名", () => {
+	it("文件工具用父目录前缀（目录化记忆键）；过宽目录/Windows 盘符根/自定义工具退回精确路径或工具名", () => {
 		expect(suggestPattern("edit", { path: "/a.ts" })).toBe("edit: /a.ts"); // dirname=/ 退回精确
 		expect(suggestPattern("edit", { path: "/x/y/a.ts" })).toBe("edit: /x/y/*");
+		expect(suggestPattern("edit", { path: "C:\\a.ts" })).toBe("edit: C:\\a.ts"); // Windows 盘符根退回精确，不产出 C:\\*
+		expect(suggestPattern("edit", { path: "D:\\a.ts" })).toBe("edit: D:\\a.ts");
+		expect(suggestPattern("edit", { path: "D:/a.ts" })).toBe("edit: D:/a.ts");
+		expect(suggestPattern("edit", { path: "\\\\server\\share\\a.ts" })).toBe("edit: \\\\server\\share\\a.ts");
+		expect(suggestPattern("edit", { path: "D:\\work\\sub\\a.ts" })).toBe("edit: D:\\work\\sub\\*");
 		expect(suggestPattern("write", { path: `${homedir()}/todo.md` })).toBe(`write: ${homedir()}/todo.md`); // 父目录即 home 退回精确
 		expect(suggestPattern("write", { path: `${homedir()}/notes/todo.md` })).toBe(
 			`write: ${homedir()}/notes/*`,

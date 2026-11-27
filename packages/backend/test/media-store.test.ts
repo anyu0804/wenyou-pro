@@ -138,7 +138,11 @@ describe("原字节私有媒体与发布生命期", () => {
 			reference.id,
 			reference.revision,
 		);
+		const verifiedMap = (store as unknown as { verified: Map<string, string> }).verified;
+		const sourceDir = join(directory, "media", "source");
+		expect([...verifiedMap.keys()].some((k) => k === sourceDir || k.startsWith(sourceDir))).toBe(true);
 		await store.deleteOwner("source");
+		expect([...verifiedMap.keys()].some((k) => k === sourceDir || k.startsWith(`${sourceDir}/`) || k.startsWith(`${sourceDir}\\`))).toBe(false);
 		expect((await store.read("fork", reference.id, reference.revision)).data).toBe(bytes.toString("base64"));
 		const file = join(directory, "media/fork", `${reference.revision}.bin`);
 		await writeFile(file, Buffer.alloc(bytes.length, 0), { mode: 0o600 });

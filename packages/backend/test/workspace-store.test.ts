@@ -1,6 +1,6 @@
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
 	addAllowedPattern,
@@ -12,6 +12,11 @@ import {
 	suggestRootCandidate,
 	workspaceConfigPath,
 } from "../src/project/workspace-store";
+
+const PROJ = resolve("/proj");
+const OTHER_REPO = resolve("/other/repo");
+const OTHER = resolve("/other");
+const P = resolve("/p");
 
 function makeAgentDir(): string {
 	const dir = mkdtempSync(join(tmpdir(), "pi-ws-"));
@@ -26,7 +31,7 @@ describe("workspace-store", () => {
 		addWorkspaceRoot(dir, "/proj", "/other/repo");
 		expect(loadWorkspaces(dir)).toEqual({
 			version: 1,
-			projects: { "/proj": { roots: ["/other/repo"], allowed: [] } },
+			projects: { [PROJ]: { roots: [OTHER_REPO], allowed: [] } },
 		});
 	});
 
@@ -35,16 +40,16 @@ describe("workspace-store", () => {
 		addWorkspaceRoot(dir, "/proj", "/other");
 		addWorkspaceRoot(dir, "/proj", "/other"); // 去重
 		addAllowedPattern(dir, "/proj", "bash: git push*");
-		expect(loadWorkspaces(dir).projects["/proj"].roots).toEqual(["/other"]);
+		expect(loadWorkspaces(dir).projects[PROJ].roots).toEqual([OTHER]);
 		removeWorkspaceRoot(dir, "/proj", "/other");
 		const afterRemove = loadWorkspaces(dir);
-		expect(afterRemove.projects["/proj"]).toEqual({ roots: [], allowed: ["bash: git push*"] });
+		expect(afterRemove.projects[PROJ]).toEqual({ roots: [], allowed: ["bash: git push*"] });
 		// 移除最后记忆后条目整体回收
 		const raw = JSON.parse(readFileSync(workspaceConfigPath(dir), "utf-8"));
-		raw.projects["/proj"] = { roots: [], allowed: [] };
+		raw.projects[PROJ] = { roots: [], allowed: [] };
 		writeFileSync(workspaceConfigPath(dir), JSON.stringify(raw));
 		removeWorkspaceRoot(dir, "/proj", "/nonexistent");
-		expect(loadWorkspaces(dir).projects["/proj"]).toBeUndefined();
+		expect(loadWorkspaces(dir).projects[PROJ]).toBeUndefined();
 	});
 
 	it("记忆去重后移到末尾（LRU 语义）；非法文件回退空配置", () => {
@@ -52,7 +57,7 @@ describe("workspace-store", () => {
 		addAllowedPattern(dir, "/p", "a*");
 		addAllowedPattern(dir, "/p", "b*");
 		addAllowedPattern(dir, "/p", "a*");
-		expect(loadWorkspaces(dir).projects["/p"].allowed).toEqual(["b*", "a*"]);
+		expect(loadWorkspaces(dir).projects[P].allowed).toEqual(["b*", "a*"]);
 		writeFileSync(workspaceConfigPath(dir), "{broken");
 		expect(loadWorkspaces(dir)).toEqual(emptyWorkspaces());
 	});
@@ -62,7 +67,7 @@ describe("workspace-store", () => {
 		const load = createWorkspacesLoader(dir);
 		expect(load()).toEqual(emptyWorkspaces());
 		addWorkspaceRoot(dir, "/proj", "/other");
-		expect(load().projects["/proj"]).toEqual({ roots: ["/other"], allowed: [] });
+		expect(load().projects[PROJ]).toEqual({ roots: [OTHER], allowed: [] });
 	});
 });
 
@@ -96,5 +101,15 @@ describe("suggestRootCandidate", () => {
 		mkdirSync(join(home, "sub"), { recursive: true });
 		// 从 home/sub/x 向上找到 home 的 .git，但 home 不安全 → 继续向上无 .git → 父目录
 		expect(suggestRootCandidate(join(home, "sub", "x"), home)).toBe(join(home, "sub"));
+	});
+
+	it("Windows 盘符根目录与 UNC 根目录绝不作为候选信任根", () => {
+		const winHome = "C:\\Users\\demo";
+		expect(suggestRootCandidate("C:\\secret.txt", winHome)).toBeNull();
+		expect(suggestRootCandidate("D:\\secret.txt", winHome)).toBeNull();
+		expect(suggestRootCandidate("D:/secret.txt", winHome)).toBeNull();
+		expect(suggestRootCandidate("\\\\server\\share\\file.txt", winHome)).toBeNull();
+		expect(suggestRootCandidate("C:\\Users\\todo.md", winHome)).toBeNull();
+		expect(suggestRootCandidate("C:\\Users\\demo\\todo.md", winHome)).toBeNull();
 	});
 });

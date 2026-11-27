@@ -57,7 +57,8 @@ interface InlineRun {
 
 function parseInlineRuns(text: string): InlineRun[] {
 	const runs: InlineRun[] = [];
-	const tokenRe = /(\*\*[^*]+\*\*|\*[^*]+\*|`[^`]+`)/g;
+	const tokenRe =
+		/(\*\*[^*\s](?:[^*]*?[^*\s])?\*\*|(?<!\*)\*(?!\*)(?:[^*\s][^*]*?[^*\s]|[^*\s])\*(?!\*)|`[^`]+`)/g;
 	let cursor = 0;
 	for (const match of text.matchAll(tokenRe)) {
 		const idx = match.index ?? 0;
@@ -105,9 +106,9 @@ function renderRunsXml(
 function buildBodyParagraphsXml(input: PolicyDocxInput): string {
 	const blocks: string[] = [];
 
-	// 标题段：居中 15pt (30 half-points)，粗体
+	// 标题段：居中 15pt (30 half-points)，粗体；清零继承首行缩进并遵守 OOXML CT_PPr 顺序
 	blocks.push(
-		`<w:p><w:pPr><w:jc w:val="center"/><w:spacing w:before="120" w:after="200" w:line="300" w:lineRule="auto"/></w:pPr>${renderRunsXml(
+		`<w:p><w:pPr><w:keepNext/><w:spacing w:before="120" w:after="200" w:line="300" w:lineRule="auto"/><w:ind w:firstLine="0" w:firstLineChars="0"/><w:jc w:val="center"/></w:pPr>${renderRunsXml(
 			[{ text: input.title.trim() }],
 			{ szHalfPts: 30, bold: true, font: "SimSun" },
 		)}</w:p>`,
@@ -115,7 +116,7 @@ function buildBodyParagraphsXml(input: PolicyDocxInput): string {
 
 	if (input.subtitle?.trim()) {
 		blocks.push(
-			`<w:p><w:pPr><w:jc w:val="center"/><w:spacing w:before="0" w:after="200" w:line="300" w:lineRule="auto"/></w:pPr>${renderRunsXml(
+			`<w:p><w:pPr><w:keepNext/><w:spacing w:before="0" w:after="200" w:line="300" w:lineRule="auto"/><w:ind w:firstLine="0" w:firstLineChars="0"/><w:jc w:val="center"/></w:pPr>${renderRunsXml(
 				[{ text: input.subtitle.trim() }],
 				{ szHalfPts: 20, font: "SimSun", color: "555555" },
 			)}</w:p>`,
@@ -155,7 +156,7 @@ function buildBodyParagraphsXml(input: PolicyDocxInput): string {
 			}
 			const sz = level <= 2 ? 24 : 21; // 小四 12pt 或 五号加粗 10.5pt
 			blocks.push(
-				`<w:p><w:pPr><w:spacing w:before="180" w:after="100" w:line="300" w:lineRule="auto"/><w:ind w:firstLineChars="200" w:firstLine="420"/></w:pPr>${renderRunsXml(
+				`<w:p><w:pPr><w:keepNext/><w:spacing w:before="180" w:after="100" w:line="300" w:lineRule="auto"/><w:ind w:firstLineChars="200" w:firstLine="420"/></w:pPr>${renderRunsXml(
 					parseInlineRuns(headingText),
 					{ szHalfPts: sz, bold: true, font: "SimSun" },
 				)}</w:p>`,
@@ -174,8 +175,10 @@ function buildBodyParagraphsXml(input: PolicyDocxInput): string {
 			);
 			continue;
 		}
-		// 单级有序列表项独立分段并保留序号文本，不与前后段粘连
-		const orderedMatch = trimmed.match(/^(?:\d+[.、)）]|[一二三四五六七八九十]+[、.）])\s+.+$/);
+		// 单级有序列表项独立分段并保留序号文本（兼容无空格顿号/括号条陈，英文句点仍要求后跟空白防误判小数）
+		const orderedMatch = trimmed.match(
+			/^(?:(?:\d+\.|[一二三四五六七八九十百千万〇零]+\.)\s+\S+|(?:\d+[、)）]|[一二三四五六七八九十百千万〇零]+[、)）]|[（(](?:\d{1,3}|[一二三四五六七八九十百千万〇零]+)[)）])\s*\S+)/,
+		);
 		if (orderedMatch) {
 			flushParagraph();
 			blocks.push(

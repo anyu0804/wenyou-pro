@@ -2635,10 +2635,10 @@ export class PiBackend {
 		return this.projectLoader.ensureTrust(cwd);
 	}
 
-	/** 扩展显示名：`<inline:N>` 原样，目录式扩展取最后一段（剥 index.ts 后缀） */
+	/** 扩展显示名：`<inline:N>` 原样，目录式扩展取最后一段（剥 index.ts 后缀，兼容 POSIX 与 Windows 分隔符） */
 	private extensionDisplayName(path: string): string {
-		const cleaned = path.replace(/\/index\.(ts|js)$/, "");
-		const base = cleaned.split("/").filter(Boolean).pop();
+		const cleaned = path.replace(/[\\/]index\.(ts|js)$/, "");
+		const base = cleaned.split(/[\\/]/).filter(Boolean).pop();
 		return base ?? path;
 	}
 
