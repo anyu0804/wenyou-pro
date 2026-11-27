@@ -25,7 +25,9 @@ export async function resolveChannelProject(cwd: string, boundRoot?: string): Pr
 		// Only Git's explicit non-repository response or missing git executable permits a fallback.
 		// `realpath(cwd)` above has already verified that `cwd` itself exists.
 		const failure = error as { code?: unknown; stderr?: unknown };
-		const isMissingGitBinary = failure.code === "ENOENT";
+		const isMissingGitBinary =
+			failure.code === "ENOENT" &&
+			(failure.stderr === undefined || (typeof failure.stderr === "string" && failure.stderr.trim() === ""));
 		const isNotGitRepository =
 			failure.code === 128 &&
 			typeof failure.stderr === "string" &&
