@@ -245,7 +245,14 @@ describe("Wenyou NTQQ 只读解库与配置隔离", () => {
 			{ rowid: 101, ts: 1764000100, gid: 900001, uid: "u_gm", text: "【裁定】北周清源城秋粮入仓完毕" },
 			{ rowid: 102, ts: 1764000200, gid: 900001, uid: "u_player", text: "收到，我方下回合遣使通好西凉" },
 			// 回归：NTQQ 中本人发出消息 40027=群号、40030=0，绝不可被漏掉
-			{ rowid: 103, ts: 1764000250, gid: 900001, col40030: 0, uid: "u_self", text: "本人回复：已核实西凉使节路线" },
+			{
+				rowid: 103,
+				ts: 1764000250,
+				gid: 900001,
+				col40030: 0,
+				uid: "u_self",
+				text: "本人回复：已核实西凉使节路线",
+			},
 			{ rowid: 201, ts: 1764000300, gid: 900002, uid: "u_player", text: "内阁密议：预留三成精铁待春汛" },
 		]);
 
@@ -313,7 +320,11 @@ describe("Wenyou NTQQ 只读解库与配置隔离", () => {
 		expect("kind" in selfHits[0]!).toBe(false);
 		expect("visibility" in selfHits[0]!).toBe(false);
 		const ctxWin = await service.lookupSource(campaignDir, "qq-900001-103", 5);
-		expect(ctxWin?.messages.map((m) => m.sourceId)).toEqual(["qq-900001-101", "qq-900001-102", "qq-900001-103"]);
+		expect(ctxWin?.messages.map((m) => m.sourceId)).toEqual([
+			"qq-900001-101",
+			"qq-900001-102",
+			"qq-900001-103",
+		]);
 
 		const cabinetHits = await service.searchSources(campaignDir, { keyword: "精铁" });
 		expect(cabinetHits.length).toBe(1);
@@ -355,12 +366,13 @@ describe("Wenyou NTQQ 只读解库与配置隔离", () => {
 			mkdirSync(stepDir, { recursive: true });
 			const { plainMsg, plainGroup } = createPlainSqliteFixtures(stepDir, rows);
 			writeFileSync(join(dbDir, "nt_msg.db"), encryptSqliteToNtqq(readFileSync(plainMsg), keyMsg, saltMsg));
-			writeFileSync(join(dbDir, "group_info.db"), encryptSqliteToNtqq(readFileSync(plainGroup), keyGrp, saltGrp));
+			writeFileSync(
+				join(dbDir, "group_info.db"),
+				encryptSqliteToNtqq(readFileSync(plainGroup), keyGrp, saltGrp),
+			);
 		};
 
-		writeEncryptedPair([
-			{ rowid: 101, ts: 1764001000, gid: 900001, uid: "u_gm", text: "首条群消息" },
-		]);
+		writeEncryptedPair([{ rowid: 101, ts: 1764001000, gid: 900001, uid: "u_gm", text: "首条群消息" }]);
 
 		const keyMapPath = join(dataDir, "key_map.json");
 		mkdirSync(dataDir, { recursive: true });
@@ -415,7 +427,10 @@ describe("Wenyou NTQQ 只读解库与配置隔离", () => {
 		expect(decodeIniBuffer(utf8Bom)).toBe(sample);
 
 		// GB18030 编码「中文」字节为 D6 D0 CE C4
-		const gbkBuf = Buffer.concat([Buffer.from("UserDataSavePath=D:\\", "ascii"), Buffer.from([0xd6, 0xd0, 0xce, 0xc4])]);
+		const gbkBuf = Buffer.concat([
+			Buffer.from("UserDataSavePath=D:\\", "ascii"),
+			Buffer.from([0xd6, 0xd0, 0xce, 0xc4]),
+		]);
 		expect(decodeIniBuffer(gbkBuf)).toBe("UserDataSavePath=D:\\中文");
 	});
 
@@ -449,14 +464,25 @@ describe("Wenyou NTQQ 只读解库与配置隔离", () => {
 			mkdirSync(stepDir, { recursive: true });
 			const { plainMsg, plainGroup } = createPlainSqliteFixtures(stepDir, rows);
 			writeFileSync(join(dbDir, "nt_msg.db"), encryptSqliteToNtqq(readFileSync(plainMsg), keyMsg, saltMsg));
-			writeFileSync(join(dbDir, "group_info.db"), encryptSqliteToNtqq(readFileSync(plainGroup), keyGrp, saltGrp));
+			writeFileSync(
+				join(dbDir, "group_info.db"),
+				encryptSqliteToNtqq(readFileSync(plainGroup), keyGrp, saltGrp),
+			);
 			return plainMsg;
 		};
 
 		// 初始同步：高号段消息 rowid=100000 + 一条系统灰条（40030=0, 40033=0）
 		writeEnc([
 			{ rowid: 100000, ts: 1764002000, gid: 900001, col40003: 500, uid: "u_gm", text: "高号段首条裁定" },
-			{ rowid: 100001, ts: 1764002010, gid: 900001, col40003: 501, col40030: 0, uid: 0, text: "系统灰条：某人撤回了一条消息" },
+			{
+				rowid: 100001,
+				ts: 1764002010,
+				gid: 900001,
+				col40003: 501,
+				col40030: 0,
+				uid: 0,
+				text: "系统灰条：某人撤回了一条消息",
+			},
 		]);
 
 		const keyMapPath = join(dataDir, "key_map.json");
@@ -485,9 +511,33 @@ describe("Wenyou NTQQ 只读解库与配置隔离", () => {
 		// 增量写入：本机 PC 端发出低号段 rowid=50、40003=0、40030=0、40033="u_self" 的新消息 + 另一条空 UID 系统灰条
 		const latestPlainMsg = writeEnc([
 			{ rowid: 100000, ts: 1764002000, gid: 900001, col40003: 500, uid: "u_gm", text: "高号段首条裁定" },
-			{ rowid: 100001, ts: 1764002010, gid: 900001, col40003: 501, col40030: 0, uid: 0, text: "系统灰条：某人撤回了一条消息" },
-			{ rowid: 50, ts: 1764002100, gid: 900001, col40003: 0, col40030: 0, uid: "u_self", text: "低号段本机发出：已部署河阳防线" },
-			{ rowid: 51, ts: 1764002110, gid: 900001, col40003: 0, col40030: 0, uid: "", text: "系统灰条：空UID拍一拍" },
+			{
+				rowid: 100001,
+				ts: 1764002010,
+				gid: 900001,
+				col40003: 501,
+				col40030: 0,
+				uid: 0,
+				text: "系统灰条：某人撤回了一条消息",
+			},
+			{
+				rowid: 50,
+				ts: 1764002100,
+				gid: 900001,
+				col40003: 0,
+				col40030: 0,
+				uid: "u_self",
+				text: "低号段本机发出：已部署河阳防线",
+			},
+			{
+				rowid: 51,
+				ts: 1764002110,
+				gid: 900001,
+				col40003: 0,
+				col40030: 0,
+				uid: "",
+				text: "系统灰条：空UID拍一拍",
+			},
 		]);
 
 		const s2 = await service.syncNtqqCampaign(campaignDir);
@@ -589,9 +639,9 @@ finally:
 		utimesSync(oldMsg, new Date(1_700_000_000_000), new Date(1_700_000_000_000));
 		utimesSync(newMsg, new Date(1_700_010_000_000), new Date(1_700_010_000_000));
 
-		expect(
-			await autoDetectNtqqDbDir("10001", { platform: "darwin", homeDir: macHome, env: {} }),
-		).toBe(hashNew);
+		expect(await autoDetectNtqqDbDir("10001", { platform: "darwin", homeDir: macHome, env: {} })).toBe(
+			hashNew,
+		);
 
 		// 容器为空时回退到 Library/Application Support/QQ
 		const fallbackHome = makeTempDir("wenyou-ntqq-mac-fallback-");
@@ -599,24 +649,24 @@ finally:
 		mkdirSync(appSupportHash, { recursive: true });
 		writeFileSync(join(appSupportHash, "nt_msg.db"), "fallback");
 
-		expect(
-			await autoDetectNtqqDbDir("10001", { platform: "darwin", homeDir: fallbackHome, env: {} }),
-		).toBe(appSupportHash);
+		expect(await autoDetectNtqqDbDir("10001", { platform: "darwin", homeDir: fallbackHome, env: {} })).toBe(
+			appSupportHash,
+		);
 	});
 
 	it("autoDetectNtqqDbDir 在 linux 平台探测 .config/QQ 与 XDG_CONFIG_HOME，并保持 win32 默认语义不变", async () => {
 		const emptyLinuxHome = makeTempDir("wenyou-ntqq-linux-empty-");
-		expect(
-			await autoDetectNtqqDbDir("10001", { platform: "linux", homeDir: emptyLinuxHome, env: {} }),
-		).toBe(join(emptyLinuxHome, ".config", "QQ"));
+		expect(await autoDetectNtqqDbDir("10001", { platform: "linux", homeDir: emptyLinuxHome, env: {} })).toBe(
+			join(emptyLinuxHome, ".config", "QQ"),
+		);
 
 		const linuxHome = makeTempDir("wenyou-ntqq-linux-hit-");
 		const dotConfigDb = join(linuxHome, ".config", "QQ", "nt_qq_xyz", "nt_db");
 		mkdirSync(dotConfigDb, { recursive: true });
 		writeFileSync(join(dotConfigDb, "nt_msg.db"), "linux-db");
-		expect(
-			await autoDetectNtqqDbDir("10001", { platform: "linux", homeDir: linuxHome, env: {} }),
-		).toBe(dotConfigDb);
+		expect(await autoDetectNtqqDbDir("10001", { platform: "linux", homeDir: linuxHome, env: {} })).toBe(
+			dotConfigDb,
+		);
 
 		// XDG_CONFIG_HOME 存在有效库时优先命中 XDG_CONFIG_HOME
 		const xdgRoot = makeTempDir("wenyou-ntqq-linux-xdg-");
@@ -695,7 +745,16 @@ finally:
 		const work = makeTempDir("wenyou-ntqq-mac-py-");
 		const hbPy = join(work, "opt", "homebrew", "bin", "python3");
 		const missingLocalPy = join(work, "usr", "local", "bin", "python3");
-		const fwPy = join(work, "Library", "Frameworks", "Python.framework", "Versions", "Current", "bin", "python3");
+		const fwPy = join(
+			work,
+			"Library",
+			"Frameworks",
+			"Python.framework",
+			"Versions",
+			"Current",
+			"bin",
+			"python3",
+		);
 		mkdirSync(join(work, "opt", "homebrew", "bin"), { recursive: true });
 		mkdirSync(join(work, "Library", "Frameworks", "Python.framework", "Versions", "Current", "bin"), {
 			recursive: true,
@@ -776,15 +835,16 @@ finally:
 		const saltGrp = randomBytes(16);
 
 		let step = 0;
-		const writeEnc = (
-			rows: Array<{ rowid: string; ts: number; gid: number; uid: string; text: string }>,
-		) => {
+		const writeEnc = (rows: Array<{ rowid: string; ts: number; gid: number; uid: string; text: string }>) => {
 			step += 1;
 			const stepDir = join(work, `sf-${step}`);
 			mkdirSync(stepDir, { recursive: true });
 			const { plainMsg, plainGroup } = createPlainSqliteFixtures(stepDir, rows);
 			writeFileSync(join(dbDir, "nt_msg.db"), encryptSqliteToNtqq(readFileSync(plainMsg), keyMsg, saltMsg));
-			writeFileSync(join(dbDir, "group_info.db"), encryptSqliteToNtqq(readFileSync(plainGroup), keyGrp, saltGrp));
+			writeFileSync(
+				join(dbDir, "group_info.db"),
+				encryptSqliteToNtqq(readFileSync(plainGroup), keyGrp, saltGrp),
+			);
 		};
 
 		// 3 条同秒 19 位雪花 rowid（IEEE-754 double 下会全部舍入成同一浮点数）
@@ -941,7 +1001,9 @@ finally:
 		expect(snapB.status.keyMapExists).toBe(true);
 		expect(snapB.status.keyMatchedForCurrentDb).toBe(false);
 		expect(snapB.status.ready).toBe(false);
-		expect(snapB.status.missingReasons.some((r) => r.includes("未包含此 QQ 账号消息库的解密密钥"))).toBe(true);
+		expect(snapB.status.missingReasons.some((r) => r.includes("未包含此 QQ 账号消息库的解密密钥"))).toBe(
+			true,
+		);
 		await expect(service.listGroups()).rejects.toThrow(/未包含此 QQ 账号群资料库/);
 
 		// 单独验证 detectNtqqAccounts 支持空 keyMap 探测
@@ -980,10 +1042,22 @@ finally:
 		const plainMsgBytes = readFileSync(plainMsg);
 		const plainGrpBytes = readFileSync(plainGroup);
 
-		writeFileSync(join(dbDirA, "nt_msg.db"), encryptSqliteToNtqq(plainMsgBytes, Buffer.from(keyMsgA, "hex"), saltMsgA));
-		writeFileSync(join(dbDirA, "group_info.db"), encryptSqliteToNtqq(plainGrpBytes, Buffer.from(keyGrpA, "hex"), saltGrpA));
-		writeFileSync(join(dbDirB, "nt_msg.db"), encryptSqliteToNtqq(plainMsgBytes, Buffer.from(keyMsgB, "hex"), saltMsgB));
-		writeFileSync(join(dbDirB, "group_info.db"), encryptSqliteToNtqq(plainGrpBytes, Buffer.from(keyGrpB, "hex"), saltGrpB));
+		writeFileSync(
+			join(dbDirA, "nt_msg.db"),
+			encryptSqliteToNtqq(plainMsgBytes, Buffer.from(keyMsgA, "hex"), saltMsgA),
+		);
+		writeFileSync(
+			join(dbDirA, "group_info.db"),
+			encryptSqliteToNtqq(plainGrpBytes, Buffer.from(keyGrpA, "hex"), saltGrpA),
+		);
+		writeFileSync(
+			join(dbDirB, "nt_msg.db"),
+			encryptSqliteToNtqq(plainMsgBytes, Buffer.from(keyMsgB, "hex"), saltMsgB),
+		);
+		writeFileSync(
+			join(dbDirB, "group_info.db"),
+			encryptSqliteToNtqq(plainGrpBytes, Buffer.from(keyGrpB, "hex"), saltGrpB),
+		);
 
 		// 先有账号 A 的 key_map.json（含 UTF-8 BOM 以顺带验证合并时保留旧账号密钥）
 		const keyMapPath = join(dataDir, "key_map.json");
@@ -1060,7 +1134,7 @@ if (pid === "1111") {
 		// 验证 tasklist CSV 解析按内存降序排序并去重
 		const parsedTasklist = parseWindowsTasklistCsv(
 			[
-				'INFO: ignore non-csv line',
+				"INFO: ignore non-csv line",
 				'"QQ.exe","2222","Console","1","45,120 K"',
 				'"QQ.exe","3333","Console","1","512,800 K"',
 				'"QQ.exe","1111","Console","1","180,000 K"',
@@ -1101,7 +1175,10 @@ if (pid === "1111") {
 		const calls = readFileSync(callsLogPath, "utf8")
 			.trim()
 			.split(/\r?\n/)
-			.map((line) => JSON.parse(line) as { qq: string; pid: string | null; dbDir: string | null; outPath: string });
+			.map(
+				(line) =>
+					JSON.parse(line) as { qq: string; pid: string | null; dbDir: string | null; outPath: string },
+			);
 		expect(calls.map((c) => c.pid)).toEqual(["1111", "2222", "3333"]);
 		expect(calls.every((c) => c.qq === "20002" && c.dbDir === dbDirB)).toBe(true);
 		// 4. 临时文件已清理，目标 key_map.json 无损合并保留账号 A 与账号 B 全部 4 组密钥
@@ -1175,6 +1252,149 @@ if (pid === "1111") {
 		const keepCustom = await service.saveConfig({ qqUin: "10001" });
 		expect(keepCustom.config.dbDir).toBe(customNeutralDir);
 		expect(keepCustom.status.resolvedDbDir).toBe(customNeutralDir);
+
+		// 先手选账号 A 的目录（此时尚未填 qqUin），再填账号 B 的 qqUin -> 复用 dbDirBelongsToDifferentQq 自动解绑
+		await service.saveConfig({ qqUin: null, dbDir: dbDirA });
+		const fromUnsetUin = await service.saveConfig({ qqUin: "20002" });
+		expect(fromUnsetUin.config.dbDir).toBeNull();
+		expect(fromUnsetUin.status.resolvedDbDir).toBe(dbDirB);
+
+		// 清空 qqUin 时同样解绑旧账号专属目录
+		await service.saveConfig({ qqUin: "10001", dbDir: dbDirA });
+		const cleared = await service.saveConfig({ qqUin: null });
+		expect(cleared.config.qqUin).toBeNull();
+		expect(cleared.config.dbDir).toBeNull();
+	});
+
+	it("无本地库文件但存在有效 key_map.json 时 keyMatchedForCurrentDb 为 undefined，且不误报缺密钥", async () => {
+		const work = makeTempDir("wenyou-ntqq-nodb-keymap-");
+		const fakeHome = join(work, "home");
+		const dataDir = join(work, "ntqq-data");
+		const publicDir = join(work, "Public");
+		mkdirSync(fakeHome, { recursive: true });
+		mkdirSync(dataDir, { recursive: true });
+
+		const keyMapPath = join(dataDir, "key_map.json");
+		writeFileSync(
+			keyMapPath,
+			JSON.stringify({
+				key_map: {
+					[randomBytes(16).toString("hex")]: randomBytes(32).toString("hex"),
+				},
+			}),
+		);
+
+		const service = new NtqqSyncService({
+			dataDir,
+			assetsDir: ASSETS_DIR,
+			platform: "win32",
+			homeDir: fakeHome,
+			env: { ...process.env, PUBLIC: publicDir },
+		});
+
+		const snap = await service.saveConfig({ qqUin: "30003", keyMapPath });
+		expect(snap.status.msgDbExists).toBe(false);
+		expect(snap.status.groupDbExists).toBe(false);
+		expect(snap.status.keyMapExists).toBe(true);
+		expect(snap.status.keyMatchedForCurrentDb).toBeUndefined();
+		expect(snap.status.ready).toBe(false);
+		expect(snap.status.missingReasons.some((r) => r.includes("未找到本机 nt_msg.db"))).toBe(true);
+		expect(snap.status.missingReasons.some((r) => r.includes("未包含此 QQ 账号消息库的解密密钥"))).toBe(
+			false,
+		);
+	});
+
+	it("分批落盘不提前早杀子进程、WENYOU_KEY_MAP 读写路径对齐且 saveConfig 与 extractKey 串行无丢写", async () => {
+		const work = makeTempDir("wenyou-ntqq-partial-envkm-");
+		const fakeHome = join(work, "home");
+		const dataDir = join(work, "ntqq-data");
+		const publicDir = join(work, "Public");
+		const dbDirB = join(fakeHome, "Documents", "Tencent Files", "20002", "nt_qq", "nt_db");
+		mkdirSync(dbDirB, { recursive: true });
+		mkdirSync(dataDir, { recursive: true });
+
+		const keyMsgA = randomBytes(32).toString("hex");
+		const saltMsgA = randomBytes(16).toString("hex");
+		const keyMsgB = randomBytes(32).toString("hex");
+		const saltMsgB = randomBytes(16);
+		const keyGrpB = randomBytes(32).toString("hex");
+		const saltGrpB = randomBytes(16);
+
+		const { plainMsg, plainGroup } = createPlainSqliteFixtures(work, [
+			{ rowid: 1, ts: 1764025000, gid: 900001, uid: "u_gm", text: "分批落盘验证消息" },
+		]);
+		writeFileSync(
+			join(dbDirB, "nt_msg.db"),
+			encryptSqliteToNtqq(readFileSync(plainMsg), Buffer.from(keyMsgB, "hex"), saltMsgB),
+		);
+		writeFileSync(
+			join(dbDirB, "group_info.db"),
+			encryptSqliteToNtqq(readFileSync(plainGroup), Buffer.from(keyGrpB, "hex"), saltGrpB),
+		);
+
+		// 通过 WENYOU_KEY_MAP 指定外部密钥文件（内含账号 A 密钥），config.keyMapPath 留空
+		const envKeyMapPath = join(work, "external-env-key-map.json");
+		writeFileSync(envKeyMapPath, JSON.stringify({ key_map: { [saltMsgA]: keyMsgA } }));
+
+		// 模拟先落盘 1 个盐值、150ms 后再落盘全部 2 个盐值并挂起等待退出的 dumper
+		const stagedDumperPath = join(work, "staged-dumper.mjs");
+		writeFileSync(
+			stagedDumperPath,
+			`
+import { writeFileSync } from "node:fs";
+const args = process.argv.slice(2);
+const outPath = args[args.indexOf("--output") + 1];
+process.stdin.resume();
+// 第 1 阶段仅写出 nt_msg.db 的盐值且尚未打印 Key map saved to，验证不会被 30ms 轮询提前早杀
+writeFileSync(outPath, JSON.stringify({
+	key_map: {
+		${JSON.stringify(saltMsgB.toString("hex"))}: ${JSON.stringify(keyMsgB)},
+	},
+}));
+setTimeout(() => {
+	writeFileSync(outPath, JSON.stringify({
+		key_map: {
+			${JSON.stringify(saltMsgB.toString("hex"))}: ${JSON.stringify(keyMsgB)},
+			${JSON.stringify(saltGrpB.toString("hex"))}: ${JSON.stringify(keyGrpB)},
+		},
+	}));
+	process.stdout.write("Key map saved to " + outPath + "\\nWaiting for QQ to exit ...\\n");
+}, 150);
+setInterval(() => {}, 60_000);
+`,
+			"utf8",
+		);
+
+		const service = new NtqqSyncService({
+			dataDir,
+			assetsDir: ASSETS_DIR,
+			platform: "win32",
+			homeDir: fakeHome,
+			env: { ...process.env, PUBLIC: publicDir, WENYOU_KEY_MAP: envKeyMapPath },
+			listQqPids: async () => [5555],
+			keyDumpCommand: { bin: process.execPath, prefixArgs: [stagedDumperPath] },
+			keyExtractAttemptTimeoutMs: 5_000,
+			keyExtractPollIntervalMs: 30,
+		});
+
+		// 并发触发 extractKey("20002") 与 saveConfig({ pythonPath })，验证串行队列不会互相覆盖 config.json
+		const [extractRes, saveRes] = await Promise.all([
+			service.extractKey("20002"),
+			service.saveConfig({ pythonPath: PYTHON_BIN }),
+		]);
+
+		expect(extractRes.status.resolvedKeyMapPath).toBe(envKeyMapPath);
+		expect(extractRes.status.keyMatchedForCurrentDb).toBe(true);
+		expect(extractRes.status.ready).toBe(true);
+		expect(existsSync(join(dataDir, "key_map.json"))).toBe(false);
+
+		const mergedEnvEntries = await loadKeyMapEntries(envKeyMapPath);
+		expect(mergedEnvEntries[saltMsgA]).toBe(keyMsgA);
+		expect(mergedEnvEntries[saltMsgB.toString("hex")]).toBe(keyMsgB);
+		expect(mergedEnvEntries[saltGrpB.toString("hex")]).toBe(keyGrpB);
+
+		expect(saveRes.config.qqUin).toBe("20002");
+		expect(saveRes.config.pythonPath).toBe(PYTHON_BIN);
 	});
 
 	it("UTF-8 BOM config.json 与扁平/嵌套 key_map.json 在 TS 与 Python VFS 侧均可正常解析", async () => {
@@ -1193,7 +1413,10 @@ if (pid === "1111") {
 			{ rowid: 1, ts: 1764030000, gid: 900001, uid: "u_gm", text: "BOM 兼容测试消息" },
 		]);
 		writeFileSync(join(dbDir, "nt_msg.db"), encryptSqliteToNtqq(readFileSync(plainMsg), keyMsg, saltMsg));
-		writeFileSync(join(dbDir, "group_info.db"), encryptSqliteToNtqq(readFileSync(plainGroup), keyGrp, saltGrp));
+		writeFileSync(
+			join(dbDir, "group_info.db"),
+			encryptSqliteToNtqq(readFileSync(plainGroup), keyGrp, saltGrp),
+		);
 
 		// 写入带 UTF-8 BOM 的 config.json 和带 UTF-8 BOM 的扁平格式（含大写 hex）key_map.json
 		const keyMapPath = join(dataDir, "key_map.json");
@@ -1266,10 +1489,22 @@ if (pid === "1111") {
 		const fixB = createPlainSqliteFixtures(fixBDir, [
 			{ rowid: 201, ts: 1764040200, gid: 900002, uid: "u_player", text: "账号B专属密电：河西兵马已集结" },
 		]);
-		writeFileSync(join(dbDirA, "nt_msg.db"), encryptSqliteToNtqq(readFileSync(fixA.plainMsg), keyMsgA, saltMsgA));
-		writeFileSync(join(dbDirA, "group_info.db"), encryptSqliteToNtqq(readFileSync(fixA.plainGroup), keyGrpA, saltGrpA));
-		writeFileSync(join(dbDirB, "nt_msg.db"), encryptSqliteToNtqq(readFileSync(fixB.plainMsg), keyMsgB, saltMsgB));
-		writeFileSync(join(dbDirB, "group_info.db"), encryptSqliteToNtqq(readFileSync(fixB.plainGroup), keyGrpB, saltGrpB));
+		writeFileSync(
+			join(dbDirA, "nt_msg.db"),
+			encryptSqliteToNtqq(readFileSync(fixA.plainMsg), keyMsgA, saltMsgA),
+		);
+		writeFileSync(
+			join(dbDirA, "group_info.db"),
+			encryptSqliteToNtqq(readFileSync(fixA.plainGroup), keyGrpA, saltGrpA),
+		);
+		writeFileSync(
+			join(dbDirB, "nt_msg.db"),
+			encryptSqliteToNtqq(readFileSync(fixB.plainMsg), keyMsgB, saltMsgB),
+		);
+		writeFileSync(
+			join(dbDirB, "group_info.db"),
+			encryptSqliteToNtqq(readFileSync(fixB.plainGroup), keyGrpB, saltGrpB),
+		);
 
 		const keyMapPath = join(dataDir, "key_map.json");
 		writeFileSync(
