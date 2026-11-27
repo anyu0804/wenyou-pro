@@ -20,6 +20,7 @@ import { makePermissionGateExtension } from "../../permissions/extension";
 import type { PermissionGate, PermissionRequestMeta } from "../../permissions/gate";
 import type { SessionTraces } from "../../session/traces";
 import { makeUiContext } from "../../session/ui-context";
+import { resolveSubagentTools } from "../../shell-fallback";
 import { makeWebFetchTool } from "../webfetch";
 import type { SubagentDefinition } from "./agents";
 import { subagentPermissionMode } from "./policy";
@@ -241,7 +242,10 @@ export async function runSubagent(deps: RunSubagentDeps, input: RunSubagentInput
 	const childSettings = SettingsManager.create(input.cwd, agentDir, {
 		projectTrusted: input.projectTrusted,
 	});
-	const safeTools = input.agent.tools.filter((name) => name !== "subagent" && !name.startsWith("subagent_"));
+	const safeTools = resolveSubagentTools(
+		input.agent.tools.filter((name) => name !== "subagent" && !name.startsWith("subagent_")),
+		{ shellPath: childSettings.getShellPath?.() },
+	);
 	const customTools = safeTools.includes("webfetch") ? [makeWebFetchTool()] : [];
 	const policy = { agentDir, deny: input.agent.deny ?? [], permissionMode: input.agent.permissionMode };
 	const resourceLoader = new DefaultResourceLoader({

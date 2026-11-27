@@ -25,7 +25,7 @@ import { applyChromeTheme, createWindow, markQuitting, resolveTheme } from "./wi
 import { sanitizeWindowBounds } from "./window-bounds";
 
 const log = createLogger("main");
-let backend: PiBackend;
+let backend: PiBackend | undefined;
 
 // 启动第一时间安装全局异常与原生 ErrorBox 弹窗守卫，阻止主进程异常演变为模态弹窗风暴
 installMainProcessErrorGuard({ dialog, process, log });
@@ -69,6 +69,11 @@ if (hasSingleInstanceLock) {
 	nativeTheme.on("updated", () => applyChromeTheme(nativeTheme.themeSource));
 
 	app.whenReady().then(async () => {
+		// 必须早于 prepareLocalStorage 创建窗口：先初始化文件日志并挂载渲染进程看护，
+		// 避免主窗口 webContents 漏绑 console-message / render-process-gone 导致渲染错误从不落盘。
+		initLogging(join(app.getPath("userData"), "logs"));
+		attachRendererWatchdog(() => backend);
+
 		// 必须早于 prepareLocalStorage：它会创建并加载首个文档，后补 handler 对该文档不生效。
 		// 自定义背景图协议：pi-bg://background/<文件名> → userData/backgrounds/<文件名>（文件名白名单防路径穿越）
 		protocol.handle(BG_PROTOCOL, (request) => {
@@ -97,7 +102,6 @@ if (hasSingleInstanceLock) {
 		);
 		const storage = await prepareLocalStorage(resolveTheme(uiState?.theme), initialBounds);
 		try {
-			initLogging(join(app.getPath("userData"), "logs"));
 			log.info("app ready", { version: app.getVersion(), userData: app.getPath("userData") });
 			if (!process.env.WENYOU_NTQQ_ASSETS_DIR) {
 				process.env.WENYOU_NTQQ_ASSETS_DIR = wenyouNtqqAssetsDir();
@@ -114,7 +118,6 @@ if (hasSingleInstanceLock) {
 				},
 			});
 			await backend.init();
-			attachRendererWatchdog(backend);
 
 			registerIpc(backend);
 			await initUpdater();
